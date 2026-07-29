@@ -38,7 +38,7 @@ _Last reviewed: 2026-07._
 - Reveal-what-AI-sees diff, explain-file, run agent.
 
 **Project**
-- Apache-2.0; `NOTICE` (trademark); `CHARTER.md`, `GOVERNANCE.md`, `PHILOSOPHY.md`.
+- Apache-2.0; `NOTICE` (trademark); community-health docs (`CONTRIBUTING`, `CODE_OF_CONDUCT`, `SECURITY`).
 - Unit + integration + security regression tests (all green).
 - READMEs (en/ja/zh-CN); product website.
 

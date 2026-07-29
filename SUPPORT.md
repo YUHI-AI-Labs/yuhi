@@ -8,7 +8,7 @@ question belongs.
 1. **README** — [Quickstart](./README.md#quickstart--2-minutes) and the command table.
 2. **`yuhi doctor`** — checks your environment and config, and explains common problems.
 3. **`yuhi explain <path>`** — answers "why is this file sent / prepared / kept?" for any file.
-4. **Docs** — [`docs/`](./docs/), [`THREAT_MODEL.md`](./THREAT_MODEL.md) (what Yuhi does and does not cover).
+4. **Docs** — [`docs/`](./docs/), [`THREAT_MODEL.md`](./docs/THREAT_MODEL.md) (what Yuhi does and does not cover).
 
 ## Where to ask
 
@@ -19,7 +19,7 @@ question belongs.
 | Show what you built | [Discussions → Show and tell](https://github.com/YUHI-AI-Labs/yuhi/discussions/categories/show-and-tell) |
 | Report a reproducible bug | [New issue → Bug report](https://github.com/YUHI-AI-Labs/yuhi/issues/new/choose) |
 | Report a security vulnerability | **Privately** via [Security → Report a vulnerability](https://github.com/YUHI-AI-Labs/yuhi/security/advisories/new) — see [`SECURITY.md`](./SECURITY.md) |
-| Propose research / collaboration | [Discussions](https://github.com/YUHI-AI-Labs/yuhi/discussions) or an issue tagged `research` — see [`RESEARCH.md`](./RESEARCH.md) |
+| Propose research / collaboration | [Discussions](https://github.com/YUHI-AI-Labs/yuhi/discussions) or an issue tagged `research` — see [`RESEARCH.md`](./docs/RESEARCH.md) |
 
 **Please don't** open a public issue for a security problem, or use the issue tracker
 for open-ended questions — Discussions keeps answers findable for the next person.

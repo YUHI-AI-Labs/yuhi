@@ -2,7 +2,7 @@
 
 > **Status: design only.** This document defines *what* we want to measure and the
 > vocabulary for it. It intentionally does **not** specify an implementation, dataset,
-> or leaderboard yet. Feedback is welcome — see [`RESEARCH.md`](../RESEARCH.md) and the
+> or leaderboard yet. Feedback is welcome — see [`RESEARCH.md`](./RESEARCH.md) and the
 > **Benchmark proposal** issue form.
 
 ## Motivation
@@ -67,7 +67,7 @@ makes utility meaningful.
 ## Explicitly out of scope (for now)
 
 - A public leaderboard or ranking.
-- Runtime/OS sandboxing quality (that is [`THREAT_MODEL.md`](../THREAT_MODEL.md), not ContextBench).
+- Runtime/OS sandboxing quality (that is [`THREAT_MODEL.md`](./THREAT_MODEL.md), not ContextBench).
 - Model capability evaluation (that is the model's benchmark, not the context's).
 
 ## Open questions

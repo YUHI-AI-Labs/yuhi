@@ -14,7 +14,7 @@ Enable these categories under **repo → Discussions → categories** (maintaine
 | **🙏 Q&A** | Question / Answer | Usage help, `yuhi.yaml` configuration, behavior questions. |
 | **💡 Ideas** | Open | Float and refine feature ideas before they become issues. |
 | **🎨 Show and tell** | Open | Share policies, detectors, workflows, and projects built with Yuhi. |
-| **🔬 Research** | Open (uses the Research template) | Context-preparation research, ContextBench, collaboration. See [`RESEARCH.md`](../RESEARCH.md). |
+| **🔬 Research** | Open (uses the Research template) | Context-preparation research, ContextBench, collaboration. See [`RESEARCH.md`](../docs/RESEARCH.md). |
 | **🗳️ Polls** | Poll | Gather quick community signal on direction. |
 
 The **Research** category pairs with `.github/DISCUSSION_TEMPLATE/research.yml`

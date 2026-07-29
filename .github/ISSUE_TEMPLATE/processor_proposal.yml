@@ -11,8 +11,7 @@ body:
         soon — summarize with a local model). They run on your machine and never
         modify the original file.
 
-        Before proposing, please skim [`CHARTER.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/CHARTER.md)
-        and [`PHILOSOPHY.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/PHILOSOPHY.md).
+        Before proposing, please skim [`CONTRIBUTING.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/CONTRIBUTING.md).
   - type: checkboxes
     id: preflight
     attributes:

@@ -41,7 +41,8 @@ npx @yuhi-ai-labs/yuhi run dummy   # try the whole flow offline with a bundled s
 npx @yuhi-ai-labs/yuhi run claude  # launch Claude Code in the generated context
 ```
 
-> npm 包名为 **`@yuhi-ai-labs/yuhi`**。在首个版本(v0.1.0)发布之前,请从源码运行:
+> npm 包名为 **`@yuhi-ai-labs/yuhi`**。当前版本为 **beta** dist-tag —
+> 可用 `npx @yuhi-ai-labs/yuhi@beta preview` 明确指定 beta。若要从源码构建:
 > `pnpm install && pnpm build`,然后执行 `node apps/cli/dist/index.js`。
 
 `yuhi preview` 的输出示例:
@@ -129,7 +130,7 @@ Yuhi 是**面向 AI 上下文的纵深防御(defense-in-depth),而不是沙箱�
 
 我们刻意避免诸如“100% 安全”或“保证零泄露”之类的说法。完整的模型,以及通向可选沙箱后端
 (Docker、`sandbox-exec`、bubblewrap、Windows Sandbox)的路线图,请参见
-[`THREAT_MODEL.md`](./THREAT_MODEL.md)。
+[`THREAT_MODEL.md`](./docs/THREAT_MODEL.md)。
 
 ## 功能状态
 
@@ -141,9 +142,9 @@ Yuhi 是**面向 AI 上下文的纵深防御(defense-in-depth),而不是沙箱�
 | `dummy` 智能体(离线) + Claude Code 适配器 | **Stable(稳定)** |
 | 本地审计日志 | **Stable(稳定)** |
 | Codex / Gemini 适配器 | Planned(计划中) |
-| VS Code 扩展(预览、徽章、运行) | **Beta**(可安装 VSIX) |
+| VS Code 扩展(预览、徽章、运行) | **Beta**(已上架 VS Code Marketplace) |
 | 本地模型路由(`summarize-local`、`metadata-only`) | Planned(计划中・**v1.1**) |
-| 操作系统沙箱后端 | Not implemented(未实现,设计见 `THREAT_MODEL.md`) |
+| 操作系统沙箱后端 | Not implemented(未实现,设计见 `docs/THREAT_MODEL.md`) |
 
 ## 架构
 
@@ -154,8 +155,7 @@ packages/  shared · config · policy · scanner · processors · workspace · a
 apps/      cli · vscode
 ```
 
-参见 [`ARCHITECTURE.md`](./ARCHITECTURE.md)、[`PHILOSOPHY.md`](./PHILOSOPHY.md) 以及
-`docs/adr/`。
+参见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) 以及 `docs/adr/`。
 
 ## 参与贡献
 

@@ -7,7 +7,7 @@ body:
         conversation about **context preparation** as a discipline — measuring it,
         publishing it, and collaborating on it. For concrete, trackable proposals,
         consider the **Benchmark proposal** or **Processor proposal** issue forms
-        instead. See [`RESEARCH.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/RESEARCH.md).
+        instead. See [`RESEARCH.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/docs/RESEARCH.md).
   - type: dropdown
     id: topic
     attributes:

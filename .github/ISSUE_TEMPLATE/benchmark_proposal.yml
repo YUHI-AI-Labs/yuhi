@@ -8,7 +8,7 @@ body:
       value: |
         ContextBench measures how good a context *preparation* is — along
         **privacy**, **utility**, **leakage**, and **task success**. See
-        [`RESEARCH.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/RESEARCH.md)
+        [`RESEARCH.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/docs/RESEARCH.md)
         and the design sketch in
         [`docs/contextbench.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/docs/contextbench.md).
 

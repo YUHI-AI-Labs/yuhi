@@ -33,7 +33,7 @@ practical artifact of the agenda: a reproducible, open reference for *preparing*
 context, with deterministic on-device transforms (pseudonymization, secret masking)
 today and local-model summarization next.
 
-See [VISION.md](./VISION.md) and [ROADMAP.md](./ROADMAP.md).
+See [ROADMAP.md](./ROADMAP.md).
 
 ---
 

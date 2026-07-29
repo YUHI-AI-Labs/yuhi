@@ -46,5 +46,4 @@ inspect workspace
 ## Explicitly out of scope for the beta
 
 Claude/Codex integration code, cloud backend, authentication, billing, telemetry,
-automatic forwarding, provider marketplace. See [`ROADMAP.md`](../ROADMAP.md) and
-[`VISION.md`](../VISION.md) for sequencing.
+automatic forwarding, provider marketplace. See [`ROADMAP.md`](./ROADMAP.md) for sequencing.

@@ -79,8 +79,9 @@ npx @yuhi-ai-labs/yuhi run dummy   # try the whole flow offline with a bundled s
 npx @yuhi-ai-labs/yuhi run claude  # launch Claude Code in the generated context
 ```
 
-> The npm package is **`@yuhi-ai-labs/yuhi`**. Until the first release (v0.1.0) is published, run
-> from source: `pnpm install && pnpm build`, then `node apps/cli/dist/index.js`.
+> The npm package is **`@yuhi-ai-labs/yuhi`**. The current release is a **beta** dist-tag —
+> pin it with `npx @yuhi-ai-labs/yuhi@beta preview`. To build from source instead:
+> `pnpm install && pnpm build`, then `node apps/cli/dist/index.js`.
 
 Example `yuhi preview` output:
 
@@ -173,7 +174,7 @@ an agent starts from. It does **not**:
 - guarantee zero data leakage.
 
 We deliberately avoid claims like "100% secure" or "guaranteed no leakage." See
-[`THREAT_MODEL.md`](./THREAT_MODEL.md) for the full model and roadmap toward optional
+[`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) for the full model and roadmap toward optional
 sandbox backends (Docker, `sandbox-exec`, bubblewrap, Windows Sandbox).
 
 ## Feature status
@@ -187,10 +188,10 @@ sandbox backends (Docker, `sandbox-exec`, bubblewrap, Windows Sandbox).
 | Policy engine (globs, precedence, detectors) | **Stable** |
 | `dummy` agent (offline) + Claude Code adapter | **Stable** |
 | Local audit log | **Stable** |
-| VS Code extension (preview, badges, status, run) | **Beta** — installable VSIX |
+| VS Code extension (preview, badges, status, run) | **Beta** — on the VS Code Marketplace |
 | Codex / Gemini adapters | Planned |
 | Local-model routes (`summarize-local`, `metadata-only`) | Planned — **v1.1** |
-| OS sandbox backends | Not implemented (design in `THREAT_MODEL.md`) |
+| OS sandbox backends | Not implemented (design in `docs/THREAT_MODEL.md`) |
 
 ## Architecture
 
@@ -201,16 +202,13 @@ packages/  shared · config · policy · scanner · processors · workspace · a
 apps/      cli · vscode
 ```
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`PHILOSOPHY.md`](./PHILOSOPHY.md), and
-`docs/adr/`.
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and `docs/adr/`.
 
 ## Project direction
 
-- [`VISION.md`](./VISION.md) — where Yuhi is going and why.
-- [`ROADMAP.md`](./ROADMAP.md) — done / in progress / next / future.
-- [`RESEARCH.md`](./RESEARCH.md) — the research agenda (context preparation, ContextBench, J-YouthSafe).
-- [`CHARTER.md`](./CHARTER.md) · [`GOVERNANCE.md`](./GOVERNANCE.md) — how the project is run.
-- [`THREAT_MODEL.md`](./THREAT_MODEL.md) — what Yuhi does and does **not** protect against.
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — done / in progress / next / future.
+- [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) — what Yuhi does and does **not** protect against.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the codebase is structured.
 
 ## Contributing
 

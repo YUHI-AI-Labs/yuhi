@@ -46,9 +46,9 @@ npx @yuhi-ai-labs/yuhi run dummy   # try the whole flow offline with a bundled s
 npx @yuhi-ai-labs/yuhi run claude  # launch Claude Code in the generated context
 ```
 
-> npm パッケージ名は **`@yuhi-ai-labs/yuhi`** です。最初のリリース(v0.1.0)が公開されるまでは、
-> ソースから実行してください: `pnpm install && pnpm build` の後に
-> `node apps/cli/dist/index.js` を実行します。
+> npm パッケージ名は **`@yuhi-ai-labs/yuhi`** です。現在のリリースは **beta** dist-tag です。
+> `npx @yuhi-ai-labs/yuhi@beta preview` で明示的に beta を指定できます。ソースからビルドする場合は
+> `pnpm install && pnpm build` の後に `node apps/cli/dist/index.js` を実行します。
 
 `yuhi preview` の出力例:
 
@@ -138,7 +138,7 @@ Yuhi は **AI コンテキストの多層防御(defense-in-depth)であり、サ
 
 私たちは「100% 安全」や「漏洩ゼロを保証」といった主張を意図的に避けています。完全なモデルと、
 オプションのサンドボックスバックエンド(Docker、`sandbox-exec`、bubblewrap、Windows Sandbox)に
-向けたロードマップについては [`THREAT_MODEL.md`](./THREAT_MODEL.md) を参照してください。
+向けたロードマップについては [`THREAT_MODEL.md`](./docs/THREAT_MODEL.md) を参照してください。
 
 ## 機能ステータス
 
@@ -150,9 +150,9 @@ Yuhi は **AI コンテキストの多層防御(defense-in-depth)であり、サ
 | `dummy` エージェント(オフライン) + Claude Code アダプター | **Stable(安定)** |
 | ローカル監査ログ | **Stable(安定)** |
 | Codex / Gemini アダプター | Planned(計画中) |
-| VS Code 拡張機能(プレビュー・バッジ・実行) | **Beta**(VSIX 配布) |
+| VS Code 拡張機能(プレビュー・バッジ・実行) | **Beta**(VS Code Marketplace で公開) |
 | ローカルモデル・ルート(`summarize-local`、`metadata-only`) | Planned(計画中・**v1.1**) |
-| OS サンドボックスバックエンド | Not implemented(未実装、設計は `THREAT_MODEL.md`) |
+| OS サンドボックスバックエンド | Not implemented(未実装、設計は `docs/THREAT_MODEL.md`) |
 
 ## アーキテクチャ
 
@@ -163,8 +163,7 @@ packages/  shared · config · policy · scanner · processors · workspace · a
 apps/      cli · vscode
 ```
 
-[`ARCHITECTURE.md`](./ARCHITECTURE.md)、[`PHILOSOPHY.md`](./PHILOSOPHY.md)、および
-`docs/adr/` を参照してください。
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) および `docs/adr/` を参照してください。
 
 ## コントリビュート
 
