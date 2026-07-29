@@ -1,0 +1,62 @@
+{
+  "tagline": "AIエージェントに何が見えるのかを、実行前に正確に確認できます。",
+  "limitation": "Yuhiはエージェントの初期コンテキストを絞り込みます。サンドボックスではありません。エージェントのプロセスはネットワークとOSにアクセスできます。THREAT_MODELを参照してください。",
+  "notInitialized": "このプロジェクトは初期化されていません。まず `yuhi init` を実行してください。",
+
+  "init.creating": "{dir} でYuhiを初期化します",
+  "init.created": "{file} を作成しました",
+  "init.exists": "yuhi.yaml は既に存在します。変更しません（上書きするには --force）。",
+  "init.next": "次に `yuhi preview` を実行して、AIエージェントに見えるものを確認しましょう。",
+
+  "scan.title": "Yuhi スキャン",
+  "scan.inspected": "{count} 個のファイルを検査しました",
+  "scan.secrets": "{count} 件の秘密情報の可能性を検出",
+  "scan.noSecrets": "秘密情報は検出されませんでした",
+  "scan.notModified": "ファイルは一切変更していません",
+  "scan.risk": "リスク概要",
+  "scan.flags": "ファイルに関する注記",
+
+  "preview.title": "Yuhi プレビュー",
+  "preview.agent": "エージェント",
+  "preview.source": "ソース",
+  "preview.allowed": "許可（エージェントに見える）",
+  "preview.redacted": "マスク（コピー上で秘密情報を伏字化）",
+  "preview.blocked": "ブロック（コピーしない）",
+  "preview.localOnly": "ローカル限定（エージェントには渡さない）",
+  "preview.summary": "サマリー",
+  "preview.visible": "{agent} に見えるファイル: {count} 件",
+  "preview.transformed": "変換されたファイル: {count} 件",
+  "preview.blockedCount": "ブロックされたファイル: {count} 件",
+  "preview.localOnlyCount": "ローカル保持: {count} 件",
+  "preview.sourceUnmodified": "元ファイルの変更: 0 件",
+  "preview.empty": "対象ファイルがありません。プロジェクトのルートですか？",
+
+  "explain.header": "{path} のポリシー",
+  "explain.action": "アクション",
+  "explain.rule": "ルール",
+  "explain.reason": "理由",
+  "explain.findings": "検出内容",
+  "explain.override": "変更するには yuhi.yaml の該当ルールを編集してください。",
+  "explain.notFound": "そのファイルはプロジェクト内に見つかりません（ignore適用後）: {path}",
+
+  "run.launching": "生成したコンテキスト内で {agent} を起動します…",
+  "run.notInstalled": "{agent} がインストールされていません。",
+  "run.exit": "{agent} は終了コード {code} で終了しました",
+  "run.kept": "ワークスペースを保持しました: {path}",
+  "run.cleaned": "ワークスペースを削除しました。",
+  "run.cleanupPrompt": "生成したワークスペースを今すぐ削除しますか？",
+  "run.missingEnv": "注意: 許可リストの次の変数は未設定で、渡されませんでした: {vars}",
+  "run.dryRun": "ドライラン — ワークスペースを準備しましたが、エージェントは起動していません。",
+
+  "workspace.none": "ワークスペースはまだありません。`yuhi run <agent>` か `yuhi workspace create` を実行してください。",
+  "workspace.created": "ワークスペース {id} を作成しました: {path}",
+  "workspace.cleaned": "{count} 個のワークスペースを削除しました。",
+
+  "audit.none": "監査記録はまだありません。",
+
+  "doctor.title": "Yuhi ドクター",
+  "doctor.ok": "OK",
+  "doctor.missing": "見つかりません",
+  "doctor.summaryOk": "問題は見つかりませんでした。",
+  "doctor.summaryIssues": "{count} 件の問題があります（上記参照）。"
+}

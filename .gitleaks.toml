@@ -1,0 +1,14 @@
+# gitleaks config: the example/demo and test fixtures contain intentional FAKE
+# secrets used to demonstrate detection/redaction. They are not real credentials.
+title = "Yuhi gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow intentional fake secrets in examples and test fixtures"
+paths = [
+  '''examples/.*''',
+  '''tests/.*''',
+  '''.*\.test\.ts$''',
+]

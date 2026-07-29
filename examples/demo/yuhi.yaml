@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=./.yuhi/yuhi.schema.json
+version: "1"
+project:
+  name: demo
+defaults:
+  action: allow
+  agent: claude
+workspace:
+  cleanup: never
+rules:
+  - name: prepare-student-data
+    match: { paths: ["data/student_scores.csv", "**/students*.csv"] }
+    action: prepare-locally
+    processors:
+      - pseudonymize
+      - safety-check
+    reason: "Pseudonymize student identifiers locally before the AI sees them."
+  - name: block-env
+    match: { paths: ["**/.env", "**/.env.*", "!**/.env.example"] }
+    action: block
+    reason: "Environment files must not be exposed."
+  - name: redact-secrets
+    match: { detectors: ["api-key","access-token","private-key","database-url","high-entropy-string"] }
+    action: redact
+  - name: local-customer
+    match: { paths: ["customer-data/**"] }
+    action: local-only
+    reason: "Customer data stays on your machine."
+  - name: local-noise
+    match: { paths: ["**/package-lock.json","**/pnpm-lock.yaml","build/**","dist/**","**/*.min.js"] }
+    action: local-only
+    reason: "Lockfiles and build output are noise — the AI does not need them."
+  - name: redact-internal-docs
+    match: { paths: ["docs/internal/**"] }
+    action: redact
+    reason: "Internal docs may contain sensitive notes."
+agents:
+  claude: { command: claude, destination: external }
+  dummy: { command: dummy, destination: external }

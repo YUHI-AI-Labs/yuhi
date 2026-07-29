@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Yuhi">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#241a45"/>
+      <stop offset="1" stop-color="#0c1017"/>
+    </linearGradient>
+    <clipPath id="eye">
+      <path d="M64 38 C 96 38 118 64 118 64 C 118 64 96 90 64 90 C 32 90 10 64 10 64 C 10 64 32 38 64 38 Z"/>
+    </clipPath>
+  </defs>
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#bg)"/>
+  <path d="M64 38 C 96 38 118 64 118 64 C 118 64 96 90 64 90 C 32 90 10 64 10 64 C 10 64 32 38 64 38 Z" fill="#f3f6fb"/>
+  <g clip-path="url(#eye)">
+    <circle cx="64" cy="64" r="19" fill="#b98cff"/>
+    <circle cx="64" cy="64" r="9.5" fill="#0c1017"/>
+    <circle cx="59" cy="59" r="3.6" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,0 +1,101 @@
+{
+  "name": "yuhi-vscode",
+  "displayName": "Yuhi — Local AI Prep",
+  "description": "Prepare your workspace locally with a small on-device model before anything is sent to Claude. Local-first, no telemetry.",
+  "version": "0.2.1",
+  "publisher": "yuhi-ai-labs",
+  "license": "Apache-2.0",
+  "icon": "media/yuhi-ai-labs-icon.png",
+  "galleryBanner": {
+    "color": "#0c1017",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "claude",
+    "local-first",
+    "privacy",
+    "ollama",
+    "local-ai",
+    "context",
+    "security"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YUHI-AI-Labs/yuhi.git",
+    "directory": "apps/vscode"
+  },
+  "homepage": "https://github.com/YUHI-AI-Labs/yuhi",
+  "bugs": {
+    "url": "https://github.com/YUHI-AI-Labs/yuhi/issues"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "yuhi.doctor",
+        "title": "Yuhi: Doctor"
+      },
+      {
+        "command": "yuhi.setupLocalAI",
+        "title": "Yuhi: Setup Local AI"
+      },
+      {
+        "command": "yuhi.prepareWorkspace",
+        "title": "Yuhi: Prepare Workspace"
+      },
+      {
+        "command": "yuhi.reviewPrepared",
+        "title": "Yuhi: Review Prepared Context"
+      },
+      {
+        "command": "yuhi.prepareHere",
+        "title": "Prepare with Yuhi"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "yuhi.prepareHere",
+          "group": "yuhi@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "yuhi.prepareHere",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies -o yuhi.vsix"
+  },
+  "dependencies": {
+    "@yuhi/core": "workspace:*",
+    "@yuhi/local": "workspace:*",
+    "@yuhi/shared": "workspace:*",
+    "@yuhi/config": "workspace:*",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.17.9",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0"
+  }
+}

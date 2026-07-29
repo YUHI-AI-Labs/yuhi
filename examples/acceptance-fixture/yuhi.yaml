@@ -1,0 +1,17 @@
+version: "1"
+project:
+  name: acceptance-fixture
+defaults:
+  action: allow
+rules:
+  - name: keep-private-local
+    match:
+      paths: ["private/**", "**/.env"]
+    action: local-only
+    reason: "Never sent; kept on the machine."
+  - name: prepare-docs-and-data
+    match:
+      paths: ["notes.md", "notes.txt", "data.json", "students.csv", "meeting-log.md"]
+    action: prepare-locally
+    processors: [summarize-local, pseudonymize, safety-check]
+    reason: "Summarized locally, pseudonymized, safety-checked before review."

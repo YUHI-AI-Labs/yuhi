@@ -1,0 +1,1 @@
+{"task":"roster-import","fields":["name","student_id","score"],"notes":"handle empty rows (E1042)"}

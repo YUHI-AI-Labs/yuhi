@@ -1,0 +1,59 @@
+name: Benchmark proposal
+description: Propose a task, dataset, or metric for the Context Preparation Benchmark (ContextBench)
+title: "[Benchmark]: "
+labels: ["research", "benchmark", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ContextBench measures how good a context *preparation* is — along
+        **privacy**, **utility**, **leakage**, and **task success**. See
+        [`RESEARCH.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/RESEARCH.md)
+        and the design sketch in
+        [`docs/contextbench.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/docs/contextbench.md).
+
+        This is an early-stage research effort — proposals, datasets, and critiques
+        are all very welcome.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What are you proposing?
+      options:
+        - A task (input + policy + expected outcome)
+        - A dataset / fixture
+        - A metric or scoring method
+        - A change to the evaluation protocol
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is the task/dataset/metric, and what does it capture that current ones don't?
+    validations:
+      required: true
+  - type: textarea
+    id: axes
+    attributes:
+      label: Which axis does it target?
+      description: Privacy, utility, leakage, task success — and how is it scored?
+      placeholder: "Leakage: exact-match on protected identifiers after preparation ..."
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data & licensing
+      description: >
+        Where does any data come from, and under what license? **Do not include real
+        personal data** — use synthetic or properly licensed fixtures.
+    validations:
+      required: true
+  - type: textarea
+    id: refs
+    attributes:
+      label: References
+      description: Related papers, benchmarks, or prior work.
+    validations:
+      required: false

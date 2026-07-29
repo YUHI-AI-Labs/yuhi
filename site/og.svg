@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="dusk" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f3a83a"/>
+      <stop offset="0.52" stop-color="#e5634d"/>
+      <stop offset="1" stop-color="#6d5ae6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="20%" cy="0%" r="80%">
+      <stop offset="0" stop-color="#e5634d" stop-opacity="0.34"/>
+      <stop offset="0.55" stop-color="#6d5ae6" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#131120" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="sun"><circle cx="96" cy="90" r="26"/></clipPath>
+  </defs>
+
+  <rect width="1280" height="640" fill="#131120"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1280" height="6" fill="url(#dusk)"/>
+
+  <!-- wordmark -->
+  <g>
+    <circle cx="96" cy="90" r="26" fill="url(#dusk)"/>
+    <rect x="70" y="90" width="52" height="26" fill="#131120" opacity="0.34" clip-path="url(#sun)"/>
+    <text x="140" y="102" font-size="40" font-weight="700" fill="#ece9f6" font-family="monospace">yuhi</text>
+  </g>
+
+  <!-- headline -->
+  <text x="94" y="286" font-size="82" font-weight="700" fill="#ece9f6" letter-spacing="-2">Prepare the right context</text>
+  <text x="94" y="386" font-size="82" font-weight="700" letter-spacing="-2" fill="url(#dusk)">before AI starts.</text>
+
+  <!-- subline -->
+  <text x="96" y="452" font-size="30" fill="#a29db8">Decide — per file — what your AI agent sees, prepares locally, or never sends.</text>
+
+  <!-- pills -->
+  <g font-family="monospace" font-size="24" fill="#ece9f6">
+    <g>
+      <rect x="94" y="514" width="176" height="56" rx="12" fill="none" stroke="#3a3752" stroke-width="1.5"/>
+      <text x="182" y="551" text-anchor="middle">Apache-2.0</text>
+    </g>
+    <g>
+      <rect x="286" y="514" width="176" height="56" rx="12" fill="none" stroke="#3a3752" stroke-width="1.5"/>
+      <text x="374" y="551" text-anchor="middle">Local-first</text>
+    </g>
+    <g>
+      <rect x="478" y="514" width="150" height="56" rx="12" fill="none" stroke="#3a3752" stroke-width="1.5"/>
+      <text x="553" y="551" text-anchor="middle">VS Code</text>
+    </g>
+    <g>
+      <rect x="644" y="514" width="104" height="56" rx="12" fill="none" stroke="#3a3752" stroke-width="1.5"/>
+      <text x="696" y="551" text-anchor="middle">CLI</text>
+    </g>
+  </g>
+
+  <!-- repo url -->
+  <text x="1186" y="551" text-anchor="end" font-family="monospace" font-size="22" fill="#736e8c">github.com/YUHI-AI-Labs/yuhi</text>
+</svg>

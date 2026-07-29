@@ -1,0 +1,76 @@
+name: Processor proposal
+description: Propose a new context-preparation processor (a step in the "Prepare locally" route)
+title: "[Processor]: "
+labels: ["processor", "enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Processors are the local, composable steps that transform a file on the
+        **Prepare locally** route (for example: pseudonymize, mask secrets, or —
+        soon — summarize with a local model). They run on your machine and never
+        modify the original file.
+
+        Before proposing, please skim [`CHARTER.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/CHARTER.md)
+        and [`PHILOSOPHY.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/PHILOSOPHY.md).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I searched existing issues/discussions and this processor has not been proposed.
+          required: true
+        - label: This runs fully locally (no data leaves the machine) or clearly states any exception.
+          required: true
+        - label: It does not modify the user's original files.
+          required: true
+  - type: input
+    id: id
+    attributes:
+      label: Processor id
+      description: A short, kebab-case identifier.
+      placeholder: "redact-emails"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      description: How does it decide what to change?
+      options:
+        - rule-based (deterministic)
+        - local-model (runs a model on-device)
+        - validation (checks output; can block transmission)
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: What does it prepare, and why?
+      description: What input does it take, what does it output, and what problem does it solve?
+      placeholder: "Input: text/markdown. Output: the same text with email addresses replaced by stable tokens ..."
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Privacy & safety behavior
+      description: >
+        What does the safe preview / audit show (no raw sensitive values)? Can its
+        output be sent externally? Should a safety-check run after it?
+    validations:
+      required: true
+  - type: input
+    id: types
+    attributes:
+      label: Supported input types
+      placeholder: "text/plain, text/markdown, text/csv, application/json"
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Prior art, edge cases, or a rough API sketch.
+    validations:
+      required: false

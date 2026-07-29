@@ -1,0 +1,77 @@
+# Yuhi — Threat Model
+
+Status: Draft (v0.1). This document is authoritative for security claims. If marketing
+copy and this file disagree, this file wins.
+
+## What Yuhi is
+
+A tool that (1) inspects a repository locally, (2) applies a declarative policy, and
+(3) produces a **filtered copy** of the repository in which selected files are omitted
+or redacted, then (4) launches an AI agent CLI with its working directory set to that
+copy. It is **defense-in-depth against accidental exposure**, not a sandbox.
+
+## What Yuhi is NOT
+
+- **Not an OS/kernel sandbox.** It does not use namespaces, seccomp, sandbox-exec, or
+  containers in v0.1. The agent process runs with the same OS privileges as the user.
+- **Not a network firewall.** Yuhi does not intercept, inspect, or block the agent's
+  outbound network traffic. Whatever the agent uploads to its model provider is
+  outside Yuhi's control.
+- **Not a filesystem jail.** If the agent chooses to open an absolute path, walk `../`,
+  or follow a symlink out of the workspace, the OS permits it. Yuhi controls the
+  *starting inputs*, not the agent's syscalls.
+- **Not a guarantee.** Forbidden claims: "completely safe", "absolutely no leakage",
+  "100% secure", "guaranteed no data leakage".
+
+## Assets
+
+- Secrets/credentials (`.env`, keys, tokens, cloud creds).
+- Sensitive documents (customer data, private specs, internal docs).
+- The integrity of the original repository (must never be modified).
+- Audit log integrity (metadata-only).
+
+## Trust boundaries
+
+1. User ↔ Yuhi (trusted local process).
+2. Yuhi ↔ generated workspace (Yuhi writes; agent reads/writes).
+3. Workspace ↔ agent CLI (agent is semi-trusted: user chose to run it, but it may send
+   data to a third party).
+4. Agent CLI ↔ model provider (outside Yuhi's boundary entirely).
+
+## Threats & mitigations
+
+| # | Threat | Mitigation (v0.1) | Residual risk |
+|---|---|---|---|
+| T1 | Secret file copied to workspace | Path rules `block`; detector-driven `redact`/`block`; secrets escalate action | Detector misses (novel formats) |
+| T2 | Secret value leaks via scan/preview/log output | Never print raw values; mask to `****`; audit stores no content | — |
+| T3 | Path traversal in rule/manifest paths | Normalize + confine all writes under workspace root; reject `..` after resolve | — |
+| T4 | Symlink escape (link inside repo → outside) | Do not follow symlinks when copying; record & skip; optional materialize-as-marker | Broken links in workspace |
+| T5 | TOCTOU (file changes between scan and copy) | Single-pass copy re-checks type with `lstat`; hash recorded in manifest; documented residual | Race with concurrent writer |
+| T6 | Shell injection via filenames/args | `spawn` with argv array; never `shell:true`; never string concat | — |
+| T7 | Env secret leakage to agent | Child env built explicitly; parent env NOT inherited wholesale; only allow-listed vars passed | User misconfig passes a secret |
+| T8 | Original repo modified | Yuhi only writes under `~/.yuhi`; integration test asserts source tree hash unchanged | — |
+| T9 | `.git` copied → history/remotes exposed | `preserve_git:false` default; when enabled, warn about history & hooks | User opts in |
+| T10 | Git hooks execute in workspace | Hooks not copied by default; documented | User opts in |
+| T11 | Malicious filenames (newline, control chars, Windows reserved) | Path normalization + rejection tests; safe rendering | — |
+| T12 | Agent reads outside workspace / phones home | OUT OF SCOPE for v0.1 — documented limitation; future sandbox backends | High: inherent to "run the real agent" |
+| T13 | Crash leaves temp/partial workspace | Workspaces are self-contained under `~/.yuhi/workspaces/<id>`; `yuhi workspace clean` removes; atomic-ish via temp dir + rename where possible | Orphaned dirs recoverable |
+| T14 | Audit log tampering | v0.1 stores plain JSON; tamper-evidence (hash chain/signing) is FUTURE, explicitly not claimed | Local attacker can edit |
+
+## Environment variable policy (T7 detail)
+
+- Default: the child agent process receives a **minimal** environment (PATH, HOME,
+  and OS essentials), not the full parent environment.
+- Users may explicitly pass required variables (e.g. `ANTHROPIC_API_KEY`) via config
+  (`agents.<id>.env_passthrough: [ANTHROPIC_API_KEY]`) or `--env KEY`.
+- Yuhi never logs environment values.
+
+## Assumptions
+
+- The user's machine and account are not already compromised.
+- The chosen agent CLI is the genuine tool the user intends to run.
+- Detector libraries are best-effort; policy `paths` are the primary boundary.
+
+## Future hardening (tracked in ROADMAP, not implemented)
+
+Docker/sandbox-exec/bubblewrap/Windows Sandbox backends, network namespace, read-only
+mounts, audit log tamper-evidence, signed releases + SBOM verification.

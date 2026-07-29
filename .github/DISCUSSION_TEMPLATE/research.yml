@@ -1,0 +1,45 @@
+labels: ["research"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Welcome to a research discussion. This is the place for open-ended
+        conversation about **context preparation** as a discipline — measuring it,
+        publishing it, and collaborating on it. For concrete, trackable proposals,
+        consider the **Benchmark proposal** or **Processor proposal** issue forms
+        instead. See [`RESEARCH.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/RESEARCH.md).
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - Context preparation (privacy/utility trade-off)
+        - ContextBench (evaluation, metrics)
+        - Local-model preparation (summarization, safety)
+        - Youth / education safety (J-YouthSafe)
+        - Reproducibility / methodology
+        - Collaboration / co-authorship
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What's the question or idea?
+      description: Describe the problem, hypothesis, or proposal. Half-formed ideas are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: prior
+    attributes:
+      label: Related work
+      description: Papers, benchmarks, tools, or prior threads you're building on.
+    validations:
+      required: false
+  - type: textarea
+    id: collab
+    attributes:
+      label: How could others help?
+      description: Feedback, data, replication, co-authoring, review — what are you looking for?
+    validations:
+      required: false

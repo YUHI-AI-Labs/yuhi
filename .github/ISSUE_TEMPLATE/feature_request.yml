@@ -1,0 +1,73 @@
+name: Feature request
+description: Suggest an idea or enhancement for Yuhi
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to Yuhi!
+
+        For open-ended ideas and discussion, consider starting in
+        [Discussions → Ideas](https://github.com/YUHI-AI-Labs/yuhi/discussions/categories/ideas) instead — it's a better place
+        to refine a proposal before it becomes a tracked issue.
+
+        Please keep in mind Yuhi's values: local-first, privacy-first (no
+        telemetry by default), vendor-neutral, cross-platform, and honest about
+        what it does (defense-in-depth, **not** a sandbox or a security
+        guarantee).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I searched existing issues and discussions and this has not already been proposed.
+          required: true
+        - label: This request is consistent with Yuhi's values (local-first, privacy-first, vendor-neutral, no overclaiming).
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do, and what's getting in the way?
+      placeholder: "I'm trying to ... but ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe what you'd like to see. CLI/API sketches are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why you set them aside.
+    validations:
+      required: false
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part of Yuhi would this affect?
+      multiple: true
+      options:
+        - CLI (yuhi)
+        - VS Code extension
+        - Policy engine
+        - Scanner / secret detection
+        - Workspace materialization
+        - Agent adapter (new or existing)
+        - Audit log
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that would help us understand the request.
+    validations:
+      required: false

@@ -1,0 +1,22 @@
+{
+  "name": "@yuhi/workspace",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@yuhi/shared": "workspace:*",
+    "@yuhi/scanner": "workspace:*"
+  },
+  "devDependencies": {
+    "@yuhi/policy": "workspace:*"
+  }
+}

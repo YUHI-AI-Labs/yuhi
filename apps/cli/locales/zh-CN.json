@@ -1,0 +1,62 @@
+{
+  "tagline": "在运行前，准确查看 AI 代理能看到什么。",
+  "limitation": "Yuhi 只过滤代理的初始上下文，它不是沙箱。代理进程仍可访问网络和操作系统。请参阅 THREAT_MODEL。",
+  "notInitialized": "该项目尚未初始化。请先运行 `yuhi init`。",
+
+  "init.creating": "正在 {dir} 中初始化 Yuhi",
+  "init.created": "已创建 {file}",
+  "init.exists": "yuhi.yaml 已存在，保持不变（使用 --force 覆盖）。",
+  "init.next": "下一步：运行 `yuhi preview` 查看 AI 代理会看到的内容。",
+
+  "scan.title": "Yuhi 扫描",
+  "scan.inspected": "已检查 {count} 个文件",
+  "scan.secrets": "检测到 {count} 处可能的机密信息",
+  "scan.noSecrets": "未检测到机密信息",
+  "scan.notModified": "未修改任何文件",
+  "scan.risk": "风险概览",
+  "scan.flags": "文件备注",
+
+  "preview.title": "Yuhi 预览",
+  "preview.agent": "代理",
+  "preview.source": "源目录",
+  "preview.allowed": "允许（代理可见）",
+  "preview.redacted": "已脱敏（在副本中屏蔽机密）",
+  "preview.blocked": "已屏蔽（不会复制）",
+  "preview.localOnly": "仅本地（不提供给代理）",
+  "preview.summary": "摘要",
+  "preview.visible": "{agent} 可见文件：{count} 个",
+  "preview.transformed": "已转换文件：{count} 个",
+  "preview.blockedCount": "已屏蔽文件：{count} 个",
+  "preview.localOnlyCount": "保留在本地：{count} 个",
+  "preview.sourceUnmodified": "修改的源文件：0 个",
+  "preview.empty": "没有匹配的文件。这是项目根目录吗？",
+
+  "explain.header": "{path} 的策略",
+  "explain.action": "动作",
+  "explain.rule": "规则",
+  "explain.reason": "原因",
+  "explain.findings": "检出项",
+  "explain.override": "如需更改，请编辑 yuhi.yaml 中匹配的规则。",
+  "explain.notFound": "项目中没有该文件（应用忽略规则后）：{path}",
+
+  "run.launching": "正在生成的上下文中启动 {agent}……",
+  "run.notInstalled": "{agent} 尚未安装。",
+  "run.exit": "{agent} 以退出码 {code} 结束",
+  "run.kept": "工作区已保留：{path}",
+  "run.cleaned": "已删除工作区。",
+  "run.cleanupPrompt": "现在删除生成的工作区吗？",
+  "run.missingEnv": "注意：允许列表中的这些变量未设置，未被传递：{vars}",
+  "run.dryRun": "试运行 — 工作区已准备，但未启动代理。",
+
+  "workspace.none": "还没有工作区。请运行 `yuhi run <agent>` 或 `yuhi workspace create`。",
+  "workspace.created": "已创建工作区 {id}：{path}",
+  "workspace.cleaned": "已删除 {count} 个工作区。",
+
+  "audit.none": "还没有审计记录。",
+
+  "doctor.title": "Yuhi 体检",
+  "doctor.ok": "正常",
+  "doctor.missing": "缺失",
+  "doctor.summaryOk": "一切正常。",
+  "doctor.summaryIssues": "发现 {count} 个问题（见上文）。"
+}

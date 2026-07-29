@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>(function(){try{var p=location.pathname.replace(/\/+$/,"").toLowerCase();var l=p==="/ja"?"ja":(p==="/zh-cn"?"zh-cn":"en");document.documentElement.lang=(l==="zh-cn"?"zh-CN":l);if(l!=="en")document.documentElement.className+=(document.documentElement.className?" ":"")+"i18n-hide";}catch(e){}})();</script>
+<style>html.i18n-hide body{visibility:hidden}</style>
+<title>Yuhi — Prepare the right context before AI starts</title>
+<meta name="description" id="m-desc" content="Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0." />
+
+<link rel="canonical" id="m-canonical" href="https://yuhi-iota.vercel.app/" />
+<link rel="alternate" hreflang="en" href="https://yuhi-iota.vercel.app/" />
+<link rel="alternate" hreflang="ja" href="https://yuhi-iota.vercel.app/ja" />
+<link rel="alternate" hreflang="zh-Hans" href="https://yuhi-iota.vercel.app/zh-cn" />
+<link rel="alternate" hreflang="x-default" href="https://yuhi-iota.vercel.app/" />
+<meta name="theme-color" content="#131120" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#f6f4f1" media="(prefers-color-scheme: light)" />
+<meta name="keywords" content="AI context, Claude Code, local-first, developer tool, privacy, pseudonymize, input tokens, Ollama, VS Code" />
+<meta name="author" content="YUHI AI Labs" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/favicon.svg" />
+
+<!-- Open Graph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Yuhi" />
+<meta property="og:title" id="m-ogtitle" content="Yuhi — Don't send everything to Claude" />
+<meta property="og:description" id="m-ogdesc" content="Prepare documents and code locally before they reach AI. Send less, spend fewer input tokens, keep control. Local-first, Apache-2.0." />
+<meta property="og:url" id="m-ogurl" content="https://yuhi-iota.vercel.app/" />
+<meta property="og:image" content="https://yuhi-iota.vercel.app/og.png" />
+<meta property="og:image:width" content="1280" />
+<meta property="og:image:height" content="640" />
+<meta property="og:image:alt" content="Yuhi — prepare the right context before AI starts. Apache-2.0, local-first, VS Code, CLI." />
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" id="m-twtitle" content="Yuhi — Don't send everything to Claude" />
+<meta name="twitter:description" id="m-twdesc" content="Prepare locally, send only what matters, reduce input tokens. Local-first. Apache-2.0." />
+<meta name="twitter:image" content="https://yuhi-iota.vercel.app/og.png" />
+<style>
+  :root{
+    --bg:#f6f4f1; --surface:#ffffff; --surface-2:#f1eee9;
+    --ink:#1b1a2e; --ink-soft:#55506a; --ink-faint:#8b8698;
+    --border:rgba(27,26,46,.12); --border-strong:rgba(27,26,46,.2);
+    --sent:#2f7d63; --runtime:#b3781f; --keep:#6b7280; --excluded:#a6564b;
+    --g1:#f3a83a; --g2:#e5634d; --g3:#6d5ae6;
+    --accent:#c9503f;
+    --dusk:linear-gradient(90deg,var(--g1),var(--g2) 52%,var(--g3));
+    --shadow:0 1px 2px rgba(27,26,46,.06),0 12px 32px -12px rgba(27,26,46,.14);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Menlo",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Hiragino Sans","Noto Sans JP","Noto Sans SC",sans-serif;
+    --maxw:1060px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#131120; --surface:#1b1930; --surface-2:#211f38;
+      --ink:#ece9f6; --ink-soft:#a29db8; --ink-faint:#736e8c;
+      --border:rgba(255,255,255,.1); --border-strong:rgba(255,255,255,.18);
+      --sent:#4fb28f; --runtime:#d9a24a; --keep:#8b90a0; --excluded:#c9776b;
+      --accent:#f0917f;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 18px 40px -16px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f6f4f1; --surface:#ffffff; --surface-2:#f1eee9;
+    --ink:#1b1a2e; --ink-soft:#55506a; --ink-faint:#8b8698;
+    --border:rgba(27,26,46,.12); --border-strong:rgba(27,26,46,.2);
+    --sent:#2f7d63; --runtime:#b3781f; --keep:#6b7280; --excluded:#a6564b;
+    --accent:#c9503f;
+    --shadow:0 1px 2px rgba(27,26,46,.06),0 12px 32px -12px rgba(27,26,46,.14);
+  }
+  :root[data-theme="dark"]{
+    --bg:#131120; --surface:#1b1930; --surface-2:#211f38;
+    --ink:#ece9f6; --ink-soft:#a29db8; --ink-faint:#736e8c;
+    --border:rgba(255,255,255,.1); --border-strong:rgba(255,255,255,.18);
+    --sent:#4fb28f; --runtime:#d9a24a; --keep:#8b90a0; --excluded:#c9776b;
+    --accent:#f0917f;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 18px 40px -16px rgba(0,0,0,.6);
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;overflow-x:hidden}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);line-height:1.6;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  a{color:inherit}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .mono{font-family:var(--mono)}
+  .eyebrow{
+    font-family:var(--mono);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-faint);display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  }
+  .eyebrow b{color:var(--ink-soft);font-weight:600}
+  .dot-sep{width:4px;height:4px;border-radius:50%;background:var(--ink-faint);display:inline-block;opacity:.6}
+
+  /* ---------- header ---------- */
+  header{position:sticky;top:0;z-index:20;backdrop-filter:saturate(1.4) blur(10px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent);border-bottom:1px solid var(--border)}
+  .nav{display:flex;align-items:center;justify-content:space-between;height:60px;gap:16px}
+  .brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-weight:600;letter-spacing:-.01em;font-size:16px}
+  .glyph{width:22px;height:22px;border-radius:50%;background:var(--dusk);position:relative;flex:none;
+    box-shadow:0 0 0 1px var(--border) inset}
+  .glyph::after{content:"";position:absolute;left:0;right:0;bottom:0;height:42%;
+    background:color-mix(in srgb,var(--ink) 20%,transparent);border-radius:0 0 999px 999px}
+  .nav-right{display:flex;align-items:center;gap:20px;font-size:14.5px}
+  .nav-right a{color:var(--ink-soft);text-decoration:none}
+  .nav-right a:hover{color:var(--ink)}
+  .lang-sel{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:9px;padding:2px;font-family:var(--mono)}
+  .lang-sel a{font-size:12px;color:var(--ink-faint);text-decoration:none;padding:4px 8px;border-radius:7px;line-height:1;white-space:nowrap}
+  .lang-sel a:hover{color:var(--ink)}
+  .lang-sel a.active{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--border) inset}
+  .theme-toggle{background:none;border:1px solid var(--border);color:var(--ink-soft);
+    border-radius:8px;height:32px;width:32px;cursor:pointer;font-size:14px;display:grid;place-items:center;flex:none}
+  .theme-toggle:hover{border-color:var(--border-strong);color:var(--ink)}
+  @media (max-width:720px){ .nav-hide{display:none} .nav-right{gap:10px} .lang-sel a{padding:4px 7px;font-size:11.5px} }
+
+  /* ---------- hero ---------- */
+  .hero{padding:88px 0 40px;position:relative;overflow:hidden}
+  .hero::before{content:"";position:absolute;inset:-10% -30% auto -30%;height:520px;z-index:-1;
+    background:radial-gradient(60% 70% at 22% 0%,color-mix(in srgb,var(--g2) 22%,transparent),transparent 70%);
+    filter:blur(20px);opacity:.7;pointer-events:none}
+  h1{font-size:clamp(38px,6.2vw,68px);line-height:1.02;letter-spacing:-.03em;
+    margin:20px 0 0;font-weight:680;max-width:16ch;text-wrap:balance}
+  h1 .swap{position:relative;white-space:nowrap;
+    background:var(--dusk);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{font-size:clamp(17px,2.1vw,20px);color:var(--ink-soft);max-width:58ch;margin:22px 0 0}
+  .sub b{color:var(--ink);font-weight:600}
+  .cta{display:flex;gap:14px;flex-wrap:wrap;margin-top:34px;align-items:center}
+  .btn{display:inline-flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:11px;
+    font-family:var(--mono);font-size:14.5px;font-weight:600;text-decoration:none;border:1px solid transparent;cursor:pointer}
+  .btn-primary{color:#fff;background:var(--ink);border-color:var(--ink)}
+  :root[data-theme="dark"] .btn-primary,@media (prefers-color-scheme:dark){.btn-primary{color:#14121f;background:var(--ink);border-color:var(--ink)}}
+  .btn-primary:hover{transform:translateY(-1px)}
+  .btn-ghost{color:var(--ink);background:transparent;border-color:var(--border-strong)}
+  .btn-ghost:hover{background:var(--surface)}
+  .install{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13.5px;
+    color:var(--ink-soft);border:1px dashed var(--border-strong);border-radius:10px;padding:9px 13px}
+  .install .p{color:var(--accent)}
+  .copy{background:none;border:0;color:var(--ink-faint);cursor:pointer;font-family:var(--mono);font-size:12px}
+  .copy:hover{color:var(--ink)}
+
+  /* ---------- flow strip ---------- */
+  .flow{display:flex;align-items:stretch;gap:0;margin:52px 0 8px;flex-wrap:wrap}
+  .flow .node{flex:1 1 160px;min-width:150px;border:1px solid var(--border);background:var(--surface);
+    border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+  .flow .node .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint)}
+  .flow .node .v{margin-top:6px;font-weight:600;font-size:15px}
+  .flow .node.mid{border-color:transparent;position:relative;background:var(--surface)}
+  .flow .node.mid::before{content:"";position:absolute;inset:0;border-radius:14px;padding:1.5px;
+    background:var(--dusk);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;mask-composite:exclude}
+  .flow .node.mid .v{background:var(--dusk);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .flow .arr{align-self:center;padding:0 14px;color:var(--ink-faint);font-family:var(--mono);font-size:18px}
+  @media (max-width:640px){.flow .arr{transform:rotate(90deg);padding:8px 0;width:100%;text-align:center}
+    .flow{flex-direction:column}.flow .node{flex:none}}
+
+  /* ---------- section scaffold ---------- */
+  section{padding:64px 0}
+  .sec-head{max-width:62ch}
+  .sec-head h2{font-size:clamp(26px,3.4vw,36px);letter-spacing:-.02em;margin:12px 0 0;font-weight:660;text-wrap:balance}
+  .sec-head p{color:var(--ink-soft);margin:14px 0 0;font-size:17px}
+
+  /* ---------- terminal demo ---------- */
+  .demo-shell{margin-top:34px;border-radius:16px;border:1px solid var(--border);overflow:hidden;
+    box-shadow:var(--shadow);background:var(--surface)}
+  .term-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);
+    background:var(--surface-2)}
+  .tl{display:flex;gap:7px}
+  .tl i{width:11px;height:11px;border-radius:50%;background:var(--border-strong);display:block}
+  .tl i:nth-child(1){background:#e5634d}.tl i:nth-child(2){background:#f3a83a}.tl i:nth-child(3){background:#3fae7a}
+  .term-title{font-family:var(--mono);font-size:12.5px;color:var(--ink-faint);margin-left:6px}
+  .term-body{font-family:var(--mono);font-size:14px;line-height:1.72;padding:20px 22px;min-height:430px;
+    background:var(--surface)}
+  .term-body .cmdline{color:var(--ink)}
+  .term-body .cmdline .pr{color:var(--sent)}
+  .caret{display:inline-block;width:8px;height:1.05em;background:var(--accent);vertical-align:-2px;
+    margin-left:2px;animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .reveal{opacity:0;transform:translateY(4px);transition:opacity .4s ease,transform .4s ease}
+  .reveal.on{opacity:1;transform:none}
+  .grp{margin-top:14px}
+  .grp .h{display:flex;align-items:center;gap:9px;font-size:12.5px;letter-spacing:.02em}
+  .grp .h .tag{font-weight:700}
+  .grp .h .n{color:var(--ink-faint)}
+  .swatch{width:9px;height:9px;border-radius:3px;flex:none}
+  .s-sent{background:var(--sent)} .s-prep{background:var(--dusk)} .s-keep{background:var(--keep)} .s-exc{background:var(--excluded)}
+  .grp ul{list-style:none;margin:4px 0 0;padding:0 0 0 18px}
+  .grp li{color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .grp li b{color:var(--ink)}
+  .t-sent b{color:var(--sent)} .t-prep b{background:var(--dusk);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .t-keep b{color:var(--keep)} .t-exc b{color:var(--excluded)}
+
+  .xform{margin-top:20px;border-top:1px dashed var(--border);padding-top:18px}
+  .xform .file{color:var(--ink);font-weight:600}
+  .row{display:grid;grid-template-columns:120px 1fr;gap:12px;align-items:baseline;margin-top:10px}
+  .row .lab{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);text-align:right}
+  .row .val{color:var(--ink)}
+  .was{color:var(--excluded)}
+  .now{color:transparent;background:var(--dusk);-webkit-background-clip:text;background-clip:text;font-weight:600}
+  .thread{display:flex;align-items:center;gap:12px;margin:12px 0 12px 132px;color:var(--ink-soft);font-size:12.5px}
+  .thread .bar{height:2px;flex:0 0 46px;background:var(--dusk);border-radius:2px}
+  .lands{margin-top:14px;margin-left:132px;display:inline-flex;align-items:center;gap:9px;
+    font-size:12.5px;color:var(--ink-soft)}
+  .lands .chk{color:var(--sent);font-weight:700}
+  .replay{margin:14px 0 2px;background:none;border:1px solid var(--border);color:var(--ink-soft);
+    font-family:var(--mono);font-size:12px;border-radius:8px;padding:6px 12px;cursor:pointer}
+  .replay:hover{border-color:var(--border-strong);color:var(--ink)}
+
+  /* ---------- routes ---------- */
+  .routes{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:36px}
+  @media (max-width:860px){.routes{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:520px){.routes{grid-template-columns:1fr}}
+  .route{border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);position:relative}
+  .route .rk{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
+  .route h3{margin:8px 0 0;font-size:17.5px;letter-spacing:-.01em}
+  .route p{margin:8px 0 0;font-size:14px;color:var(--ink-soft)}
+  .route .pin{position:absolute;top:16px;right:16px;width:10px;height:10px;border-radius:3px}
+  .route.star{border-color:transparent;box-shadow:var(--shadow)}
+  .route.star::before{content:"";position:absolute;inset:0;border-radius:14px;padding:1.5px;background:var(--dusk);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+  .route.star h3{background:var(--dusk);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .vocab{margin-top:26px;font-family:var(--mono);font-size:13.5px;color:var(--ink-soft);
+    border-left:2px solid;border-image:var(--dusk) 1;padding-left:16px}
+
+  /* ---------- honesty ---------- */
+  .honest{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:34px}
+  @media (max-width:720px){.honest{grid-template-columns:1fr}}
+  .card{border:1px solid var(--border);border-radius:14px;padding:22px;background:var(--surface)}
+  .card h3{margin:0 0 12px;font-size:15px;font-family:var(--mono);letter-spacing:.02em}
+  .card ul{margin:0;padding-left:20px;color:var(--ink-soft);font-size:14.5px}
+  .card li{margin:7px 0}
+  .card.is h3{color:var(--sent)} .card.isnot h3{color:var(--excluded)}
+
+  /* ---------- get started ---------- */
+  .steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:32px}
+  @media (max-width:760px){.steps{grid-template-columns:1fr}}
+  .step{border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface)}
+  .step .num{font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
+  .step code{display:block;font-family:var(--mono);font-size:13px;margin-top:10px;color:var(--ink);
+    background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:11px 13px;white-space:pre-wrap;word-break:break-word}
+  .step code .p{color:var(--accent)}
+  .step p{margin:10px 0 0;color:var(--ink-soft);font-size:13.5px}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--border);padding:40px 0 60px;margin-top:40px}
+  .foot{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
+  .foot .meta{font-family:var(--mono);font-size:12.5px;color:var(--ink-faint);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .foot a{color:var(--ink-soft);text-decoration:none;font-size:14px}
+  .foot a:hover{color:var(--ink)}
+  .foot .links{display:flex;gap:20px;flex-wrap:wrap}
+
+  /* ---------- tagline + context savings + contribute ---------- */
+  .tag{font-family:var(--mono);font-size:14px;color:var(--ink-faint);margin:14px 0 0}
+  .sv-card{margin-top:30px;max-width:660px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--surface);box-shadow:var(--shadow)}
+  .sv-tag{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);border:1px solid var(--border);border-radius:999px;padding:3px 10px;margin-bottom:18px}
+  .sv-rows{display:flex;flex-direction:column;gap:12px}
+  .sv-row{display:flex;justify-content:space-between;align-items:center;gap:16px;font-size:14.5px;color:var(--ink-soft)}
+  .sv-row b{color:var(--ink);font-size:15px}
+  .sv-row.avoided{border-top:1px solid var(--border);padding-top:14px;color:var(--ink);font-weight:600}
+  .sv-row.reduc b{font-size:24px;background:var(--dusk);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sv-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:20px;border-top:1px solid var(--border);padding-top:18px}
+  .sv-grid > div{display:flex;flex-direction:column;gap:3px}
+  .sv-grid b{font-size:20px;color:var(--ink)}
+  .sv-grid span{font-size:12px;color:var(--ink-faint);line-height:1.4}
+  .sv-disc{margin-top:18px;font-size:12px;color:var(--ink-faint);line-height:1.75}
+  @media (max-width:640px){.sv-grid{grid-template-columns:1fr 1fr}}
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+    html{scroll-behavior:auto}
+    .reveal{opacity:1;transform:none}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <div class="brand"><span class="glyph" aria-hidden="true"></span> yuhi</div>
+    <nav class="nav-right">
+      <a class="nav-hide" href="#start" data-i18n="nav_install">Install</a>
+      <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" aria-label="GitHub repository">GitHub</a>
+      <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="nav_docs">Documentation</a>
+      <span class="lang-sel" role="group" aria-label="Language">
+        <a href="/" data-loc="en">EN</a>
+        <a href="/ja" data-loc="ja">日本語</a>
+        <a href="/zh-cn" data-loc="zh-cn">简体中文</a>
+      </span>
+      <button class="theme-toggle" id="themeBtn" title="Toggle theme" aria-label="Toggle color theme">◐</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow"><b>local-first</b><span class="dot-sep"></span>Apache-2.0<span class="dot-sep"></span><span data-i18n="ey_tel">no telemetry</span><span class="dot-sep"></span><span data-i18n="ey_off">works offline</span></p>
+      <h1 data-i18n="hero_h1">Don't send everything to <span class="swap">Claude</span>.</h1>
+      <p class="sub" data-i18n="hero_sub">Yuhi prepares documents and code locally before they reach AI. Review what will be sent, keep sensitive context on your machine, and reduce unnecessary Claude input tokens.</p>
+      <p class="tag" data-i18n="hero_tag">Prepare locally. Send only what matters.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="#start" data-i18n="hero_start">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">View on GitHub →</a>
+        <span class="install"><span class="p">$</span> npx @yuhi-ai-labs/yuhi preview <button class="copy" id="copyHero" title="Copy" data-i18n="copy">copy</button></span>
+      </div>
+
+      <div class="flow" aria-label="Repository, prepared locally, then the agent">
+        <div class="node"><div class="k" data-i18n="flow_n1k">Your repository</div><div class="v" data-i18n="flow_n1v">files, secrets, data</div></div>
+        <div class="arr">→</div>
+        <div class="node mid"><div class="k">Yuhi</div><div class="v" data-i18n="flow_midv">prepared locally</div></div>
+        <div class="arr">→</div>
+        <div class="node"><div class="k" data-i18n="flow_n3k">Your agent</div><div class="v" data-i18n="flow_n3v">a clean context</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DEMO -->
+  <section id="demo">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="demo_ey">30-second demo</p>
+        <h2 data-i18n="demo_h2">See exactly what the agent will — and won't — receive.</h2>
+        <p data-i18n="demo_p">One command previews every file's route. Files marked <em>Prepare locally</em> are transformed on your machine <strong>before</strong> anything is sent — here, real student records become stable pseudonyms.</p>
+      </div>
+
+      <div class="demo-shell">
+        <div class="term-bar"><span class="tl"><i></i><i></i><i></i></span><span class="term-title">yuhi — examples/demo</span></div>
+        <div class="term-body" id="term">
+          <div class="cmdline"><span class="pr">$</span> <span id="typed"></span><span class="caret" id="caret"></span></div>
+
+          <div class="grp reveal" id="g-sent">
+            <div class="h"><span class="swatch s-sent"></span><span class="tag" style="color:var(--sent)">Sent to Claude</span><span class="n">(9)</span></div>
+            <ul class="t-sent"><li><b>README.md</b>, src/*.ts, docs/public/guide.md, yuhi.yaml</li></ul>
+          </div>
+          <div class="grp reveal" id="g-prep">
+            <div class="h"><span class="swatch s-prep"></span><span class="tag t-prep"><b>Prepared locally</b></span><span class="n">(3)</span></div>
+            <ul class="t-prep"><li><b>data/student_scores.csv</b>, config/app.ts, docs/internal/roadmap.md</li></ul>
+          </div>
+          <div class="grp reveal" id="g-keep">
+            <div class="h"><span class="swatch s-keep"></span><span class="tag" style="color:var(--keep)" data-i18n="demo_keep">Kept on your machine</span><span class="n">(4)</span></div>
+            <ul class="t-keep"><li><b>customer-data/list.csv</b>, .env, build/app.min.js, package-lock.json</li></ul>
+          </div>
+
+          <div class="xform reveal" id="g-xform">
+            <div class="file">↳ data/student_scores.csv &nbsp;<span style="color:var(--ink-faint)" data-i18n="demo_prepared">prepared locally</span></div>
+            <div class="row"><div class="lab" data-i18n="demo_original">Original</div><div class="val was"><span data-i18n="demo_orig_val">Tanaka Aoi · S-10241 · 42 · struggles with fractions</span></div></div>
+            <div class="thread"><span class="bar"></span><span data-i18n="demo_thread">pseudonymize → safety check  (on your machine)</span></div>
+            <div class="row"><div class="lab" data-i18n="demo_sees">Claude sees</div><div class="val now"><span data-i18n="demo_sees_val">Subject-B412F3 · Subject-847470 · 42 · struggles with fractions</span></div></div>
+            <div class="lands"><span class="chk">✓</span> <span data-i18n="demo_lands">the original CSV on disk is untouched — only the pseudonymized copy is sent</span></div>
+          </div>
+
+          <button class="replay" id="replay" hidden data-i18n="replay">↻ Replay</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROUTES -->
+  <section id="routes">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="routes_ey">The whole vocabulary</p>
+        <h2 data-i18n="routes_h2">Every file takes one route.</h2>
+        <p data-i18n="routes_p">No dashboards to learn. Four routes describe everything Yuhi does — the same words in the CLI, the VS Code extension, and here.</p>
+      </div>
+      <div class="routes">
+        <div class="route"><span class="pin" style="background:var(--sent)"></span><div class="rk" data-i18n="r1_rk">unchanged</div><h3>Sent to Claude</h3><p data-i18n="r1_p">The original file, sent as-is. Nothing to prepare.</p></div>
+        <div class="route star"><div class="rk" data-i18n="r2_rk">transformed first</div><h3>Prepared locally</h3><p data-i18n="r2_p">Pseudonymized or secret-masked on your machine, then the safe copy is sent.</p></div>
+        <div class="route"><span class="pin" style="background:var(--runtime)"></span><div class="rk" data-i18n="r3_rk">process only</div><h3>Runtime only</h3><p data-i18n="r3_p">Values like <span class="mono">.env</span> reach the process at launch — never the context the agent reads.</p></div>
+        <div class="route"><span class="pin" style="background:var(--keep)"></span><div class="rk" data-i18n="r4_rk">stays home</div><h3>Keep local</h3><p data-i18n="r4_p">Customer data and private files never enter the agent's view at all.</p></div>
+      </div>
+      <p class="vocab" data-i18n="vocab">Sent to Claude · Prepare locally · Runtime only · Keep local &nbsp;— that's it.</p>
+    </div>
+  </section>
+
+  <!-- CONTEXT SAVINGS -->
+  <section id="savings">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="sv_ey">Context Savings</p>
+        <h2 data-i18n="sv_h2">See the input you didn't send.</h2>
+        <p data-i18n="sv_p">After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and in the VS Code extension (in development).</p>
+      </div>
+      <div class="sv-card">
+        <span class="sv-tag" data-i18n="sv_estimated">Example · estimated</span>
+        <div class="sv-rows">
+          <div class="sv-row"><span data-i18n="sv_before">Estimated input before</span><b class="mono">48,320</b></div>
+          <div class="sv-row"><span data-i18n="sv_after">Estimated input after</span><b class="mono">9,840</b></div>
+          <div class="sv-row avoided"><span data-i18n="sv_avoided">Estimated Claude input avoided</span><b class="mono">38,480</b></div>
+          <div class="sv-row reduc"><span data-i18n="sv_reduction">Reduction</span><b class="mono">79.6%</b></div>
+        </div>
+        <div class="sv-grid">
+          <div><b class="mono">42</b><span data-i18n="sv_excluded">Files excluded</span></div>
+          <div><b class="mono">17</b><span data-i18n="sv_summarized">Files summarized</span></div>
+          <div><b class="mono">6</b><span data-i18n="sv_sensitive">Sensitive items kept local</span></div>
+          <div><b class="mono">0</b><span data-i18n="sv_modified">Original files modified</span></div>
+        </div>
+        <p class="sv-disc" data-i18n="sv_disc">Actual usage and billing depend on the selected AI product, provider behavior, caching, and pricing.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- HONESTY -->
+  <section id="honest">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="honest_ey">No fear, no false promises</p>
+        <h2 data-i18n="honest_h2">What Yuhi is — and is not.</h2>
+        <p data-i18n="honest_p">Yuhi controls the <em>inputs</em> an agent starts from. We'd rather state the boundary plainly than sell you a guarantee we can't keep.</p>
+      </div>
+      <div class="honest">
+        <div class="card is">
+          <h3 data-i18n="is_h">＃ yuhi is</h3>
+          <ul>
+            <li data-i18n="is_1">A preview of exactly what an agent will and won't see, before it runs.</li>
+            <li data-i18n="is_2">Deterministic, on-device transforms — pseudonymize, mask secrets — with the original left untouched.</li>
+            <li data-i18n="is_3">One policy (<span class="mono">yuhi.yaml</span>) shared by the CLI and the editor.</li>
+            <li data-i18n="is_4">Local-first: no account, no telemetry, works offline.</li>
+          </ul>
+        </div>
+        <div class="card isnot">
+          <h3 data-i18n="isnot_h">＃ yuhi is not</h3>
+          <ul>
+            <li data-i18n="isnot_1">A sandbox. It does not confine the agent's filesystem or network at the OS level.</li>
+            <li data-i18n="isnot_2">A guarantee of "zero leakage." A determined process can still reach beyond the prepared copy.</li>
+            <li data-i18n="isnot_3">A cloud service. Nothing is uploaded to Yuhi — there is no Yuhi server.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GET STARTED -->
+  <section id="start">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="start_ey">≈ 2 minutes</p>
+        <h2 data-i18n="start_h2">Get started.</h2>
+        <p data-i18n="start_p">Node.js 20+. Yuhi copies into a workspace it owns; your repository is read-only to it.</p>
+      </div>
+      <div class="steps">
+        <div class="step"><div class="num">01</div><code><span class="p">npx</span> yuhi init</code><p data-i18n="step1">Writes <span class="mono">yuhi.yaml</span>, honoring your <span class="mono">.gitignore</span>.</p></div>
+        <div class="step"><div class="num">02</div><code><span class="p">npx</span> yuhi preview</code><p data-i18n="step2">See every file's route before anything runs.</p></div>
+        <div class="step"><div class="num">03</div><code><span class="p">npx</span> yuhi run claude</code><p data-i18n="step3">Launch the agent inside the prepared context.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONTRIBUTE -->
+  <section id="contribute">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="ct_ey">Open source</p>
+        <h2 data-i18n="ct_h2">Help build the preparation layer before frontier AI.</h2>
+        <p data-i18n="ct_p">Yuhi is Apache-2.0 and vendor-neutral. Issues, discussions, and pull requests are welcome.</p>
+      </div>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="ct_gh">Contribute on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi/issues" data-i18n="ct_guide">Browse issues</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div class="meta"><span class="glyph" style="width:16px;height:16px" aria-hidden="true"></span> yuhi <span class="dot-sep"></span> Apache-2.0 <span class="dot-sep"></span> local-first <span class="dot-sep"></span><span data-i18n="foot_neutral">vendor-neutral</span></div>
+    <div class="links">
+      <a href="https://github.com/YUHI-AI-Labs/yuhi">GitHub</a>
+      <a href="#demo" data-i18n="foot_demo">Demo</a>
+      <a href="#routes" data-i18n="foot_routes">Routes</a>
+      <a href="#start" data-i18n="foot_start">Get started</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------- i18n dictionaries (one shared source) ----------------
+     Not translated by design: CLI commands, package names, model IDs,
+     file paths, config keys, and the four route names
+     (Sent to Claude / Prepare locally / Runtime only / Keep local). */
+  var I18N = {
+    en: {
+      _title:"Yuhi — Don't send everything to Claude",
+      _desc:"Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.",
+      nav_install:"Install", nav_docs:"Documentation", nav_roadmap:"Roadmap",
+      ey_tel:"no telemetry", ey_off:"works offline",
+      hero_h1:'Don\'t send everything to <span class="swap">Claude</span>.',
+      hero_sub:"Yuhi prepares documents and code locally before they reach AI. Review what will be sent, keep sensitive context on your machine, and reduce unnecessary Claude input tokens.",
+      hero_tag:"Prepare locally. Send only what matters.",
+      hero_start:"Get started", hero_github:"View on GitHub →", copy:"copy",
+      flow_n1k:"Your repository", flow_n1v:"files, secrets, data", flow_midv:"prepared locally", flow_n3k:"Your agent", flow_n3v:"a clean context",
+      demo_ey:"30-second demo",
+      demo_h2:"See exactly what the agent will — and won't — receive.",
+      demo_p:'One command previews every file\'s route. Files marked <em>Prepare locally</em> are transformed on your machine <strong>before</strong> anything is sent — here, real student records become stable pseudonyms.',
+      demo_keep:"Kept on your machine", demo_prepared:"prepared locally",
+      demo_original:"Original", demo_orig_val:"Tanaka Aoi · S-10241 · 42 · struggles with fractions",
+      demo_thread:"pseudonymize → safety check  (on your machine)",
+      demo_sees:"Claude sees", demo_sees_val:"Subject-B412F3 · Subject-847470 · 42 · struggles with fractions",
+      demo_lands:"the original CSV on disk is untouched — only the pseudonymized copy is sent",
+      replay:"↻ Replay",
+      routes_ey:"The whole vocabulary", routes_h2:"Every file takes one route.",
+      routes_p:"No dashboards to learn. Four routes describe everything Yuhi does — the same words in the CLI, the VS Code extension, and here.",
+      r1_rk:"unchanged", r1_p:"The original file, sent as-is. Nothing to prepare.",
+      r2_rk:"transformed first", r2_p:"Pseudonymized or secret-masked on your machine, then the safe copy is sent.",
+      r3_rk:"process only", r3_p:'Values like <span class="mono">.env</span> reach the process at launch — never the context the agent reads.',
+      r4_rk:"stays home", r4_p:"Customer data and private files never enter the agent's view at all.",
+      vocab:"Sent to Claude · Prepare locally · Runtime only · Keep local &nbsp;— that's it.",
+      honest_ey:"No fear, no false promises", honest_h2:"What Yuhi is — and is not.",
+      honest_p:"Yuhi controls the <em>inputs</em> an agent starts from. We'd rather state the boundary plainly than sell you a guarantee we can't keep.",
+      is_h:"＃ yuhi is",
+      is_1:"A preview of exactly what an agent will and won't see, before it runs.",
+      is_2:"Deterministic, on-device transforms — pseudonymize, mask secrets — with the original left untouched.",
+      is_3:'One policy (<span class="mono">yuhi.yaml</span>) shared by the CLI and the editor.',
+      is_4:"Local-first: no account, no telemetry, works offline.",
+      isnot_h:"＃ yuhi is not",
+      isnot_1:"A sandbox. It does not confine the agent's filesystem or network at the OS level.",
+      isnot_2:'A guarantee of "zero leakage." A determined process can still reach beyond the prepared copy.',
+      isnot_3:"A cloud service. Nothing is uploaded to Yuhi — there is no Yuhi server.",
+      start_ey:"≈ 2 minutes", start_h2:"Get started.",
+      start_p:"Node.js 20+. Yuhi copies into a workspace it owns; your repository is read-only to it.",
+      step1:'Writes <span class="mono">yuhi.yaml</span>, honoring your <span class="mono">.gitignore</span>.',
+      step2:"See every file's route before anything runs.",
+      step3:"Launch the agent inside the prepared context.",
+      sv_ey:"Context Savings", sv_h2:"See the input you didn't send.",
+      sv_p:"After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and in the VS Code extension (in development).",
+      sv_estimated:"Example · estimated", sv_before:"Estimated input before", sv_after:"Estimated input after",
+      sv_avoided:"Estimated Claude input avoided", sv_reduction:"Reduction",
+      sv_excluded:"Files excluded", sv_summarized:"Files summarized", sv_sensitive:"Sensitive items kept local", sv_modified:"Original files modified",
+      sv_disc:"Actual usage and billing depend on the selected AI product, provider behavior, caching, and pricing.",
+      ct_ey:"Open source", ct_h2:"Help build the preparation layer before frontier AI.",
+      ct_p:"Yuhi is Apache-2.0 and vendor-neutral. Issues, discussions, and pull requests are welcome.",
+      ct_gh:"Contribute on GitHub", ct_guide:"Browse issues",
+      foot_neutral:"vendor-neutral", foot_demo:"Demo", foot_routes:"Routes", foot_start:"Get started"
+    },
+    ja: {
+      _title:"Yuhi — Claudeに、全部を渡さない。",
+      _desc:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。",
+      nav_install:"インストール", nav_docs:"ドキュメント", nav_roadmap:"ロードマップ",
+      ey_tel:"テレメトリなし", ey_off:"オフライン動作",
+      hero_h1:'<span class="swap">Claude</span>に、全部を渡さない。',
+      hero_sub:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。送る内容を確認し、機密情報を端末内に残しながら、不要なClaude入力トークンを減らします。",
+      hero_tag:"ローカルで整え、必要な情報だけを送る。",
+      hero_start:"使ってみる", hero_github:"GitHubを見る →", copy:"コピー",
+      flow_n1k:"あなたのリポジトリ", flow_n1v:"ファイル・秘密情報・データ", flow_midv:"ローカルで準備", flow_n3k:"あなたのエージェント", flow_n3v:"整えられた文脈",
+      demo_ey:"30秒デモ",
+      demo_h2:"エージェントが受け取るもの、受け取らないものを、正確に確認。",
+      demo_p:'1つのコマンドで、各ファイルの経路をプレビューします。<em>Prepare locally</em> のファイルは、送信前に<strong>お使いの端末で</strong>変換されます。ここでは、実際の生徒記録が安定した仮名に置き換わります。',
+      demo_keep:"端末内に保持", demo_prepared:"ローカルで準備",
+      demo_original:"元の値", demo_orig_val:"田中あおい · S-10241 · 42 · 分数が苦手",
+      demo_thread:"仮名化 → 安全性チェック（お使いの端末で）",
+      demo_sees:"Claudeが見る", demo_sees_val:"Subject-B412F3 · Subject-847470 · 42 · 分数が苦手",
+      demo_lands:"ディスク上の元のCSVは変更されません。送信されるのは仮名化されたコピーだけです。",
+      replay:"↻ リプレイ",
+      routes_ey:"これがすべての語彙", routes_h2:"すべてのファイルは、1つの経路をたどる。",
+      routes_p:"覚えるダッシュボードはありません。4つの経路が、Yuhiのすべてを表します。CLI、VS Code拡張、そしてこのページで、同じ言葉を使います。",
+      r1_rk:"そのまま", r1_p:"元のファイルをそのまま送信します。準備は不要です。",
+      r2_rk:"先に変換", r2_p:"お使いの端末で仮名化・秘密情報のマスクを行い、安全なコピーを送信します。",
+      r3_rk:"プロセスのみ", r3_p:'<span class="mono">.env</span> などの値は起動時にプロセスへ渡りますが、エージェントが読む文脈には入りません。',
+      r4_rk:"外に出さない", r4_p:"顧客データや非公開ファイルは、エージェントの視界に一切入りません。",
+      vocab:"Sent to Claude · Prepare locally · Runtime only · Keep local &nbsp;— これだけです。",
+      honest_ey:"誇張せず、できない約束はしない", honest_h2:"Yuhiであること、そうでないこと。",
+      honest_p:"Yuhiは、エージェントが出発点とする<em>入力</em>を制御します。守れない保証を売るより、境界をはっきり示します。",
+      is_h:"＃ Yuhiであること",
+      is_1:"実行前に、エージェントが見るもの・見ないものを正確にプレビューします。",
+      is_2:"端末内で行う決定的な変換（仮名化・秘密情報のマスク）。元のファイルは変更しません。",
+      is_3:'1つのポリシー（<span class="mono">yuhi.yaml</span>）を、CLIとエディタで共有します。',
+      is_4:"ローカルファースト。アカウント不要、テレメトリなし、オフラインで動作します。",
+      isnot_h:"＃ Yuhiでないもの",
+      isnot_1:"サンドボックスではありません。エージェントのファイルシステムやネットワークをOSレベルで隔離しません。",
+      isnot_2:"「ゼロ漏洩」の保証ではありません。意図を持ったプロセスは、準備済みコピーの外にも到達し得ます。",
+      isnot_3:"クラウドサービスではありません。Yuhiへのアップロードはなく、Yuhiのサーバーは存在しません。",
+      start_ey:"約2分", start_h2:"使ってみる。",
+      start_p:"Node.js 20以上。Yuhiは自身が管理するワークスペースにコピーを作り、あなたのリポジトリは読み取り専用として扱います。",
+      step1:'<span class="mono">.gitignore</span> を尊重して <span class="mono">yuhi.yaml</span> を作成します。',
+      step2:"実行前に、各ファイルの経路を確認します。",
+      step3:"整えられた文脈の中でエージェントを起動します。",
+      sv_ey:"コンテキスト削減", sv_h2:"送らなかった入力を、可視化する。",
+      sv_p:"準備のたびに、Yuhiは送らずに済んだコンテキストを推定します。同じ要約は、CLIとVS Code拡張（開発中）に表示されます。",
+      sv_estimated:"例・推定値", sv_before:"整理前の推定入力", sv_after:"整理後の推定入力",
+      sv_avoided:"削減できたと推定されるClaude入力", sv_reduction:"削減率",
+      sv_excluded:"除外したファイル", sv_summarized:"ローカル要約したファイル", sv_sensitive:"端末内に保持した機微情報", sv_modified:"変更した元ファイル",
+      sv_disc:"実際の使用量と料金は、利用するAI製品、プロバイダーの動作、キャッシュ、料金体系によって異なります。",
+      ct_ey:"オープンソース", ct_h2:"外部AIへ渡す前の「準備の層」を、一緒につくる。",
+      ct_p:"YuhiはApache-2.0、ベンダー非依存です。Issue・Discussion・Pull Requestを歓迎します。",
+      ct_gh:"GitHubで参加する", ct_guide:"Issueを見る",
+      foot_neutral:"ベンダー非依存", foot_demo:"デモ", foot_routes:"経路", foot_start:"使ってみる"
+    },
+    "zh-cn": {
+      _title:"Yuhi — 不要把所有内容都交给 Claude。",
+      _desc:"Yuhi 会在本地整理文档和代码，只把真正需要的上下文发送给 AI，同时减少敏感信息暴露和输入 Token 消耗。本地优先，Apache-2.0。",
+      nav_install:"安装", nav_docs:"文档", nav_roadmap:"路线图",
+      ey_tel:"无遥测", ey_off:"离线可用",
+      hero_h1:'不要把所有内容都交给 <span class="swap">Claude</span>。',
+      hero_sub:"Yuhi 会在本地整理文档和代码。你可以在发送前检查上下文，将敏感信息保留在设备上，并减少不必要的 Claude 输入 Token。",
+      hero_tag:"本地整理，只发送真正需要的内容。",
+      hero_start:"开始使用", hero_github:"在 GitHub 查看 →", copy:"复制",
+      flow_n1k:"你的仓库", flow_n1v:"文件、密钥、数据", flow_midv:"本地整理", flow_n3k:"你的 AI 代理", flow_n3v:"干净的上下文",
+      demo_ey:"30 秒演示",
+      demo_h2:"清楚地看到 AI 代理会收到什么、不会收到什么。",
+      demo_p:'一条命令即可预览每个文件的处理路径。标记为 <em>Prepare locally</em> 的文件会在发送前<strong>在你的设备上</strong>完成转换——这里，真实的学生记录被替换为稳定的化名。',
+      demo_keep:"保留在本地", demo_prepared:"本地整理",
+      demo_original:"原始内容", demo_orig_val:"田中葵 · S-10241 · 42 · 不擅长分数",
+      demo_thread:"化名化 → 安全检查（在你的设备上）",
+      demo_sees:"Claude 看到", demo_sees_val:"Subject-B412F3 · Subject-847470 · 42 · 不擅长分数",
+      demo_lands:"磁盘上的原始 CSV 不会被修改——只发送化名化后的副本。",
+      replay:"↻ 重放",
+      routes_ey:"全部术语", routes_h2:"每个文件只走一条路径。",
+      routes_p:"无需学习任何仪表盘。四条路径描述了 Yuhi 的全部行为——在 CLI、VS Code 扩展和本页面中使用相同的术语。",
+      r1_rk:"原样", r1_p:"原始文件按原样发送，无需处理。",
+      r2_rk:"先转换", r2_p:"在你的设备上完成化名化或密钥遮蔽，然后发送安全副本。",
+      r3_rk:"仅运行时", r3_p:'<span class="mono">.env</span> 等值仅在启动时提供给进程——绝不进入 AI 代理读取的上下文。',
+      r4_rk:"留在本地", r4_p:"客户数据和私有文件完全不会进入 AI 代理的视野。",
+      vocab:"Sent to Claude · Prepare locally · Runtime only · Keep local &nbsp;— 就这些。",
+      honest_ey:"不制造恐惧，不做无法兑现的承诺", honest_h2:"Yuhi 是什么，不是什么。",
+      honest_p:"Yuhi 控制 AI 代理的<em>初始输入</em>。与其兜售无法兑现的保证，我们更愿意把边界讲清楚。",
+      is_h:"＃ Yuhi 是",
+      is_1:"在运行前，准确预览 AI 代理会看到和不会看到的内容。",
+      is_2:"在设备本地进行确定性转换——化名化、遮蔽密钥——并保持原始文件不变。",
+      is_3:'一份策略（<span class="mono">yuhi.yaml</span>），由 CLI 与编辑器共享。',
+      is_4:"本地优先：无需账户、无遥测、可离线运行。",
+      isnot_h:"＃ Yuhi 不是",
+      isnot_1:"不是沙箱。它不会在操作系统层面限制 AI 代理的文件系统或网络。",
+      isnot_2:"不是“零泄漏”的保证。有意为之的进程仍可能触及准备副本之外的内容。",
+      isnot_3:"不是云服务。没有任何内容上传到 Yuhi——也不存在 Yuhi 服务器。",
+      start_ey:"约 2 分钟", start_h2:"开始使用。",
+      start_p:"需要 Node.js 20+。Yuhi 会复制到它自己管理的工作区；你的仓库对它是只读的。",
+      step1:'生成 <span class="mono">yuhi.yaml</span>，并遵循你的 <span class="mono">.gitignore</span>。',
+      step2:"在运行前查看每个文件的路径。",
+      step3:"在整理好的上下文中启动 AI 代理。",
+      sv_ey:"上下文精简", sv_h2:"看见你没有发送的输入。",
+      sv_p:"每次准备后，Yuhi 会估算你避免发送的上下文。相同的摘要会出现在 CLI 和 VS Code 扩展（开发中）里。",
+      sv_estimated:"示例 · 预计", sv_before:"整理前的预计输入", sv_after:"整理后的预计输入",
+      sv_avoided:"预计减少的 Claude 输入", sv_reduction:"减少比例",
+      sv_excluded:"已排除文件", sv_summarized:"已在本地摘要的文件", sv_sensitive:"保留在本机的敏感信息", sv_modified:"已修改的原始文件",
+      sv_disc:"实际使用量和费用取决于所选 AI 产品、提供商行为、缓存和定价方式。",
+      ct_ey:"开源", ct_h2:"一起构建前沿 AI 之前的“上下文准备层”。",
+      ct_p:"Yuhi 采用 Apache-2.0，厂商中立。欢迎提交 Issue、Discussion 和 Pull Request。",
+      ct_gh:"在 GitHub 参与", ct_guide:"贡献指南",
+      foot_neutral:"厂商中立", foot_demo:"演示", foot_routes:"路径", foot_start:"开始使用"
+    }
+  };
+
+  var BASE="https://yuhi-iota.vercel.app";
+  var PATHS={en:"/", ja:"/ja", "zh-cn":"/zh-cn"};
+  var HTMLLANG={en:"en", ja:"ja", "zh-cn":"zh-CN"};
+
+  function detectLocale(){
+    var p=location.pathname.replace(/\/+$/,"").toLowerCase();
+    if(p==="/ja") return "ja";
+    if(p==="/zh-cn") return "zh-cn";
+    return "en";
+  }
+  function setMeta(sel,attr,val){ var el=document.querySelector(sel); if(el) el.setAttribute(attr,val); }
+
+  function applyLocale(loc){
+    var d=I18N[loc]||I18N.en;
+    document.documentElement.lang=HTMLLANG[loc];
+    document.title=d._title;
+    setMeta("#m-desc","content",d._desc);
+    setMeta("#m-ogtitle","content",d._title);
+    setMeta("#m-ogdesc","content",d._desc);
+    setMeta("#m-twtitle","content",d._title);
+    setMeta("#m-twdesc","content",d._desc);
+    var url=BASE+(loc==="en"?"/":PATHS[loc]);
+    setMeta("#m-canonical","href",url);
+    setMeta("#m-ogurl","content",url);
+    // text nodes
+    var nodes=document.querySelectorAll("[data-i18n]");
+    for(var i=0;i<nodes.length;i++){
+      var k=nodes[i].getAttribute("data-i18n");
+      if(d[k]!=null) nodes[i].innerHTML=d[k];
+    }
+    // language selector: active state, aria, hreflang, hash-preserving links, persistence
+    var HREFLANG={en:"en", ja:"ja", "zh-cn":"zh-Hans"};
+    var langs=document.querySelectorAll(".lang-sel a");
+    for(var j=0;j<langs.length;j++){
+      var a=langs[j], lc=a.getAttribute("data-loc"), base=PATHS[lc];
+      a.setAttribute("hreflang", HREFLANG[lc]);
+      a.setAttribute("href", base + (location.hash||""));
+      var on=(lc===loc);
+      a.classList.toggle("active", on);
+      if(on){ a.setAttribute("aria-current","true"); } else { a.removeAttribute("aria-current"); }
+      if(!a._i18nBound){
+        a._i18nBound=true;
+        a.addEventListener("click",function(){ try{ localStorage.setItem("yuhi-lang", this.getAttribute("data-loc")); }catch(e){} });
+      }
+    }
+    // reveal (was hidden on non-English routes to avoid an English flash)
+    document.documentElement.classList.remove("i18n-hide");
+  }
+
+  var LOC=detectLocale();
+  applyLocale(LOC);
+
+  // ---- theme toggle (system by default; toggle stamps data-theme) ----
+  var root=document.documentElement, btn=document.getElementById("themeBtn");
+  function apply(t){ if(t) root.setAttribute("data-theme",t); }
+  try{ apply(localStorage.getItem("yuhi-theme")); }catch(e){}
+  if(btn){ btn.addEventListener("click",function(){
+    var cur=root.getAttribute("data-theme");
+    var sysDark=window.matchMedia&&window.matchMedia("(prefers-color-scheme:dark)").matches;
+    var next=cur?(cur==="dark"?"light":"dark"):(sysDark?"light":"dark");
+    root.setAttribute("data-theme",next);
+    try{ localStorage.setItem("yuhi-theme",next); }catch(e){}
+  }); }
+
+  // ---- copy button ----
+  var ch=document.getElementById("copyHero");
+  if(ch){ ch.addEventListener("click",function(){
+    try{ navigator.clipboard.writeText("npx @yuhi-ai-labs/yuhi preview"); ch.textContent=(I18N[LOC]||I18N.en).copy==="copy"?"copied":"✓"; setTimeout(function(){ ch.textContent=(I18N[LOC]||I18N.en).copy; },1400); }catch(e){}
+  }); }
+
+  // ---- terminal demo sequence (command stays literal: "yuhi preview") ----
+  var typed=document.getElementById("typed"),
+      caret=document.getElementById("caret"),
+      replay=document.getElementById("replay"),
+      groups=["g-sent","g-prep","g-keep","g-xform"],
+      cmd="yuhi preview",
+      timers=[];
+  var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+
+  function clearTimers(){ timers.forEach(clearTimeout); timers=[]; }
+  function hideAll(){ groups.forEach(function(id){ var el=document.getElementById(id); if(el) el.classList.remove("on"); }); }
+  function showFinal(){
+    typed.textContent=cmd; if(caret) caret.style.display="none";
+    groups.forEach(function(id){ var el=document.getElementById(id); if(el) el.classList.add("on"); });
+    if(replay) replay.hidden=false;
+  }
+  function run(){
+    clearTimers(); hideAll(); typed.textContent="";
+    if(caret) caret.style.display="";
+    if(replay) replay.hidden=true;
+    if(reduce){ showFinal(); return; }
+    var i=0;
+    (function type(){
+      if(i<=cmd.length){ typed.textContent=cmd.slice(0,i++); timers.push(setTimeout(type,52)); }
+      else{
+        var delay=420;
+        groups.forEach(function(id,k){
+          timers.push(setTimeout(function(){
+            var el=document.getElementById(id); if(el) el.classList.add("on");
+            if(k===groups.length-1 && replay) replay.hidden=false;
+          }, delay + k*760));
+        });
+      }
+    })();
+  }
+  if(replay) replay.addEventListener("click",run);
+
+  var demo=document.getElementById("demo"), started=false;
+  if("IntersectionObserver" in window && !reduce){
+    var io=new IntersectionObserver(function(entries){
+      entries.forEach(function(en){ if(en.isIntersecting && !started){ started=true; run(); io.disconnect(); } });
+    },{threshold:.35});
+    io.observe(demo);
+  } else { showFinal(); }
+})();
+</script>
+</body>
+</html>

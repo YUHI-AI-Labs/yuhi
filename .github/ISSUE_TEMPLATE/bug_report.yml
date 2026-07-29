@@ -1,0 +1,113 @@
+name: Bug report
+description: Report a problem with Yuhi (not a security vulnerability)
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report!
+
+        **Do not report security vulnerabilities here.** If this is a detection
+        gap (a secret or sensitive file that should have been blocked/redacted
+        but was copied into the workspace) or any other security issue, please
+        follow our [Security Policy](https://github.com/YUHI-AI-Labs/yuhi/security/policy) and report it
+        privately via the repository's **Security → Report a vulnerability**.
+
+        Please **do not include real secrets** anywhere in this report. Use
+        obviously fake values in any samples.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: This is not a security vulnerability (those are reported privately).
+          required: true
+        - label: I searched existing issues and this has not already been reported.
+          required: true
+        - label: I am using the latest released version, or I have noted my version below.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: Describe the problem...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Minimal steps. Include a minimal `yuhi.yaml` and/or a sanitized sample
+        if relevant. Remember: fake values only.
+      placeholder: |
+        1. Run `yuhi init`
+        2. Run `yuhi preview`
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output or logs
+      description: Paste CLI output. This will be automatically formatted as code.
+      render: shell
+    validations:
+      required: false
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part of Yuhi?
+      options:
+        - CLI (yuhi)
+        - VS Code extension
+        - Policy engine
+        - Scanner / secret detection
+        - Workspace materialization
+        - Agent adapter
+        - Audit log
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: yuhi-version
+    attributes:
+      label: Yuhi version
+      description: Output of `yuhi --version` (or the commit you built from).
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      multiple: true
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`.
+      placeholder: "v20.x"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Additional context, screenshots, or ideas about the cause.
+    validations:
+      required: false

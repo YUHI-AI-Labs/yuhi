@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.tsbuildinfo
+coverage/
+.vitest/
+
+# Yuhi runtime data (generated workspaces, audit logs)
+.yuhi/
+!examples/**/.yuhi-keep
+
+# Editor / OS
+.DS_Store
+.idea/
+*.log
+
+# VSIX build artifacts
+apps/vscode/*.vsix
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Demo fixture (intentional fake secrets for the walkthrough)
+!examples/demo/.env

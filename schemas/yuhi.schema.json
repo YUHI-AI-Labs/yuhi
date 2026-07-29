@@ -1,0 +1,329 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Yuhi configuration (yuhi.yaml)",
+  "$ref": "#/definitions/YuhiConfig",
+  "definitions": {
+    "YuhiConfig": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1"
+        },
+        "project": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "defaults": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "default": "allow"
+            },
+            "agent": {
+              "type": "string",
+              "default": "claude"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "action": "allow",
+            "agent": "claude"
+          }
+        },
+        "workspace": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "copy"
+              ],
+              "default": "copy"
+            },
+            "location": {
+              "type": "string",
+              "default": "auto"
+            },
+            "preserve_git": {
+              "type": "boolean",
+              "default": false
+            },
+            "include_untracked": {
+              "type": "boolean",
+              "default": false
+            },
+            "cleanup": {
+              "type": "string",
+              "enum": [
+                "prompt",
+                "always",
+                "never"
+              ],
+              "default": "prompt"
+            },
+            "large_file_bytes": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 5000000
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "match": {
+                "type": "object",
+                "properties": {
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "detectors": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "action": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "destinations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "external",
+                    "local"
+                  ]
+                }
+              },
+              "processors": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ],
+                      "additionalProperties": true
+                    }
+                  ]
+                }
+              }
+            },
+            "required": [
+              "name",
+              "match",
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "destination": {
+                "type": "string",
+                "enum": [
+                  "external",
+                  "local"
+                ],
+                "default": "external"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env_passthrough": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "default": {}
+        },
+        "scan": {
+          "type": "object",
+          "properties": {
+            "detectors": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "entropy_threshold": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 4
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "audit": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "store_content": {
+              "type": "boolean",
+              "default": false
+            },
+            "retention_days": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 30
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "privacy": {
+          "type": "object",
+          "properties": {
+            "telemetry": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "local_model": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "default": "ollama"
+            },
+            "endpoint": {
+              "type": "string",
+              "default": "http://127.0.0.1:11434"
+            },
+            "model": {
+              "type": "string",
+              "default": "qwen3:1.7b"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 120000
+            }
+          },
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "enum": [
+                "local",
+                "managed"
+              ],
+              "default": "local"
+            },
+            "provider": {
+              "type": "string",
+              "default": "ollama"
+            },
+            "model": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "max_input_tokens": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "reduction_mode": {
+              "type": "string",
+              "enum": [
+                "conservative",
+                "balanced",
+                "aggressive"
+              ],
+              "default": "balanced"
+            },
+            "preserve": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

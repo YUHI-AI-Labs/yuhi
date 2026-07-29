@@ -1,0 +1,632 @@
+import { Command } from "commander";
+import { cliVersion } from "./version.js";
+import {
+  YuhiError,
+  isYuhiError,
+  LocalModelError,
+  MODEL_TIERS,
+  RECOMMENDED_MODELS,
+  DEFAULT_LOCAL_MODEL,
+  type WorkspaceManifest,
+} from "@yuhi/shared";
+import {
+  runInit,
+  computePlan,
+  buildPreview,
+  explainFromPlan,
+  diffContext,
+  contextSavings,
+  runAgent,
+  prepareWorkspace,
+  createWorkspaceForDir,
+  listWorkspaces,
+  inspectWorkspace,
+  cleanWorkspace,
+  cleanAllWorkspaces,
+  listAudit,
+  showAudit,
+  exportAudit,
+  KNOWN_AGENT_IDS,
+  buildAdapter,
+} from "@yuhi/core";
+import { loadConfig } from "@yuhi/config";
+import { createLocalModelProvider } from "@yuhi/local";
+import { lookupOnPath } from "@yuhi/agents";
+import { createTranslator, resolveLang, type Translator } from "./i18n.js";
+import { configureColor, ui, symbols, heading } from "./ui.js";
+import {
+  renderScan,
+  renderPreview,
+  renderExplain,
+  renderStatus,
+  renderDiff,
+  renderPrepareReport,
+  renderModelTiers,
+} from "./render.js";
+import { confirm } from "./prompt.js";
+import { runDoctor, renderDoctor } from "./doctor.js";
+import {
+  providerConfigFromSettings,
+  configuredModel,
+  isModelInstalled,
+  fetchInstalledTags,
+  pullModel,
+  smokeTest,
+  writeModelToConfig,
+  installHintForPlatform,
+  OLLAMA_DOWNLOAD_URL,
+} from "./local-ai.js";
+
+interface Globals {
+  json: boolean;
+  quiet: boolean;
+  color: boolean;
+  verbose: boolean;
+  lang?: string;
+  cwd: string;
+}
+
+/** Everything after a literal `--` is forwarded verbatim to the launched agent. */
+function splitForwarded(argv: string[]): { main: string[]; forwarded: string[] } {
+  const idx = argv.indexOf("--");
+  if (idx === -1) return { main: argv, forwarded: [] };
+  return { main: argv.slice(0, idx), forwarded: argv.slice(idx + 1) };
+}
+
+function getContext(cmd: Command): { g: Globals; t: Translator; dir: string } {
+  const g = cmd.optsWithGlobals() as Globals;
+  configureColor(g.color !== false);
+  const t = createTranslator(resolveLang(g.lang));
+  return { g, t, dir: g.cwd ?? "." };
+}
+
+function printJson(value: unknown): void {
+  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+}
+
+/** Wrap a command action with uniform error handling + exit codes. */
+function action(handler: (cmd: Command) => Promise<number | void>) {
+  return async (...args: unknown[]) => {
+    const cmd = args[args.length - 1] as Command;
+    try {
+      const code = await handler(cmd);
+      process.exitCode = typeof code === "number" ? code : 0;
+    } catch (err) {
+      const g = cmd.optsWithGlobals() as Globals;
+      if (isYuhiError(err)) {
+        if (g.json) printJson({ error: err.code, message: err.message, hint: err.hint });
+        else {
+          console.error(`\n${symbols.err()} ${ui.bold(err.code)}: ${err.message}`);
+          if (err.hint) console.error(ui.dim(`  → ${err.hint}`));
+        }
+        process.exitCode = err.exitCode;
+      } else {
+        console.error(`\n${symbols.err()} Unexpected error: ${(err as Error).message}`);
+        if (g?.verbose) console.error(err);
+        process.exitCode = 1;
+      }
+    }
+  };
+}
+
+const FORWARDED: string[] = [];
+
+async function main(): Promise<void> {
+  const { main: mainArgv, forwarded } = splitForwarded(process.argv);
+  FORWARDED.push(...forwarded);
+
+  const program = new Command();
+  program
+    .name("yuhi")
+    .description("Yuhi — an AI Context Runtime. See exactly what your AI agent can see.")
+    .version(cliVersion(), "-v, --version")
+    .option("--json", "output machine-readable JSON", false)
+    .option("-q, --quiet", "reduce output", false)
+    .option("--no-color", "disable colored output")
+    .option("--verbose", "verbose errors", false)
+    .option("--lang <lang>", "language: en | ja | zh-CN")
+    .option("-C, --cwd <dir>", "project directory", ".");
+
+  // ---- init ----
+  program
+    .command("init")
+    .description("Initialize Yuhi in this project (writes yuhi.yaml)")
+    .option("-y, --yes", "accept defaults (non-interactive)", false)
+    .option("--force", "overwrite an existing yuhi.yaml", false)
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const res = runInit(dir, { force: opts.force });
+        if (g.json) return void printJson(res);
+        if (res.alreadyExisted) {
+          console.log(`${symbols.warn()} ${t("init.exists")}`);
+          return;
+        }
+        console.log(heading("Yuhi"));
+        for (const f of res.created) console.log(`${symbols.ok()} ${t("init.created", { file: f })}`);
+        console.log("\n" + ui.dim(t("init.next")));
+      }),
+    );
+
+  // ---- status ----
+  program
+    .command("status")
+    .description("Show the current AI context at a glance (like `git status`)")
+    .option("--agent <id>", "for a specific agent")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const plan = await computePlan(dir, {
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          interactive: false,
+        });
+        const preview = buildPreview(plan);
+        const diff = diffContext(plan);
+        const savings = contextSavings(plan);
+        if (g.json)
+          return void printJson({ summary: preview.summary, agent: preview.agent, savings, diff });
+        renderStatus(preview, savings, diff.changes.length, diff.hasPrevious, t);
+      }),
+    );
+
+  // ---- diff ----
+  program
+    .command("diff")
+    .description("Show what changed in the AI context since the last run")
+    .option("--agent <id>", "for a specific agent")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const plan = await computePlan(dir, {
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          interactive: false,
+        });
+        const diff = diffContext(plan);
+        if (g.json) return void printJson(diff);
+        renderDiff(diff.changes, diff.hasPrevious, t);
+      }),
+    );
+
+  // ---- scan ----
+  program
+    .command("scan")
+    .description("Inspect the project locally for secrets and sensitive files")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const plan = await computePlan(dir, { interactive: false });
+        if (g.json) return void printJson(plan.scan);
+        renderScan(plan.scan, t);
+      }),
+    );
+
+  // ---- preview ----
+  program
+    .command("preview")
+    .description("Show exactly what an AI agent would see (the signature command)")
+    .option("--agent <id>", "preview for a specific agent")
+    .option("--explain <path>", "explain the decision for one file")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const plan = await computePlan(dir, {
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          interactive: false,
+        });
+        if (opts.explain) {
+          const d = explainFromPlan(plan, opts.explain);
+          if (!d) throw notFound(t, opts.explain);
+          if (g.json) return void printJson(d);
+          return void renderExplain(d, t);
+        }
+        const preview = buildPreview(plan);
+        if (g.json) return void printJson(preview);
+        renderPreview(preview, t);
+        if (!g.quiet) console.log("\n" + ui.dim(t("limitation")));
+      }),
+    );
+
+  // ---- explain ----
+  program
+    .command("explain <path>")
+    .description("Explain why a file is allowed, blocked, redacted, or kept local")
+    .option("--agent <id>", "use a specific agent's view")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const target = cmd.args[0]!;
+        const plan = await computePlan(dir, {
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          interactive: false,
+        });
+        const d = explainFromPlan(plan, target);
+        if (!d) throw notFound(t, target);
+        if (g.json) return void printJson(d);
+        renderExplain(d, t);
+      }),
+    );
+
+  // ---- run ----
+  program
+    .command("run [agent]")
+    .description("Generate the context and launch an AI agent inside it")
+    .option("--dry-run", "prepare the workspace but do not launch", false)
+    .option("--cleanup <mode>", "prompt | always | never")
+    .option("--no-preview", "skip printing the preview before launching")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const agent = cmd.args[0];
+        const interactive = Boolean(process.stdout.isTTY) && !g.quiet;
+
+        const res = await runAgent(dir, {
+          ...(agent ? { agent } : {}),
+          forwardedArgs: FORWARDED,
+          interactive,
+          ...(opts.cleanup ? { cleanup: opts.cleanup } : {}),
+          dryRun: Boolean(opts.dryRun),
+          hooks: {
+            onBeforeLaunch: (preview) => {
+              if (g.json || g.quiet) return;
+              if (opts.preview !== false) renderPreview(preview, t);
+              console.log("\n" + ui.dim(t("limitation")));
+              if (!opts.dryRun) console.log("\n" + t("run.launching", { agent: preview.agent }) + "\n");
+            },
+            confirmCleanup: () => confirm(t("run.cleanupPrompt"), false),
+            onMissingEnv: (a, vars) =>
+              console.error(`${symbols.warn()} ${t("run.missingEnv", { vars: vars.join(", ") })}`),
+          },
+        });
+
+        if (opts.dryRun) {
+          if (g.json) return void printJson({ manifest: res.manifest });
+          console.log(ui.dim(t("run.dryRun")));
+          console.log(ui.dim(t("run.kept", { path: res.manifest.workspacePath })));
+          return;
+        }
+
+        if (g.json) {
+          printJson({ exitCode: res.exitCode, workspaceKept: res.workspaceKept, manifestId: res.manifest.id });
+        } else {
+          console.log(ui.dim(t("run.exit", { agent: res.preview.agent, code: String(res.exitCode ?? 0) })));
+          if (res.workspaceKept) console.log(ui.dim(t("run.kept", { path: res.manifest.workspacePath })));
+          else console.log(ui.dim(t("run.cleaned")));
+        }
+        return res.exitCode ?? 0;
+      }),
+    );
+
+  // ---- workspace ----
+  const ws = program.command("workspace").description("Manage generated workspaces");
+  ws.command("create")
+    .description("Create a workspace without launching an agent")
+    .option("--agent <id>")
+    .option("--dry-run", "compute without writing", false)
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const res = await createWorkspaceForDir(dir, {
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          dryRun: Boolean(opts.dryRun),
+          interactive: false,
+        });
+        if (g.json) return void printJson(res.manifest);
+        console.log(
+          `${symbols.ok()} ${t("workspace.created", { id: res.manifest.id, path: res.manifest.workspacePath })}`,
+        );
+        for (const w of res.warnings) console.log(`${symbols.warn()} ${w}`);
+      }),
+    );
+  ws.command("list")
+    .description("List generated workspaces")
+    .action(
+      action(async (cmd) => {
+        const { g, t } = getContext(cmd);
+        const list = listWorkspaces();
+        if (g.json) return void printJson(list);
+        if (list.length === 0) return void console.log(t("workspace.none"));
+        console.log(heading("Workspaces"));
+        for (const w of list) {
+          console.log(`  ${ui.bold(w.id)}  ${ui.dim(w.createdAt)}  ${w.agent}  ${ui.dim(w.sourcePath)}`);
+        }
+      }),
+    );
+  ws.command("inspect <id>")
+    .description("Show a workspace manifest")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const m: WorkspaceManifest = inspectWorkspace(cmd.args[0]!);
+        if (g.json) return void printJson(m);
+        console.log(heading(`Workspace ${m.id}`));
+        console.log(`Agent: ${m.agent}`);
+        console.log(`Created: ${m.createdAt}`);
+        console.log(`Path: ${m.workspacePath}`);
+        console.log(
+          `Visible ${m.counts.visible} · transformed ${m.counts.transformed} · blocked ${m.counts.blocked} · local-only ${m.counts.localOnly} · symlinks skipped ${m.counts.symlinksSkipped}`,
+        );
+      }),
+    );
+  ws.command("clean [id]")
+    .description("Remove one workspace, or all with --all")
+    .option("--all", "remove all workspaces", false)
+    .action(
+      action(async (cmd) => {
+        const { g, t } = getContext(cmd);
+        const opts = cmd.opts();
+        if (opts.all) {
+          const n = cleanAllWorkspaces();
+          if (g.json) return void printJson({ removed: n });
+          return void console.log(t("workspace.cleaned", { count: String(n) }));
+        }
+        const id = cmd.args[0];
+        if (!id) return void console.error(`${symbols.err()} Provide an id or --all.`);
+        cleanWorkspace(id);
+        if (g.json) return void printJson({ removed: 1 });
+        console.log(t("workspace.cleaned", { count: "1" }));
+      }),
+    );
+
+  // ---- audit ----
+  const audit = program.command("audit").description("Local, metadata-only audit log");
+  audit
+    .command("list")
+    .description("List recorded runs")
+    .action(
+      action(async (cmd) => {
+        const { g, t } = getContext(cmd);
+        const records = listAudit(50);
+        if (g.json) return void printJson(records);
+        if (records.length === 0) return void console.log(t("audit.none"));
+        console.log(heading("Audit"));
+        for (const r of records) {
+          console.log(
+            `  ${ui.bold(r.id)}  ${ui.dim(r.timestamp)}  ${r.agent}  ${r.outcome}  exit=${r.exitCode ?? "-"}`,
+          );
+        }
+      }),
+    );
+  audit
+    .command("show <id>")
+    .description("Show one audit record")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const rec = showAudit(cmd.args[0]!);
+        if (g.json) return void printJson(rec);
+        printJson(rec);
+      }),
+    );
+  audit
+    .command("export <id>")
+    .description("Export an audit record")
+    .option("--format <fmt>", "json", "json")
+    .action(
+      action(async (cmd) => {
+        getContext(cmd);
+        process.stdout.write(exportAudit(cmd.args[0]!, "json") + "\n");
+      }),
+    );
+
+  // ---- doctor ----
+  program
+    .command("doctor")
+    .description("Check your environment and configuration")
+    .action(
+      action(async (cmd) => {
+        const { g, t, dir } = getContext(cmd);
+        const report = await runDoctor(dir);
+        if (g.json) return void printJson(report);
+        return renderDoctor(report, t);
+      }),
+    );
+
+  // ---- setup-local-ai ----
+  program
+    .command("setup-local-ai")
+    .description("Set up a local AI model (Ollama) for the Prepare locally route")
+    .option("--model <id>", "model to install (default: recommended)")
+    .action(
+      action(async (cmd) => {
+        const { g, dir } = getContext(cmd);
+        const opts = cmd.opts();
+        const platform = process.platform;
+
+        // Config is optional here — fall back to defaults when absent.
+        let settings: Awaited<ReturnType<typeof loadConfig>> | undefined;
+        try {
+          settings = await loadConfig(dir);
+        } catch {
+          settings = undefined;
+        }
+        const localModel = settings?.config.local_model;
+        const provider = createLocalModelProvider(providerConfigFromSettings(localModel));
+
+        // 1) Is the ollama binary installed? Never install it ourselves.
+        const ollamaPath = lookupOnPath("ollama");
+        if (!ollamaPath) {
+          if (g.json)
+            return void printJson({
+              state: "ollama-missing",
+              downloadUrl: OLLAMA_DOWNLOAD_URL,
+              hint: installHintForPlatform(platform),
+            });
+          console.log(heading("Set up local AI"));
+          console.log(`${symbols.warn()} Ollama is not installed.`);
+          console.log(`  Download it from: ${ui.bold(OLLAMA_DOWNLOAD_URL)}`);
+          console.log(`  ${ui.dim(installHintForPlatform(platform))}`);
+          console.log("\n" + ui.dim("Yuhi will not install anything for you. Re-run this after installing Ollama."));
+          return 1;
+        }
+
+        // 2) Show installed models + recommended tiers (prefer live sizes).
+        const health = await provider.health();
+        const installed = health.models ?? [];
+        const liveSizes = await fetchInstalledTags(provider.endpoint);
+        const recommended = opts.model ?? RECOMMENDED_MODELS[0] ?? DEFAULT_LOCAL_MODEL.model;
+
+        if (g.json)
+          return void printJson({
+            state: health.ok ? "ready-to-setup" : "ollama-stopped",
+            ollamaPath,
+            endpoint: provider.endpoint,
+            installedModels: installed,
+            recommended,
+            tiers: MODEL_TIERS,
+          });
+
+        console.log(heading("Set up local AI"));
+        console.log(`${symbols.ok()} Ollama found: ${ui.dim(ollamaPath)}`);
+        if (!health.ok) {
+          console.log(`${symbols.warn()} Ollama is installed but not responding at ${provider.endpoint}.`);
+          console.log(`  ${ui.dim("Start it with `ollama serve`, then re-run this command.")}`);
+          return 1;
+        }
+        if (installed.length > 0) {
+          console.log(ui.dim(`  Installed models: ${installed.join(", ")}`));
+        } else {
+          console.log(ui.dim("  No models installed yet."));
+        }
+        console.log("");
+        renderModelTiers(MODEL_TIERS, liveSizes, recommended);
+
+        if (isModelInstalled(installed, recommended)) {
+          console.log("\n" + `${symbols.ok()} ${recommended} is already installed.`);
+          if (settings) await writeModelToConfig(settings.configPath, recommended);
+          console.log(ui.dim("Set as the local model in yuhi.yaml." + (settings ? "" : " (No yuhi.yaml — run `yuhi init` to persist.)")));
+          return 0;
+        }
+
+        // 3) Require EXPLICIT confirmation before any download.
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          console.log(
+            "\n" +
+              ui.yellow(
+                `Run this in an interactive terminal to confirm downloading ${recommended}, or run \`ollama pull ${recommended}\` yourself.`,
+              ),
+          );
+          return 1;
+        }
+        const tier = MODEL_TIERS.find((m) => m.id === recommended);
+        const sizeHint = tier ? ` (${tier.approxSize})` : "";
+        const go = await confirm(`Download ${recommended}${sizeHint} now?`, true);
+        if (!go) {
+          console.log(ui.dim("No download started."));
+          return 0;
+        }
+
+        // 4) Pull with inherited stdio (native progress); Ctrl-C cancels.
+        console.log("\n" + ui.dim(`Running: ollama pull ${recommended}  (press Ctrl-C to cancel)\n`));
+        const pull = await pullModel(recommended);
+        if (pull.cancelled) {
+          console.log("\n" + ui.yellow("Download cancelled. Nothing was written to yuhi.yaml."));
+          return 130;
+        }
+        if (pull.code !== 0) {
+          console.log("\n" + `${symbols.err()} ollama pull exited with code ${pull.code ?? "unknown"}.`);
+          return 1;
+        }
+
+        // 5) Smoke test the freshly installed model, then persist the choice.
+        console.log("\n" + ui.dim("Verifying with a tiny local test…"));
+        const smoke = await smokeTest(provider, recommended);
+        if (!smoke.ok) {
+          console.log(`${symbols.warn()} ${smoke.detail}`);
+          console.log(ui.dim("The model was installed but the test did not pass. You can still try `yuhi prepare`."));
+        } else {
+          console.log(`${symbols.ok()} ${smoke.detail}`);
+        }
+        if (settings) {
+          await writeModelToConfig(settings.configPath, recommended);
+          console.log(`${symbols.ok()} Set ${ui.bold(recommended)} as the local model in yuhi.yaml.`);
+        } else {
+          console.log(ui.dim(`Run \`yuhi init\` to persist ${recommended} as your local model in yuhi.yaml.`));
+        }
+        return 0;
+      }),
+    );
+
+  // ---- prepare ----
+  program
+    .command("prepare [dir]")
+    .description("Prepare a local, reduced copy of your context (never sent anywhere)")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const target = cmd.args[0] ?? ".";
+
+        const loaded = await loadConfig(target);
+        const provider = createLocalModelProvider(
+          providerConfigFromSettings(loaded.config.local_model),
+        );
+
+        // If Ollama can't be reached, surface the actionable error up front
+        // rather than letting every summarize target fail one-by-one.
+        const health = await provider.health();
+        if (!health.ok) {
+          const modelId = configuredModel(loaded.config.local_model);
+          const err = new LocalModelError(
+            "NOT_RUNNING",
+            `Cannot reach the local model at ${provider.endpoint} (model ${modelId}).`,
+            { hint: "Run `yuhi setup-local-ai` to install and start a local model." },
+          );
+          if (g.json) return void printJson({ error: err.code, message: err.message, hint: err.hint });
+          console.error(`\n${symbols.err()} ${ui.bold(err.code)}: ${err.message}`);
+          console.error(ui.dim(`  → ${err.hint}`));
+          return 1;
+        }
+
+        const mode = loaded.config.budget?.reduction_mode;
+        const res = await prepareWorkspace(target, {
+          provider,
+          ...(mode !== undefined ? { mode } : {}),
+        });
+
+        if (g.json) return void printJson(res);
+        renderPrepareReport(res);
+        return 0;
+      }),
+    );
+
+  // ---- agents ----
+  program
+    .command("agents")
+    .description("List known agents and whether they are installed")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const rows = await Promise.all(
+          ["dummy", ...KNOWN_AGENT_IDS].map(async (id) => {
+            const a = buildAdapter(id);
+            return { id, displayName: a.displayName, installed: await a.detect() };
+          }),
+        );
+        if (g.json) return void printJson(rows);
+        console.log(heading("Agents"));
+        for (const r of rows) {
+          const mark = r.installed ? symbols.ok() : symbols.warn();
+          console.log(`  ${mark} ${r.id.padEnd(8)} ${ui.dim(r.displayName)}`);
+        }
+      }),
+    );
+
+  await program.parseAsync(mainArgv);
+}
+
+function notFound(t: Translator, path: string): YuhiError {
+  return new YuhiError("INTERNAL", t("explain.notFound", { path }), {
+    hint: "Run `yuhi scan` to see which files Yuhi inspected.",
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

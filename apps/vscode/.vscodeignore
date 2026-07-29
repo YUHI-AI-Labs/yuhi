@@ -1,0 +1,25 @@
+# Source & build tooling — never shipped in the VSIX.
+src/**
+tests/**
+**/*.ts
+**/*.map
+esbuild.mjs
+tsconfig.json
+**/tsconfig.json
+.vscode-test/**
+node_modules/**
+
+# Secrets / env — must never be packaged.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Repo docs kept out of the VSIX (README, CHANGELOG, LICENSE, media/yuhi-ai-labs-icon.png ships).
+PRIVACY.md
+SECURITY.md
+media/eye.svg
+media/icon.svg
+
+# Build artifacts / packaging output.
+*.vsix

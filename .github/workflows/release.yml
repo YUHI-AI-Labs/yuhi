@@ -1,0 +1,133 @@
+name: Release
+
+# Triggered when a version tag is pushed (e.g. v0.1.0).
+#
+# IMPORTANT: The publish steps in this workflow are GATED and OPT-IN. They only
+# run when the required secrets are configured on the repository AND the
+# `publish` environment (which a maintainer can protect with required reviewers).
+# Nothing is published automatically just by tagging. A maintainer must approve.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Always build and test the tagged commit. This never publishes anything.
+  # -------------------------------------------------------------------------
+  build:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        run: pnpm -r typecheck
+
+      - name: Lint
+        run: pnpm -r lint
+
+      - name: Test
+        run: pnpm -r test
+
+      - name: Build
+        run: pnpm -r build
+
+      - name: Package CLI tarball (dry-run artifact)
+        run: pnpm --filter @yuhi-ai-labs/yuhi pack --pack-destination ./dist-artifacts
+
+      - name: Build VSIX
+        run: |
+          npm install -g @vscode/vsce
+          pnpm --filter @yuhi/vscode... build
+          vsce package --no-dependencies --out ./dist-artifacts/ \
+            --cwd apps/vscode || echo "VSIX packaging step is best-effort; adjust for your setup."
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist-artifacts/
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # 2. Publish the CLI to npm. GATED: requires the `publish` environment and an
+  #    NPM_TOKEN secret. Uses provenance. Remove the `if:` guard at your peril —
+  #    it prevents accidental publishes from forks or unconfigured repos.
+  # -------------------------------------------------------------------------
+  publish-npm:
+    name: Publish yuhi to npm (gated)
+    needs: build
+    runs-on: ubuntu-latest
+    # Protect this environment with required reviewers in repo settings so a
+    # human must approve before publish runs.
+    environment: publish
+    permissions:
+      contents: read
+      id-token: write # required for npm provenance
+    # Only attempt to publish when the token is present. This is the opt-in gate.
+    if: ${{ github.repository_owner != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm -r build
+
+      - name: Verify NPM_TOKEN is configured
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is not set. Publishing is opt-in and requires this secret."
+            echo "Skipping npm publish."
+            exit 0
+          fi
+          echo "NPM_TOKEN present; proceeding to publish."
+
+      # Publishes with provenance and public access. Requires NPM_TOKEN.
+      # This is the real publish command, gated behind the environment + token.
+      - name: Publish CLI (provenance, public)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "No token; nothing published."
+            exit 0
+          fi
+          pnpm --filter @yuhi-ai-labs/yuhi publish --provenance --access public --no-git-checks

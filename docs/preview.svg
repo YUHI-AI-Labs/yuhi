@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560" font-family="monospace">
+  <defs>
+    <linearGradient id="dusk" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f3a83a"/><stop offset="0.5" stop-color="#e5634d"/><stop offset="1" stop-color="#6d5ae6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="560" rx="16" fill="#17162a"/>
+  <!-- title bar -->
+  <rect x="0" y="0" width="1000" height="46" rx="16" fill="#211f38"/>
+  <rect x="0" y="30" width="1000" height="16" fill="#211f38"/>
+  <circle cx="26" cy="23" r="6" fill="#e5634d"/><circle cx="48" cy="23" r="6" fill="#f3a83a"/><circle cx="70" cy="23" r="6" fill="#3fae7a"/>
+  <text x="500" y="28" text-anchor="middle" font-size="15" fill="#736e8c">yuhi — examples/demo</text>
+
+  <g font-size="19">
+    <!-- command -->
+    <text x="30" y="92"><tspan fill="#3fae7a">$</tspan> <tspan fill="#ece9f6">yuhi preview</tspan></text>
+
+    <text x="30" y="132" fill="#a29db8">Agent: claude   Source: examples/demo   16 files inspected</text>
+
+    <!-- Sent -->
+    <text x="30" y="176"><tspan fill="#4fb28f" font-weight="bold">Sent to Claude</tspan> <tspan fill="#736e8c">(9)</tspan></text>
+    <text x="54" y="204" fill="#c9c4d8">README.md · src/api.ts · src/auth.ts · src/db.ts · src/server.ts …</text>
+
+    <!-- Prepared -->
+    <text x="30" y="248"><tspan fill="url(#dusk)" font-weight="bold">Prepared locally</tspan> <tspan fill="#736e8c">(3)</tspan></text>
+    <text x="54" y="276"><tspan fill="#e5a24d">PREPARE</tspan>  <tspan fill="#c9c4d8">data/student_scores.csv</tspan></text>
+    <text x="54" y="302"><tspan fill="#e5a24d">REDACT </tspan>  <tspan fill="#c9c4d8">config/app.ts · docs/internal/roadmap.md</tspan></text>
+
+    <!-- Kept -->
+    <text x="30" y="346"><tspan fill="#8b90a0" font-weight="bold">Kept on your machine</tspan> <tspan fill="#736e8c">(4)</tspan></text>
+    <text x="54" y="374" fill="#c9c4d8">customer-data/list.csv · build/app.min.js · package-lock.json …</text>
+
+    <!-- Excluded -->
+    <text x="30" y="418"><tspan fill="#c9776b" font-weight="bold">Excluded</tspan> <tspan fill="#736e8c">(1)</tspan></text>
+    <text x="54" y="446"><tspan fill="#c9776b">BLOCK</tspan>  <tspan fill="#c9c4d8">.env</tspan></text>
+
+    <!-- summary -->
+    <line x1="30" y1="480" x2="970" y2="480" stroke="#2d2b45" stroke-width="1"/>
+    <text x="30" y="512" font-size="18">
+      <tspan fill="#4fb28f">9 sent</tspan><tspan fill="#736e8c"> · </tspan><tspan fill="#e5634d">3 prepared locally</tspan><tspan fill="#736e8c"> · </tspan><tspan fill="#8b90a0">4 kept</tspan>
+    </text>
+    <text x="30" y="540" font-size="16" fill="#4fb28f">✓ 0 source files modified</text>
+  </g>
+</svg>
