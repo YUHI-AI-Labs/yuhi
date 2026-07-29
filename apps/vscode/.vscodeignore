@@ -1,6 +1,7 @@
 # Source & build tooling — never shipped in the VSIX.
 src/**
 tests/**
+scripts/**
 **/*.ts
 **/*.map
 esbuild.mjs
@@ -8,6 +9,10 @@ tsconfig.json
 **/tsconfig.json
 .vscode-test/**
 node_modules/**
+.yuhi/**
+yuhi.yaml
+HANDOFF.md
+**/HANDOFF.md
 
 # Secrets / env — must never be packaged.
 .env

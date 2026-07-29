@@ -198,7 +198,22 @@ sandbox backends (Docker, `sandbox-exec`, bubblewrap, Windows Sandbox).
 | Policy engine (globs, precedence, detectors) | **Stable** |
 | `dummy` agent (offline) + Claude Code adapter | **Stable** |
 | Local audit log | **Stable** |
-| VS Code extension (preview, badges, status, run) | **Beta** — on the VS Code Marketplace |
+| VS Code extension (preview, Prepared Workspace launch, badges, status) | **Beta** — on the VS Code Marketplace |
+
+### Prepared Workspace launch in VS Code
+
+`Yuhi: Prepare and Start Claude Code` prepares and reviews the workspace once, then
+opens only `.yuhi/prepared/<runId>` in a new window for the official
+`anthropic.claude-code` extension or starts the `claude` CLI with that directory as its
+working directory. The generated window is marked **Prepared by Yuhi** and shows estimated
+context reduction, sensitive-data handling, and exact file decisions.
+
+These are estimates of the initial prepared content, not measurements of model usage or
+financial impact. Yuhi does not provide OS-level sandboxing; the agent may access paths
+outside the Prepared Workspace if its runtime or the user permits it.
+
+**Initial context prepared by Yuhi. Claude Code starts in a Yuhi Prepared Workspace.**
+Workspace boundary: advisory. Filesystem enforcement: not enabled. OS sandbox: not enabled.
 | Codex / Gemini adapters | Planned |
 | Local-model routes (`summarize-local`, `metadata-only`) | Planned — **v1.1** |
 | OS sandbox backends | Not implemented (design in `docs/THREAT_MODEL.md`) |

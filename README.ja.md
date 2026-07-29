@@ -157,7 +157,18 @@ Yuhi は **AI コンテキストの多層防御(defense-in-depth)であり、サ
 | `dummy` エージェント(オフライン) + Claude Code アダプター | **Stable(安定)** |
 | ローカル監査ログ | **Stable(安定)** |
 | Codex / Gemini アダプター | Planned(計画中) |
-| VS Code 拡張機能(プレビュー・バッジ・実行) | **Beta**(VS Code Marketplace で公開) |
+| VS Code 拡張機能(プレビュー・Prepared Workspace 起動・バッジ・状態表示) | **Beta**(VS Code Marketplace で公開) |
+
+### VS Code の Prepared Workspace 起動
+
+`Yuhi: Prepare and Start Claude Code` はワークスペースを一度だけ準備・レビューし、
+公式の `anthropic.claude-code` 拡張機能または `claude` CLI が
+`.yuhi/prepared/<runId>` だけを作業ルートとして使うよう起動します。生成された
+ウィンドウには **Prepared by Yuhi**、推定コンテキスト削減率、機密データ処理、
+ファイルごとの判断が表示されます。
+
+これらは初期コンテキストの推定値であり、実際のモデル入力、料金、コスト削減を
+保証しません。Yuhi は OS レベルのサンドボックスを提供していません。
 | ローカルモデル・ルート(`summarize-local`、`metadata-only`) | Planned(計画中・**v1.1**) |
 | OS サンドボックスバックエンド | Not implemented(未実装、設計は `docs/THREAT_MODEL.md`) |
 

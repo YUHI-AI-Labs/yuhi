@@ -9,8 +9,8 @@ reduce your files, mask sensitive values, and run a deterministic safety check �
 your machine. You then **review** exactly what would be sent, as an Original ↔ Prepared
 diff, before any of it leaves your computer. Your original files are never modified.
 
-> Beta. This extension focuses on the local **preparation + review** step. It does **not**
-> forward anything to Claude for you — the review step is the deliberate stopping point.
+> Beta. Yuhi prepares and reviews the initial context. It never silently submits a prompt.
+> A launched agent still has the OS and network access permitted by its runtime.
 
 ## Features
 
@@ -28,6 +28,15 @@ diff, before any of it leaves your computer. Your original files are never modif
   Prepared **estimated** tokens, the reduction, how many files were summarized / excluded /
   had sensitive values masked, **Source files modified: 0**, and a per-file list. Click any
   prepared file for an Original ↔ Prepared diff.
+- **Yuhi: Prepare and Open in New Window** — prepares once, requires review confirmation,
+  and opens only `.yuhi/prepared/<runId>` as a new VS Code workspace.
+- **Yuhi: Prepare and Start Claude Code** — choose the official
+  `anthropic.claude-code` extension or the `claude` CLI. Extension mode opens the
+  Prepared Workspace and asks you to start Claude Code from its sidebar or Command
+  Palette; it does not invoke undocumented commands or submit a prompt.
+- **Prepared by Yuhi indicator** — a persistent shield status item in the generated
+  workspace opens the full file-decision review. Generated `.yuhi/session.json` and
+  `.yuhi/launch-audit.jsonl` contain metadata only.
 - **Status bar** — reflects the current state: *Yuhi ready · Ollama missing · Ollama
   stopped · Model missing · Preparing… · Ready for review · Preparation failed.*
 
@@ -48,6 +57,50 @@ locally — nothing about your code is transmitted during these steps. See the p
 - Local-first — the on-device model does the preparation.
 - No telemetry.
 - No external network calls during preparation or review.
+
+## Metric definitions
+
+- **Estimated context reduction** is `(estimated tokens before − estimated tokens after)
+  / estimated tokens before`. Actual agent input and billing may differ.
+- **Sensitive findings detected** is the number of scanner finding records, not leaks
+  and not the number of affected files.
+- **Files containing sensitive findings** counts distinct source files with at least one
+  finding.
+- **Sensitive values masked** is the sum of replacements reported by local processors;
+  **files masked** separately counts generated files with one or more replacements.
+- **Prepared copies transformed** counts included source-derived files whose generated
+  bytes differ from source bytes. Generated metadata, byte-identical copies, and omitted
+  files are excluded. Original source modifications remain 0 after integrity verification.
+- **Files excluded** are omitted by exclusion/block policy; **kept local** are separately
+  omitted by local-only/runtime/ask/metadata-only policy.
+- **Unresolved high-risk findings** are findings in files otherwise sent unchanged;
+  launch is blocked unless the user explicitly overrides the warning.
+
+Actual agent usage may differ because of system prompts, tool output, conversation history,
+and caching.
+
+## Runtime boundary
+
+**Initial context prepared by Yuhi. Claude Code starts in a Yuhi Prepared Workspace.**
+
+- Workspace boundary: advisory
+- Workspace-only instruction: enabled
+- Filesystem enforcement: not enabled
+- OS sandbox: not enabled
+- The agent may access files outside the Prepared Workspace if the runtime or user permits it.
+
+Yuhi guarantees the generated initial context and leaves original source files unchanged
+during preparation. It does not prevent parent-directory, home-directory, or absolute-path
+access after launch.
+
+Prepared Workspace metadata uses `schemaVersion: 2`. It keeps finding events, finding-file
+counts, masked-value counts, masked-file counts, and byte-different prepared-copy counts
+separate. The extension upgrades schema v1 records in memory when opening older Prepared
+Workspaces; it does not rewrite them.
+
+Sensitivity labels are policy-derived hints, not absolute truth. Yuhi combines explicit
+`yuhi.yaml` rules, scanner findings, path/file-type rules, organization policy, and a
+conservative fallback. The review shows the winning rule and reason for every file.
 
 Apache-2.0 licensed. Source and issues:
 [github.com/YUHI-AI-Labs/yuhi](https://github.com/YUHI-AI-Labs/yuhi).

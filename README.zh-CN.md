@@ -149,7 +149,17 @@ Yuhi 是**面向 AI 上下文的纵深防御(defense-in-depth),而不是沙箱�
 | `dummy` 智能体(离线) + Claude Code 适配器 | **Stable(稳定)** |
 | 本地审计日志 | **Stable(稳定)** |
 | Codex / Gemini 适配器 | Planned(计划中) |
-| VS Code 扩展(预览、徽章、运行) | **Beta**(已上架 VS Code Marketplace) |
+| VS Code 扩展(预览、Prepared Workspace 启动、徽章、状态) | **Beta**(已上架 VS Code Marketplace) |
+
+### 在 VS Code 中启动 Prepared Workspace
+
+`Yuhi: Prepare and Start Claude Code` 只准备并审查工作区一次，然后让官方
+`anthropic.claude-code` 扩展或 `claude` CLI 仅以
+`.yuhi/prepared/<runId>` 为工作根目录。生成的窗口会显示 **Prepared by Yuhi**、
+估算的上下文缩减、敏感数据处理和逐文件决策。
+
+这些数字是初始准备内容的估算，不保证实际模型输入、账单或成本节省。Yuhi
+目前不提供操作系统级沙箱。
 | 本地模型路由(`summarize-local`、`metadata-only`) | Planned(计划中・**v1.1**) |
 | 操作系统沙箱后端 | Not implemented(未实现,设计见 `docs/THREAT_MODEL.md`) |
 

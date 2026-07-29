@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi — Local AI Prep",
   "description": "Prepare your workspace locally with a small on-device model before anything is sent to Claude. Local-first, no telemetry.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -62,19 +62,37 @@
       {
         "command": "yuhi.prepareHere",
         "title": "Prepare with Yuhi"
+      },
+      {
+        "command": "yuhi.prepareAndOpen",
+        "title": "Yuhi: Prepare and Open in New Window",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "yuhi.prepareAndStartClaude",
+        "title": "Yuhi: Prepare and Start Claude Code",
+        "icon": "$(shield)"
       }
     ],
     "menus": {
-      "explorer/context": [
-        {
-          "command": "yuhi.prepareHere",
-          "group": "yuhi@1"
-        }
-      ],
       "commandPalette": [
         {
           "command": "yuhi.prepareHere",
           "when": "false"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "yuhi.prepareHere",
+          "group": "yuhi@1"
+        },
+        {
+          "command": "yuhi.prepareAndOpen",
+          "group": "yuhi@2"
+        },
+        {
+          "command": "yuhi.prepareAndStartClaude",
+          "group": "yuhi@3"
         }
       ]
     }
@@ -83,7 +101,8 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package --no-dependencies -o yuhi.vsix"
+    "package": "vsce package --no-dependencies -o yuhi.vsix",
+    "inspect:vsix": "node scripts/inspect-vsix.mjs yuhi.vsix"
   },
   "dependencies": {
     "@yuhi/core": "workspace:*",

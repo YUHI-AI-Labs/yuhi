@@ -1,5 +1,11 @@
 import type { ScanResult, FileDecision, ModelTier } from "@yuhi/shared";
-import type { PreviewData, ContextSavings, PrepareReport } from "@yuhi/core";
+import {
+  buildPreparedMetrics,
+  buildPreparedRuntimeBoundary,
+  type PreviewData,
+  type ContextSavings,
+  type PrepareReport,
+} from "@yuhi/core";
 import type { Translator } from "./i18n.js";
 import { ui, actionBadge, symbols, heading, formatBytes } from "./ui.js";
 import { formatGB } from "./local-ai.js";
@@ -165,31 +171,55 @@ export function renderDiff(
 
 export function renderPrepareReport(res: PrepareReport): void {
   const r = res.report;
-  const pct = Math.round(r.percentReduction * 100);
+  const metrics = buildPreparedMetrics(res);
+  const pct = metrics.estimatedReductionPercent.toFixed(1);
   const label = (s: string) => s.padEnd(26);
 
-  console.log(heading("Context preparation complete"));
+  console.log(heading("Prepared by Yuhi"));
   // Headline outcome — the value in five seconds. Honest about increases / no data.
   if (!r.hasData) {
     console.log("  " + ui.bold("Estimated Claude input avoided: unavailable") );
     console.log(ui.dim("  (no summarizable content in this run)"));
   } else if (r.tokensSaved >= 0) {
     console.log(
-      "  " + ui.bold(ui.magenta(`Estimated Claude input avoided: ${num(r.tokensSaved)} tokens (${pct}%)`)),
+      "  " + ui.bold(ui.magenta(`Estimated context reduction: ${pct}%`)),
     );
+    console.log(`  ${label("Estimated tokens avoided")}${num(metrics.estimatedTokensAvoided)} tokens`);
   } else {
     console.log(
-      "  " + ui.bold(ui.yellow(`Estimated Claude input INCREASED: ${num(-r.tokensSaved)} tokens (${Math.abs(pct)}%)`)),
+      "  " +
+        ui.bold(
+          ui.yellow(
+            `Estimated context INCREASED: ${num(-r.tokensSaved)} tokens (${Math.abs(metrics.estimatedReductionPercent).toFixed(1)}%)`,
+          ),
+        ),
     );
     console.log(ui.dim("  (preparation produced more tokens than the source — summary larger than tiny input)"));
   }
   console.log(ui.dim("  ────────────────────────────────────────────"));
   console.log(`  ${label("Estimated input before")}${num(r.beforeTokens)} tokens`);
   console.log(`  ${label("Estimated input after")}${num(r.afterTokens)} tokens`);
-  console.log(`  ${label("Files excluded")}${num(r.filesExcluded)}`);
+  console.log(`  ${label("Files excluded")}${num(metrics.filesExcluded)}`);
+  console.log(`  ${label("Files kept local")}${num(metrics.filesKeptLocal)}`);
   console.log(`  ${label("Files summarized")}${num(r.filesSummarized)}`);
-  console.log(`  ${label("Sensitive values masked")}${num(r.sensitiveMasked)}`);
+  console.log(`  ${label("Sensitive findings detected")}${num(metrics.sensitiveFindings)}`);
+  console.log(`  ${label("Files containing findings")}${num(metrics.filesWithSensitiveFindings)}`);
+  console.log(`  ${label("Sensitive values masked")}${num(metrics.sensitiveValuesMasked)}`);
+  console.log(`  ${label("Files containing masked values")}${num(metrics.filesWithMaskedValues)}`);
+  console.log(`  ${label("Prepared copies transformed")}${num(metrics.preparedFilesModified)}`);
   console.log(`  ${label("Original files modified")}${num(r.sourceModified)}`);
+  const runtime = buildPreparedRuntimeBoundary();
+  console.log(`  ${label("Initial context")}prepared by Yuhi`);
+  console.log(`  ${label("Runtime start")}Claude Code starts in a Yuhi Prepared Workspace.`);
+  console.log(`  ${label("Workspace boundary")}${runtime.workspaceBoundary}`);
+  console.log(`  ${label("Workspace instruction")}present`);
+  console.log(
+    `  ${label("Filesystem enforcement")}${ui.yellow(runtime.filesystemEnforcement === "none" ? "not enabled" : runtime.filesystemEnforcement)}`,
+  );
+  console.log(`  ${label("OS sandbox")}${ui.yellow("not enabled")}`);
+  console.log(
+    ui.dim("  The agent may access files outside the Prepared Workspace if the runtime or user permits it."),
+  );
 
   if (res.blocked.length > 0)
     console.log(

@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.2.2]
+
+### Added
+
+- Yuhi-first Prepared Workspace launch commands for a new VS Code window and for
+  the official Claude Code extension or CLI.
+- Explicit pre-launch review, high-risk override confirmation, metadata-only
+  session/audit records, and a persistent **Prepared by Yuhi** indicator.
+- Detailed context-reduction, sensitive-data, per-file policy, and exact prepared-tree
+  review.
+- Schema v2 Prepared Workspace metadata with backward-compatible schema v1 reading,
+  shared runtime-boundary state, metadata-safe provenance, and filterable file decisions.
+
+### Security
+
+- Prepared launch paths are containment-checked and symlinked run directories are
+  rejected.
+- Generated Yuhi state and local `yuhi.yaml` files are excluded from the VSIX.
+- The UI explicitly states that Yuhi prepares initial context but does not provide an
+  OS-level sandbox.
+
 ## [0.1.0] — Beta
 
 First public beta. A focused, local-first preparation + review workflow.

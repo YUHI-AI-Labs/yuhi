@@ -1,10 +1,14 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { existsSync } from "node:fs";
-import { readFile, writeFile, access, mkdir } from "node:fs/promises";
+import { readFile, writeFile, access, mkdir, readdir } from "node:fs/promises";
 import { constants as FS } from "node:fs";
 import { spawn, execFile } from "node:child_process";
 import {
+  buildPreparedMetrics,
+  buildPreparedFileDecisions,
+  buildPreparedRuntimeBoundary,
+  lookupOnPath,
   prepareWorkspace,
   runInit,
   type PrepareReport,
@@ -24,6 +28,20 @@ import {
 import { loadConfig } from "@yuhi/config";
 import { parseDocument } from "yaml";
 import { renderSavingsHtml, type ReviewData } from "./webview.js";
+import {
+  CLAUDE_INTEGRATION,
+  LAUNCH_COMMANDS,
+  appendLaunchAudit,
+  buildSummary,
+  formatSummaryDetail,
+  formatPreparedStatusText,
+  normalizePreparedSession,
+  preparedStatusTooltipLines,
+  runPrepareAndOpen,
+  runPrepareAndStartClaude,
+  type ClaudeMode,
+  type LaunchHost,
+} from "./launch.js";
 
 const OLLAMA_DOWNLOAD = "https://ollama.com/download";
 
@@ -62,6 +80,8 @@ function setStatus(state: StatusState): void {
 let lastReport: PrepareReport | undefined;
 let lastReportRoot: string | undefined;
 let reviewPanel: vscode.WebviewPanel | undefined;
+let preparedStatusBar: vscode.StatusBarItem | undefined;
+let reviewingOpenedPreparedWorkspace = false;
 
 // ---- helpers ----
 function firstWorkspaceRoot(): string | undefined {
@@ -413,18 +433,7 @@ async function saveModelToConfig(root: string, model: string): Promise<void> {
 }
 
 // ---- prepare workspace ----
-async function commandPrepare(target?: vscode.Uri): Promise<void> {
-  const start = target?.fsPath ?? firstWorkspaceRoot();
-  if (!start) {
-    void vscode.window.showInformationMessage("Yuhi: open a folder to prepare.");
-    return;
-  }
-  const root = resolveConfigDir(start);
-  if (!root) {
-    void vscode.window.showInformationMessage("Yuhi: could not locate a workspace to prepare.");
-    return;
-  }
-
+async function prepareWorkspaceForLaunch(root: string): Promise<PrepareReport | undefined> {
   // Onboarding gates: config + local AI must be ready before preparing.
   if (!existsSync(path.join(root, CONFIG_FILENAME))) {
     const init = await vscode.window.showInformationMessage(
@@ -432,7 +441,7 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
       "Initialize",
     );
     if (init === "Initialize") await initializeProject(root);
-    return;
+    return undefined;
   }
   const state = await runDoctorChecks(root);
   if (state.status !== "ready") {
@@ -444,12 +453,12 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
     );
     if (fix === "Setup Local AI") await vscode.commands.executeCommand("yuhi.setupLocalAI");
     else if (fix === "Run Doctor") await vscode.commands.executeCommand("yuhi.doctor");
-    return;
+    return undefined;
   }
 
   setStatus("preparing");
   try {
-    const report = await vscode.window.withProgress(
+    return await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         title: "Yuhi: preparing workspace locally",
@@ -466,6 +475,31 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
         });
       },
     );
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      setStatus("ready");
+      void vscode.window.showInformationMessage("Yuhi: preparation cancelled.");
+      return undefined;
+    }
+    throw e;
+  }
+}
+
+async function commandPrepare(target?: vscode.Uri): Promise<void> {
+  const start = target?.fsPath ?? firstWorkspaceRoot();
+  if (!start) {
+    void vscode.window.showInformationMessage("Yuhi: open a folder to prepare.");
+    return;
+  }
+  const root = resolveConfigDir(start);
+  if (!root) {
+    void vscode.window.showInformationMessage("Yuhi: could not locate a workspace to prepare.");
+    return;
+  }
+
+  try {
+    const report = await prepareWorkspaceForLaunch(root);
+    if (!report) return;
 
     lastReport = report;
     lastReportRoot = root;
@@ -518,32 +552,171 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
     } else if (choice === "Run Again") await commandPrepare();
   } catch (e) {
     setStatus("failed");
-    if (e instanceof DOMException && e.name === "AbortError") {
-      void vscode.window.showInformationMessage("Yuhi: preparation cancelled.");
-      void refreshStatus(root);
-      return;
-    }
     void vscode.window.showErrorMessage(`Yuhi: preparation failed — ${errText(e)}`, "Run Doctor").then((c) => {
       if (c === "Run Doctor") void vscode.commands.executeCommand("yuhi.doctor");
     });
   }
 }
 
+function launchHost(): LaunchHost {
+  return {
+    openFolder: async (folderPath, newWindow) => {
+      await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(folderPath), newWindow);
+    },
+    isExtensionInstalled: (id) => vscode.extensions.getExtension(id) !== undefined,
+    createTerminal: (name, cwd) => vscode.window.createTerminal({ name, cwd }),
+    openExternal: async (url) => await vscode.env.openExternal(vscode.Uri.parse(url)),
+    showInfo: async (message, ...actions) => await vscode.window.showInformationMessage(message, ...actions),
+    showWarning: async (message, ...actions) => await vscode.window.showWarningMessage(message, ...actions),
+    showError: async (message, ...actions) => await vscode.window.showErrorMessage(message, ...actions),
+  };
+}
+
+async function rememberReport(root: string): Promise<PrepareReport | undefined> {
+  const report = await prepareWorkspaceForLaunch(root);
+  if (report) {
+    lastReport = report;
+    lastReportRoot = root;
+    setStatus("ready-for-review");
+  }
+  return report;
+}
+
+async function confirmPreparedLaunch(
+  summary: ReturnType<typeof buildSummary>,
+  primary: string,
+): Promise<"open" | "review" | "cancel"> {
+  const title =
+    primary === "Open with Claude Code"
+      ? "Open this Yuhi Prepared Workspace with Claude Code?"
+      : "Open this Yuhi Prepared Workspace in a new window?";
+  const choice = await vscode.window.showInformationMessage(
+    title,
+    {
+      modal: true,
+      detail:
+        "Prepared by Yuhi\n\n" +
+        formatSummaryDetail(summary) +
+        "\n\nYuhi has prepared the initial context, but does not currently restrict Claude Code's filesystem access after launch." +
+        "\n\nEstimated from the Prepared Workspace content. Actual model input usage may differ because agents add system prompts, tool output, cached context, and conversation history.",
+    },
+    primary,
+    "Review Prepared Context",
+    "Cancel",
+  );
+  if (choice === primary) return "open";
+  if (choice === "Review Prepared Context") return "review";
+  return "cancel";
+}
+
+async function confirmHighRiskOverride(count: number): Promise<boolean> {
+  const choice = await vscode.window.showWarningMessage(
+    "Yuhi found unresolved high-risk values",
+    {
+      modal: true,
+      detail:
+        `${count} high-risk finding(s) would be included unchanged. ` +
+        "Review the file decisions before continuing. This exception will be recorded in the local launch audit.",
+    },
+    "Override and continue",
+    "Cancel",
+  );
+  return choice === "Override and continue";
+}
+
+async function commandPrepareAndOpen(): Promise<void> {
+  const host = launchHost();
+  await runPrepareAndOpen({
+    host,
+    getWorkspaceRoot: firstWorkspaceRoot,
+    prepare: rememberReport,
+    confirmHighRiskOverride,
+    confirmOpen: async (summary) => {
+      while (true) {
+        const choice = await confirmPreparedLaunch(summary, "Open Prepared Workspace");
+        if (choice === "review") {
+          await commandReview();
+          continue;
+        }
+        return choice === "open";
+      }
+    },
+  });
+}
+
+async function pickClaudeMode(context: vscode.ExtensionContext): Promise<ClaudeMode | undefined> {
+  const previous = context.globalState.get<ClaudeMode>("yuhi.claudeLaunchMode", "extension");
+  const items: (vscode.QuickPickItem & { mode?: ClaudeMode })[] = [
+    {
+      label: "VS Code extension — open with Claude Code",
+      description: previous === "extension" ? "Last used" : undefined,
+      mode: "extension",
+    },
+    {
+      label: "CLI — run Claude Code in terminal",
+      description: previous === "cli" ? "Last used" : undefined,
+      mode: "cli",
+    },
+    { label: "Cancel" },
+  ];
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "Yuhi: Prepare and Start Claude Code",
+    placeHolder: "Choose how Claude Code should start from the Prepared Workspace",
+  });
+  if (!picked?.mode) return undefined;
+  await context.globalState.update("yuhi.claudeLaunchMode", picked.mode);
+  return picked.mode;
+}
+
+async function commandPrepareAndStartClaude(context: vscode.ExtensionContext): Promise<void> {
+  const host = launchHost();
+  await runPrepareAndStartClaude({
+    host,
+    getWorkspaceRoot: firstWorkspaceRoot,
+    prepare: rememberReport,
+    pickMode: () => pickClaudeMode(context),
+    resolveCliFile: () => lookupOnPath(CLAUDE_INTEGRATION.cliCommand),
+    confirmLaunch: (summary) => confirmPreparedLaunch(summary, "Open with Claude Code"),
+    reviewDetails: commandReview,
+    confirmHighRiskOverride,
+  });
+}
+
 // ---- review prepared ----
-function toReviewData(report: PrepareReport, root: string): ReviewData {
+function toReviewData(report: PrepareReport, root: string, preparedTree: string[]): ReviewData {
   const est = (chars: number) => Math.ceil(chars / 4); // matches @yuhi/shared estimateTokens heuristic
-  const files = report.files.map((f: PreparedFileEntry) => ({
-    path: f.relpath,
-    action: f.action,
-    status: f.status,
-    omitted: !!f.omitted,
-    beforeTokens: est(f.beforeChars),
-    afterTokens: f.omitted ? 0 : est(f.afterChars),
-    diffable: f.status === "ok" && !f.omitted,
-  }));
+  const decisions = new Map(buildPreparedFileDecisions(report).map((d) => [d.relativePath, d]));
+  const files = report.files.map((f: PreparedFileEntry) => {
+    const d = decisions.get(f.relpath);
+    return {
+      path: f.relpath,
+      action: f.action,
+      status: f.status,
+      omitted: !!f.omitted,
+      beforeTokens: est(f.beforeChars),
+      afterTokens: f.omitted ? 0 : est(f.afterChars),
+      diffable: !reviewingOpenedPreparedWorkspace && f.status === "ok" && !f.omitted,
+      sensitivity: d?.sensitivityLevel ?? "Unknown",
+      findingCategoryCounts: d?.findingCategoryCounts ?? {},
+      findingCount: d?.findingCount ?? 0,
+      rule: d?.matchedRule ?? "preparation result",
+      reason: d?.reason ?? "",
+      classificationSource: d?.classificationSource ?? "fallback",
+      included: d?.included ?? false,
+      claudeReceives: d?.agentReceives ?? "No",
+      transformed: d?.transformed ?? false,
+      transformations: d?.transformationKinds ?? [],
+      unresolvedHighRiskCount: d?.unresolvedHighRiskCount ?? 0,
+    };
+  });
   const r = report.report;
+  const metrics = buildPreparedMetrics(report);
   return {
     project: path.basename(root),
+    agent: "Claude Code",
+    runId: report.runId,
+    outcome: report.errors.length > 0 ? "Partial" : report.blocked.length > 0 ? "Complete with warnings" : "Complete",
+    osSandboxEnabled: false,
     outDir: path.relative(root, report.outDir),
     report: {
       beforeTokens: r.beforeTokens,
@@ -557,8 +730,26 @@ function toReviewData(report: PrepareReport, root: string): ReviewData {
       sourceModified: report.sourceModified,
       approx: r.approx,
     },
+    metrics,
+    runtime: buildPreparedRuntimeBoundary(),
     files,
+    preparedTree,
   };
+}
+
+async function listPreparedTree(root: string, dir = root): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const output: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const absolute = path.join(dir, entry.name);
+    const relative = path.relative(root, absolute).split(path.sep).join("/");
+    if (entry.isDirectory()) {
+      output.push(...(await listPreparedTree(root, absolute)));
+    } else if (entry.isFile()) {
+      output.push(relative);
+    }
+  }
+  return output;
 }
 
 async function commandReview(): Promise<void> {
@@ -572,6 +763,13 @@ async function commandReview(): Promise<void> {
   }
   const root = lastReportRoot;
   const report = lastReport;
+  if (!reviewingOpenedPreparedWorkspace) {
+    try {
+      await appendLaunchAudit(root, report.outDir, report.runId, "review-opened");
+    } catch {
+      // Reports produced before launch metadata support remain reviewable.
+    }
+  }
 
   if (!reviewPanel) {
     reviewPanel = vscode.window.createWebviewPanel(
@@ -585,8 +783,96 @@ async function commandReview(): Promise<void> {
       if (msg?.type === "diff" && typeof msg.path === "string") void openDiff(root, report, msg.path);
     });
   }
-  reviewPanel.webview.html = renderSavingsHtml(toReviewData(report, root), reviewPanel.webview.cspSource, nonce());
+  const preparedTree = await listPreparedTree(report.outDir);
+  reviewPanel.webview.html = renderSavingsHtml(
+    toReviewData(report, root, preparedTree),
+    reviewPanel.webview.cspSource,
+    nonce(),
+  );
   reviewPanel.reveal();
+}
+
+async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext, root: string): Promise<boolean> {
+  const sessionPath = path.join(root, ".yuhi", "session.json");
+  const manifestPath = path.join(root, "manifest.json");
+  if (!existsSync(sessionPath) || !existsSync(manifestPath)) return false;
+  try {
+    const session = normalizePreparedSession(JSON.parse(await readFile(sessionPath, "utf8")));
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      schemaVersion?: 1 | 2;
+      runId: string;
+      reduction: PrepareReport["report"];
+      files: (PreparedFileEntry & {
+        ruleName?: string;
+        reason?: string;
+        findingCategoryCounts?: Record<string, number>;
+        findingSeverityCounts?: Record<string, number>;
+        unresolvedHighRiskCount?: number;
+        /** Legacy only. Descriptions and previews are deliberately ignored. */
+        findings?: { detector?: string; severity?: "low" | "medium" | "high" | "critical" }[];
+      })[];
+      sourceModified: number;
+    };
+    const metadataFindings = (file: (typeof manifest.files)[number]) => {
+      const severities: ("low" | "medium" | "high" | "critical")[] = [];
+      for (const severity of ["critical", "high", "medium", "low"] as const) {
+        const count = Math.max(0, Math.trunc(file.findingSeverityCounts?.[severity] ?? 0));
+        for (let index = 0; index < count; index += 1) severities.push(severity);
+      }
+      const categories: string[] = [];
+      for (const [category, rawCount] of Object.entries(file.findingCategoryCounts ?? {})) {
+        const count = Math.max(0, Math.trunc(rawCount));
+        for (let index = 0; index < count; index += 1) categories.push(category);
+      }
+      if (severities.length === 0 && categories.length === 0 && Array.isArray(file.findings)) {
+        for (const finding of file.findings) {
+          categories.push(typeof finding.detector === "string" ? finding.detector : "legacy");
+          severities.push(finding.severity ?? "low");
+        }
+      }
+      const count = Math.max(categories.length, severities.length);
+      return Array.from({ length: count }, (_, index) => ({
+        detector: categories[index] ?? "metadata-only",
+        severity: severities[index] ?? "low",
+        path: file.relpath,
+        description: "Metadata-only finding category.",
+        maskedPreview: "[not stored]",
+      }));
+    };
+    lastReport = {
+      runId: manifest.runId,
+      outDir: root,
+      report: manifest.reduction,
+      files: manifest.files,
+      blocked: manifest.files.filter((f) => f.status === "blocked"),
+      errors: manifest.files.filter((f) => f.status === "error"),
+      decisions: manifest.files.map((f) => ({
+        relpath: f.relpath,
+        action: f.action,
+        ruleName: f.ruleName ?? "preparation result",
+        reason: f.reason ?? (f.omitted ? "Omitted from the Prepared Workspace." : "Included by policy."),
+        destinations: [],
+        findings: metadataFindings(f),
+      })),
+      sourceModified: manifest.sourceModified,
+    };
+    lastReportRoot = root;
+    reviewingOpenedPreparedWorkspace = true;
+
+    const m = session.metrics;
+    preparedStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
+    preparedStatusBar.text = formatPreparedStatusText(m);
+    preparedStatusBar.tooltip = new vscode.MarkdownString(
+      preparedStatusTooltipLines(session.runId, m).join("  \n"),
+    );
+    preparedStatusBar.command = "yuhi.reviewPrepared";
+    preparedStatusBar.show();
+    context.subscriptions.push(preparedStatusBar);
+    return true;
+  } catch (e) {
+    void vscode.window.showWarningMessage(`Yuhi: Prepared Workspace metadata could not be validated — ${errText(e)}`);
+    return false;
+  }
 }
 
 /** Open Original ↔ Prepared for one prepared file. */
@@ -667,10 +953,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("yuhi.prepareWorkspace", () => commandPrepare()),
     vscode.commands.registerCommand("yuhi.prepareHere", (uri?: vscode.Uri) => commandPrepare(uri)),
     vscode.commands.registerCommand("yuhi.reviewPrepared", () => commandReview()),
+    vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndOpen, () => commandPrepareAndOpen()),
+    vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndStartClaude, () =>
+      commandPrepareAndStartClaude(context),
+    ),
   );
 
   const root = firstWorkspaceRoot();
-  if (root) void onboard(root);
+  if (root) {
+    void activatePreparedWorkspaceBanner(context, root).then((isPrepared) => {
+      if (isPrepared) statusBar.hide();
+      else void onboard(root);
+    });
+  }
 }
 
 export function deactivate(): void {
