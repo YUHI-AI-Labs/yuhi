@@ -23,7 +23,7 @@ vhs docs/demo.tape              # writes docs/demo.gif
 Then reference it in the README:
 
 ```markdown
-![Yuhi demo](docs/demo.gif)
+![Yuhi demo](demo.gif)
 ```
 
 ## Option B — asciinema + agg (terminal recording)

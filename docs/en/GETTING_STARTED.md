@@ -10,7 +10,7 @@ launches an agent there.
 > agent still has network access and can attempt to read files outside the
 > workspace if it tries. Yuhi reduces what the agent is handed by default; it
 > does not guarantee that no data can ever leak. See
-> [SECURITY.md](../../SECURITY.md).
+> [SECURITY.md](../SECURITY.md).
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ launches an agent there.
 ## 1. Install
 
 > Yuhi is pre-release. Until it's published to npm, install from source (see
-> [CONTRIBUTING.md](../../CONTRIBUTING.md)). Once published, installation will
+> [CONTRIBUTING.md](../CONTRIBUTING.md)). Once published, installation will
 > look like this:
 
 ```bash
@@ -90,7 +90,7 @@ yuhi preview
 agent can see."** Review it and tighten `yuhi.yaml` until you're comfortable
 with what would be exposed. If a secret shows up as *allowed*, fix your policy
 (and please consider reporting a detection gap per
-[SECURITY.md](../../SECURITY.md)).
+[SECURITY.md](../SECURITY.md)).
 
 ## 4. Try it with the dummy agent (no real agent needed)
 
@@ -136,7 +136,7 @@ Yuhi will:
 
 ## Where to go next
 
-- [CONTRIBUTING.md](../../CONTRIBUTING.md) — set up from source, add adapters and
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — set up from source, add adapters and
   detectors.
-- [SECURITY.md](../../SECURITY.md) — scope, limitations, and how to report issues.
+- [SECURITY.md](../SECURITY.md) — scope, limitations, and how to report issues.
 - [GitHub Discussions](../../.github/DISCUSSIONS.md) — questions and ideas.

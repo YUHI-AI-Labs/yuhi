@@ -26,12 +26,12 @@ For concrete, trackable research proposals prefer the **Benchmark proposal** and
 ## Please keep in mind
 
 - **Security issues do not go here.** Never post vulnerabilities or exploit
-  details publicly. Follow [SECURITY.md](../SECURITY.md) and report privately via
+  details publicly. Follow [SECURITY.md](../docs/SECURITY.md) and report privately via
   the repository's **Security → Report a vulnerability**.
 - **No real secrets.** When sharing config or output, use obviously fake values.
 - **Be honest about scope.** Yuhi is defense-in-depth, not a sandbox or a
   security guarantee. Discussions should reflect that.
-- Be kind and follow the [Code of Conduct](../CODE_OF_CONDUCT.md).
+- Be kind and follow the [Code of Conduct](../docs/CODE_OF_CONDUCT.md).
 
 ## Where things go
 

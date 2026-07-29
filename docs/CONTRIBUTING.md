@@ -190,7 +190,7 @@ include:
 - Adding test fixtures for edge cases.
 
 If an issue is unclear, ask in the issue thread or in
-[Discussions](.github/DISCUSSIONS.md) before writing code — we're happy to help
+[Discussions](../.github/DISCUSSIONS.md) before writing code — we're happy to help
 you scope it.
 
 ## Questions

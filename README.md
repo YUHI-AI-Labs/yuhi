@@ -212,8 +212,8 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and `docs/adr/`.
 
 ## Contributing
 
-Issues and PRs welcome — see [`CONTRIBUTING.md`](./CONTRIBUTING.md) and
-[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md). Adding an agent is often just a config
+Issues and PRs welcome — see [`CONTRIBUTING.md`](./docs/CONTRIBUTING.md) and
+[`CODE_OF_CONDUCT.md`](./docs/CODE_OF_CONDUCT.md). Adding an agent is often just a config
 entry; adding a secret detector is a small, testable change.
 
 ## License

@@ -51,7 +51,7 @@ Yuhi is a security tool, so please confirm the following where relevant:
 ## Documentation & changelog
 
 - [ ] Updated relevant docs (if behavior or usage changed).
-- [ ] Updated `CHANGELOG.md` under `## [Unreleased]` (if behavior changed).
+- [ ] Updated `docs/CHANGELOG.md` under `## [Unreleased]` (if behavior changed).
 
 ## Notes for reviewers
 

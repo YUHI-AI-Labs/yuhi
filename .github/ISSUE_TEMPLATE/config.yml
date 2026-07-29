@@ -10,4 +10,4 @@ contact_links:
     about: >
       Do NOT open a public issue for security problems. Use the repository's
       Security tab → "Report a vulnerability" to report privately via GitHub
-      Security Advisories. See SECURITY.md for scope.
+      Security Advisories. See docs/SECURITY.md for scope.

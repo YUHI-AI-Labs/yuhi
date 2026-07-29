@@ -159,8 +159,8 @@ apps/      cli · vscode
 
 ## 参与贡献
 
-欢迎提交 Issue 和 PR——请参见 [`CONTRIBUTING.md`](./CONTRIBUTING.md) 和
-[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)。新增一个智能体通常只需添加一条配置项;
+欢迎提交 Issue 和 PR——请参见 [`CONTRIBUTING.md`](./docs/CONTRIBUTING.md) 和
+[`CODE_OF_CONDUCT.md`](./docs/CODE_OF_CONDUCT.md)。新增一个智能体通常只需添加一条配置项;
 新增一个机密检测器也是一处小而可测试的改动。
 
 ## 许可证

@@ -167,8 +167,8 @@ apps/      cli · vscode
 
 ## コントリビュート
 
-Issue と PR を歓迎します — [`CONTRIBUTING.md`](./CONTRIBUTING.md) と
-[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) を参照してください。エージェントの追加は多くの場合
+Issue と PR を歓迎します — [`CONTRIBUTING.md`](./docs/CONTRIBUTING.md) と
+[`CODE_OF_CONDUCT.md`](./docs/CODE_OF_CONDUCT.md) を参照してください。エージェントの追加は多くの場合
 設定エントリを 1 つ加えるだけで済みます。シークレットディテクターの追加も、小さくテスト可能な
 変更です。
 

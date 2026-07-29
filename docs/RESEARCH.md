@@ -39,7 +39,7 @@ See [ROADMAP.md](./ROADMAP.md).
 
 ## 2. Context Preparation Benchmark ("ContextBench")
 
-**Status: in design.** A design sketch lives at [`docs/contextbench.md`](./docs/contextbench.md).
+**Status: in design.** A design sketch lives at [`docs/contextbench.md`](./contextbench.md).
 
 If context preparation is a discipline, it needs a benchmark. ContextBench asks: when
 a policy transforms a piece of context before it is sent to an agent, how good was

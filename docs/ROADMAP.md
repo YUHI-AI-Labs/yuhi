@@ -4,7 +4,7 @@
 
 This roadmap is the honest answer to "is this project alive?" It is grouped by
 what is **done**, what is **in progress**, what is **next**, and what is **future**.
-For the finer-grained per-feature status, see the table in the [README](./README.md).
+For the finer-grained per-feature status, see the table in the [README](../README.md).
 
 _Last reviewed: 2026-07._
 
