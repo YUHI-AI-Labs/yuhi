@@ -1,6 +1,16 @@
-# Yuhi
+<h1 align="center">Yuhi</h1>
 
-> **Yuhi prepares the right context before an AI starts. Everything else is an extension.**
+<p align="center"><strong>Yuhi prepares the right context before an AI starts. Everything else is an extension.</strong></p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-vscode?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>
+  <a href="https://github.com/YUHI-AI-Labs/yuhi/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/YUHI-AI-Labs/yuhi/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="https://yuhi-iota.vercel.app"><img alt="Website" src="https://img.shields.io/badge/website-yuhi--iota.vercel.app-0c1017"></a>
+</p>
+
+<p align="center">🌐 Also in <a href="./README.ja.md">日本語</a> · <a href="./README.zh-CN.md">简体中文</a></p>
 
 **What is Yuhi?** A local-first developer tool that decides — per file — what to
 **send** to your AI agent, what to **prepare locally** first, and what to **keep** on
@@ -12,10 +22,10 @@ yuhi preview      # what your AI will receive
 yuhi run claude   # launch the agent on the prepared context
 ```
 
-> 🌐 Also in [日本語](./README.ja.md) · [简体中文](./README.zh-CN.md)
-
 <!-- Static preview of `yuhi preview`. For an animated GIF, run `vhs docs/demo.tape` (see docs/DEMO.md). -->
-![Yuhi preview — every file's route at a glance](docs/preview.png)
+<p align="center">
+  <img alt="Yuhi preview — every file's route at a glance" src="docs/preview.png" width="760">
+</p>
 
 ```text
 git status   →  shows what changed
