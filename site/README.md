@@ -20,13 +20,13 @@ site/
 ## Internationalization (EN / JA / ZH-CN)
 
 `index.html` is the **only editable file**. It is trilingual at runtime: a small
-inline bootstrap reads `location.pathname` (`/`, `/ja`, `/zh-cn`), sets
+inline bootstrap reads `location.pathname` (`/`, `/en`, `/zh-cn`), sets
 `<html lang>`, applies localized `<title>`/description/OG/canonical, and swaps every
 `[data-i18n]` node from a single shared locale dictionary. Routes:
 
-- `/` → English (default) · `/ja` → Japanese · `/zh-cn` → Simplified Chinese
+- `/` → English (default) · `/en` → English · `/zh-cn` → Simplified Chinese
 
-`/ja/index.html` and `/zh-cn/index.html` are **deployment artifacts** — byte-identical
+`/en/index.html` and `/zh-cn/index.html` are **deployment artifacts** — byte-identical
 copies of `index.html` that make those paths resolve on static hosting. **Never edit
 them directly.** Regenerate them from the single source:
 

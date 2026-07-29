@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const siteDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(siteDir, "index.html");
-const LOCALES = ["ja", "zh-cn"];
+const LOCALES = ["en", "zh-cn"];
 
 if (!existsSync(source)) {
   console.error(`[generate-locale-routes] ERROR: source not found: ${source}`);
