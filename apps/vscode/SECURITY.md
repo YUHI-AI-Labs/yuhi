@@ -3,7 +3,7 @@
 The Yuhi VS Code extension follows the security policy of the Yuhi project.
 
 - **Policy and reporting:** see the root
-  [`SECURITY.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/SECURITY.md).
+  [`SECURITY.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/.github/SECURITY.md).
 - **Threat model:** see
   [`THREAT_MODEL.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/docs/THREAT_MODEL.md).
 

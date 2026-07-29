@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<script>(function(){try{var p=location.pathname.replace(/\/+$/,"").toLowerCase();var l=p==="/ja"?"ja":(p==="/zh-cn"?"zh-cn":"en");document.documentElement.lang=(l==="zh-cn"?"zh-CN":l);if(l!=="en")document.documentElement.className+=(document.documentElement.className?" ":"")+"i18n-hide";}catch(e){}})();</script>
+<script>(function(){try{var p=location.pathname.replace(/\/+$/,"").toLowerCase();var l=p==="/en"?"en":(p==="/zh-cn"?"zh-cn":"ja");document.documentElement.lang=(l==="zh-cn"?"zh-CN":l);document.documentElement.className+=(document.documentElement.className?" ":"")+"i18n-hide";}catch(e){}})();</script>
 <style>html.i18n-hide body{visibility:hidden}</style>
 <title>Yuhi — Prepare the right context before AI starts</title>
 <meta name="description" id="m-desc" content="Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0." />
 
 <link rel="canonical" id="m-canonical" href="https://yuhi-iota.vercel.app/" />
-<link rel="alternate" hreflang="en" href="https://yuhi-iota.vercel.app/" />
-<link rel="alternate" hreflang="ja" href="https://yuhi-iota.vercel.app/ja" />
+<link rel="alternate" hreflang="ja" href="https://yuhi-iota.vercel.app/" />
+<link rel="alternate" hreflang="en" href="https://yuhi-iota.vercel.app/en" />
 <link rel="alternate" hreflang="zh-Hans" href="https://yuhi-iota.vercel.app/zh-cn" />
 <link rel="alternate" hreflang="x-default" href="https://yuhi-iota.vercel.app/" />
 <meta name="theme-color" content="#131120" media="(prefers-color-scheme: dark)" />
@@ -283,8 +283,8 @@
       <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" aria-label="GitHub repository">GitHub</a>
       <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="nav_docs">Documentation</a>
       <span class="lang-sel" role="group" aria-label="Language">
-        <a href="/" data-loc="en">EN</a>
-        <a href="/ja" data-loc="ja">日本語</a>
+        <a href="/" data-loc="ja">日本語</a>
+        <a href="/en" data-loc="en">EN</a>
         <a href="/zh-cn" data-loc="zh-cn">简体中文</a>
       </span>
       <button class="theme-toggle" id="themeBtn" title="Toggle theme" aria-label="Toggle color theme">◐</button>
@@ -303,7 +303,7 @@
       <div class="cta">
         <a class="btn btn-primary" href="#start" data-i18n="hero_start">Get started</a>
         <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">View on GitHub →</a>
-        <span class="install"><span class="p">$</span> npx @yuhi-ai-labs/yuhi preview <button class="copy" id="copyHero" title="Copy" data-i18n="copy">copy</button></span>
+        <span class="install"><span class="p">$</span> npx @yuhi-ai-labs/yuhi@beta preview <button class="copy" id="copyHero" title="Copy" data-i18n="copy">copy</button></span>
       </div>
 
       <div class="flow" aria-label="Repository, prepared locally, then the agent">
@@ -381,7 +381,7 @@
       <div class="sec-head">
         <p class="eyebrow" data-i18n="sv_ey">Context Savings</p>
         <h2 data-i18n="sv_h2">See the input you didn't send.</h2>
-        <p data-i18n="sv_p">After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and in the VS Code extension (in development).</p>
+        <p data-i18n="sv_p">After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and the VS Code extension.</p>
       </div>
       <div class="sv-card">
         <span class="sv-tag" data-i18n="sv_estimated">Example · estimated</span>
@@ -528,7 +528,7 @@
       step2:"See every file's route before anything runs.",
       step3:"Launch the agent inside the prepared context.",
       sv_ey:"Context Savings", sv_h2:"See the input you didn't send.",
-      sv_p:"After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and in the VS Code extension (in development).",
+      sv_p:"After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and the VS Code extension.",
       sv_estimated:"Example · estimated", sv_before:"Estimated input before", sv_after:"Estimated input after",
       sv_avoided:"Estimated Claude input avoided", sv_reduction:"Reduction",
       sv_excluded:"Files excluded", sv_summarized:"Files summarized", sv_sensitive:"Sensitive items kept local", sv_modified:"Original files modified",
@@ -536,7 +536,7 @@
       ct_ey:"Open source", ct_h2:"Help build the preparation layer before frontier AI.",
       ct_p:"Yuhi is Apache-2.0 and vendor-neutral. Issues, discussions, and pull requests are welcome.",
       ct_gh:"Contribute on GitHub", ct_guide:"Browse issues",
-      foot_neutral:"vendor-neutral", foot_demo:"Demo", foot_routes:"Routes", foot_start:"Get started"
+      avail:"Available now — Beta", foot_neutral:"vendor-neutral", foot_demo:"Demo", foot_routes:"Routes", foot_start:"Get started"
     },
     ja: {
       _title:"Yuhi — Claudeに、全部を渡さない。",
@@ -581,7 +581,7 @@
       step2:"実行前に、各ファイルの経路を確認します。",
       step3:"整えられた文脈の中でエージェントを起動します。",
       sv_ey:"コンテキスト削減", sv_h2:"送らなかった入力を、可視化する。",
-      sv_p:"準備のたびに、Yuhiは送らずに済んだコンテキストを推定します。同じ要約は、CLIとVS Code拡張（開発中）に表示されます。",
+      sv_p:"準備のたびに、Yuhiは送らずに済んだコンテキストを推定します。同じ要約は、CLIとVS Code拡張に表示されます。",
       sv_estimated:"例・推定値", sv_before:"整理前の推定入力", sv_after:"整理後の推定入力",
       sv_avoided:"削減できたと推定されるClaude入力", sv_reduction:"削減率",
       sv_excluded:"除外したファイル", sv_summarized:"ローカル要約したファイル", sv_sensitive:"端末内に保持した機微情報", sv_modified:"変更した元ファイル",
@@ -589,7 +589,7 @@
       ct_ey:"オープンソース", ct_h2:"外部AIへ渡す前の「準備の層」を、一緒につくる。",
       ct_p:"YuhiはApache-2.0、ベンダー非依存です。Issue・Discussion・Pull Requestを歓迎します。",
       ct_gh:"GitHubで参加する", ct_guide:"Issueを見る",
-      foot_neutral:"ベンダー非依存", foot_demo:"デモ", foot_routes:"経路", foot_start:"使ってみる"
+      avail:"提供中 — Beta", foot_neutral:"ベンダー非依存", foot_demo:"デモ", foot_routes:"経路", foot_start:"使ってみる"
     },
     "zh-cn": {
       _title:"Yuhi — 不要把所有内容都交给 Claude。",
@@ -634,7 +634,7 @@
       step2:"在运行前查看每个文件的路径。",
       step3:"在整理好的上下文中启动 AI 代理。",
       sv_ey:"上下文精简", sv_h2:"看见你没有发送的输入。",
-      sv_p:"每次准备后，Yuhi 会估算你避免发送的上下文。相同的摘要会出现在 CLI 和 VS Code 扩展（开发中）里。",
+      sv_p:"每次准备后，Yuhi 会估算你避免发送的上下文。相同的摘要会出现在 CLI 和 VS Code 扩展里。",
       sv_estimated:"示例 · 预计", sv_before:"整理前的预计输入", sv_after:"整理后的预计输入",
       sv_avoided:"预计减少的 Claude 输入", sv_reduction:"减少比例",
       sv_excluded:"已排除文件", sv_summarized:"已在本地摘要的文件", sv_sensitive:"保留在本机的敏感信息", sv_modified:"已修改的原始文件",
@@ -642,19 +642,19 @@
       ct_ey:"开源", ct_h2:"一起构建前沿 AI 之前的“上下文准备层”。",
       ct_p:"Yuhi 采用 Apache-2.0，厂商中立。欢迎提交 Issue、Discussion 和 Pull Request。",
       ct_gh:"在 GitHub 参与", ct_guide:"贡献指南",
-      foot_neutral:"厂商中立", foot_demo:"演示", foot_routes:"路径", foot_start:"开始使用"
+      avail:"现已可用 — Beta", foot_neutral:"厂商中立", foot_demo:"演示", foot_routes:"路径", foot_start:"开始使用"
     }
   };
 
   var BASE="https://yuhi-iota.vercel.app";
-  var PATHS={en:"/", ja:"/ja", "zh-cn":"/zh-cn"};
+  var PATHS={ja:"/", en:"/en", "zh-cn":"/zh-cn"};
   var HTMLLANG={en:"en", ja:"ja", "zh-cn":"zh-CN"};
 
   function detectLocale(){
     var p=location.pathname.replace(/\/+$/,"").toLowerCase();
-    if(p==="/ja") return "ja";
+    if(p==="/en") return "en";
     if(p==="/zh-cn") return "zh-cn";
-    return "en";
+    return "ja";
   }
   function setMeta(sel,attr,val){ var el=document.querySelector(sel); if(el) el.setAttribute(attr,val); }
 
@@ -667,7 +667,7 @@
     setMeta("#m-ogdesc","content",d._desc);
     setMeta("#m-twtitle","content",d._title);
     setMeta("#m-twdesc","content",d._desc);
-    var url=BASE+(loc==="en"?"/":PATHS[loc]);
+    var url=BASE+PATHS[loc];
     setMeta("#m-canonical","href",url);
     setMeta("#m-ogurl","content",url);
     // text nodes
@@ -713,7 +713,7 @@
   // ---- copy button ----
   var ch=document.getElementById("copyHero");
   if(ch){ ch.addEventListener("click",function(){
-    try{ navigator.clipboard.writeText("npx @yuhi-ai-labs/yuhi preview"); ch.textContent=(I18N[LOC]||I18N.en).copy==="copy"?"copied":"✓"; setTimeout(function(){ ch.textContent=(I18N[LOC]||I18N.en).copy; },1400); }catch(e){}
+    try{ navigator.clipboard.writeText("npx @yuhi-ai-labs/yuhi@beta preview"); ch.textContent=(I18N[LOC]||I18N.en).copy==="copy"?"copied":"✓"; setTimeout(function(){ ch.textContent=(I18N[LOC]||I18N.en).copy; },1400); }catch(e){}
   }); }
 
   // ---- terminal demo sequence (command stays literal: "yuhi preview") ----

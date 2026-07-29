@@ -50,7 +50,7 @@ end-to-end flow.
 
 - Yuhi is **defense-in-depth, not a sandbox**. The launched agent still has
   network access and can attempt to read files outside the generated workspace.
-  See [SECURITY.md](SECURITY.md) for scope and limitations.
+  See [SECURITY.md](../.github/SECURITY.md) for scope and limitations.
 
 ### Notes
 

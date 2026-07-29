@@ -41,7 +41,7 @@ Yuhi prepares what an agent would *start from*. It is **not a sandbox**: any age
 launch afterwards still has network and OS access. Preparation and review happen entirely
 locally — nothing about your code is transmitted during these steps. See the project's
 [`THREAT_MODEL.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/docs/THREAT_MODEL.md) and
-[`SECURITY.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/SECURITY.md).
+[`SECURITY.md`](https://github.com/YUHI-AI-Labs/yuhi/blob/main/.github/SECURITY.md).
 
 - Local-first — the on-device model does the preparation.
 - No telemetry.

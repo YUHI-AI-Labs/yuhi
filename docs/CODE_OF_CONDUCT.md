@@ -38,7 +38,7 @@ Examples of unacceptable behavior include:
 
 Because Yuhi is a security-focused project, we additionally ask that community
 members practice responsible, coordinated disclosure of vulnerabilities. Do not
-publicly share exploit details for unpatched issues. See [SECURITY.md](SECURITY.md).
+publicly share exploit details for unpatched issues. See [SECURITY.md](../.github/SECURITY.md).
 
 ## Enforcement Responsibilities
 

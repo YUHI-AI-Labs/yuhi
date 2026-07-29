@@ -196,5 +196,5 @@ you scope it.
 ## Questions
 
 Open a thread in **GitHub Discussions** (Q&A) or comment on a relevant issue.
-For anything security-sensitive, follow [SECURITY.md](SECURITY.md) instead of
+For anything security-sensitive, follow [SECURITY.md](../.github/SECURITY.md) instead of
 filing a public issue.

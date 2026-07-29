@@ -18,7 +18,7 @@ question belongs.
 | Suggest a feature or discuss an idea | [Discussions → Ideas](https://github.com/YUHI-AI-Labs/yuhi/discussions/categories/ideas) |
 | Show what you built | [Discussions → Show and tell](https://github.com/YUHI-AI-Labs/yuhi/discussions/categories/show-and-tell) |
 | Report a reproducible bug | [New issue → Bug report](https://github.com/YUHI-AI-Labs/yuhi/issues/new/choose) |
-| Report a security vulnerability | **Privately** via [Security → Report a vulnerability](https://github.com/YUHI-AI-Labs/yuhi/security/advisories/new) — see [`SECURITY.md`](./SECURITY.md) |
+| Report a security vulnerability | **Privately** via [Security → Report a vulnerability](https://github.com/YUHI-AI-Labs/yuhi/security/advisories/new) — see [`SECURITY.md`](../.github/SECURITY.md) |
 | Propose research / collaboration | [Discussions](https://github.com/YUHI-AI-Labs/yuhi/discussions) or an issue tagged `research` — see [`RESEARCH.md`](./RESEARCH.md) |
 
 **Please don't** open a public issue for a security problem, or use the issue tracker
