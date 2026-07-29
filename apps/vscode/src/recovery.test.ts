@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -101,6 +101,9 @@ describe("Prepared Workspace recovery reconciliation", () => {
 });
 
 describe("RecoverableCommandRunner", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("rejects duplicate clicks and clears after completion", async () => {
     const runner = new RecoverableCommandRunner();
     let finish!: () => void;
@@ -114,12 +117,46 @@ describe("RecoverableCommandRunner", () => {
     expect(runner.isRunning).toBe(false);
   });
 
-  it("clears after failure, cancellation, and timeout so retry remains possible", async () => {
+  it("clears the in-flight guard after deterministic cancellation and permits retry", async () => {
+    const runner = new RecoverableCommandRunner();
+    const controller = new AbortController();
+    let started!: () => void;
+    const checkpoint = new Promise<void>((resolve) => { started = resolve; });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const first = runner.run(async () => {
+        started();
+        await new Promise<void>((resolve) => {
+          controller.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { kind: "cancelled" };
+      });
+      await checkpoint;
+      expect(runner.isRunning).toBe(true);
+      expect(await runner.run(async () => ({ kind: "success" })))
+        .toEqual({ kind: "already-running" });
+      controller.abort();
+      expect(await first).toEqual({ kind: "cancelled" });
+      expect(runner.isRunning).toBe(false);
+      expect(await runner.run(async () => ({ kind: "success" }))).toEqual({ kind: "success" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("clears after failure and virtual-time timeout so retry remains possible", async () => {
     const runner = new RecoverableCommandRunner();
     expect(await runner.run(async () => { throw new Error("synthetic"); }))
       .toEqual({ kind: "failed", category: "unexpected-error" });
-    expect(await runner.run(async () => ({ kind: "cancelled" }))).toEqual({ kind: "cancelled" });
-    expect(await runner.run(async () => new Promise(() => undefined), 5)).toEqual({ kind: "timeout" });
+    vi.useFakeTimers();
+    const timed = runner.run(async () => new Promise(() => undefined), 60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await timed).toEqual({ kind: "timeout" });
+    expect(runner.isRunning).toBe(false);
     expect(await runner.run(async () => ({ kind: "success" }))).toEqual({ kind: "success" });
   });
 });

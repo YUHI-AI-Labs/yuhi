@@ -17,7 +17,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { LocalModelProvider } from "@yuhi/shared";
-import { prepareWorkspace, SOURCE_INTEGRITY_ERROR } from "./prepare-workspace.js";
+import {
+  prepareWorkspace,
+  prepareWorkspaceOutcome,
+  SOURCE_INTEGRITY_ERROR,
+} from "./prepare-workspace.js";
 import {
   buildPreparedFileDecisions,
   buildPreparedMetrics,
@@ -680,29 +684,62 @@ describe("prepareWorkspace", () => {
     expect(existsSync(path.join(report.outDir, "manifest.json"))).toBe(true);
   }, 15_000);
 
-  it("cancellation during scanning removes incomplete output", async () => {
+  it("returns typed cancellation, cleans candidates, preserves source, and permits retry", async () => {
     for (let index = 0; index < 200; index += 1) {
       put(`src/file-${index}.txt`, "x".repeat(1_024));
     }
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const sourceHashes = new Map(
+      readFileNames(dir).map((file) => [
+        path.relative(dir, file),
+        createHash("sha256").update(readFileSync(file)).digest("hex"),
+      ]),
+    );
     const controller = new AbortController();
-    await expect(
-      prepareWorkspace(dir, {
+    let launchAttempted = false;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const outcome = await prepareWorkspaceOutcome(dir, {
         provider: fakeProvider(),
         signal: controller.signal,
-        onProgress: (message) => {
-          if (message.includes("Scanning sensitive information")) {
-            controller.abort();
-          }
+        onCheckpoint: (checkpoint) => {
+          if (checkpoint === "workspace-created") controller.abort();
         },
-      }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-    const preparedRoot = path.join(dir, ".yuhi", "prepared");
-    expect(
-      existsSync(preparedRoot)
-        ? readdirSync(preparedRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
-        : [],
-    ).toHaveLength(0);
+      });
+      if (outcome.kind === "success" && outcome.launchAllowed) launchAttempted = true;
+      expect(outcome).toEqual({ kind: "cancelled", launchAllowed: false });
+      expect(launchAttempted).toBe(false);
+
+      const workspaceRoot = path.join(managedDir, "workspaces");
+      const candidates = existsSync(workspaceRoot)
+        ? readdirSync(workspaceRoot, { withFileTypes: true })
+        : [];
+      expect(candidates).toHaveLength(0);
+      expect(
+        existsSync(workspaceRoot)
+          ? readFileNames(workspaceRoot).filter(
+              (file) => file.endsWith("manifest.json") || file.endsWith("session.json"),
+            )
+          : [],
+      ).toEqual([]);
+      for (const [relpath, digest] of sourceHashes) {
+        expect(createHash("sha256").update(readFileSync(path.join(dir, relpath))).digest("hex"))
+          .toBe(digest);
+      }
+
+      const retry = await prepareWorkspaceOutcome(dir, { provider: fakeProvider() });
+      expect(retry.kind).toBe("success");
+      if (retry.kind === "success") {
+        expect(retry.launchAllowed).toBe(true);
+        expect(existsSync(path.join(retry.report.outDir, "manifest.json"))).toBe(true);
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });
 

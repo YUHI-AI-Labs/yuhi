@@ -10,7 +10,7 @@ import {
   buildPreparedRuntimeBoundary,
   lookupOnPath,
   managedWorkspaceBaseDir,
-  prepareWorkspace,
+  prepareWorkspaceOutcome,
   runInit,
   type PrepareReport,
   type PreparedFileEntry,
@@ -594,14 +594,14 @@ async function prepareWorkspaceForLaunch(
                 "Yuhi is still preparing your workspace. No files have been sent to Claude Code yet.",
             });
           }, 60_000);
-          const preparation = prepareWorkspace(root, {
+          const preparation = prepareWorkspaceOutcome(root, {
             provider,
             signal: controller.signal,
             onProgress: (msg) => progress.report({ message: msg }),
             excludeRelpaths,
           });
           activePrepareDone = preparation.then(() => undefined, () => undefined);
-          return await Promise.race([
+          const outcome = await Promise.race([
             preparation,
             new Promise<never>((_resolve, reject) => {
               watchdog = setTimeout(() => {
@@ -610,6 +610,7 @@ async function prepareWorkspaceForLaunch(
               }, PREPARATION_WATCHDOG_MS);
             }),
           ]);
+          return outcome.kind === "success" ? outcome.report : undefined;
         } finally {
           if (watchdog) clearTimeout(watchdog);
           if (longRunningNotice) clearTimeout(longRunningNotice);

@@ -145,7 +145,15 @@ export interface PrepareWorkspaceOptions {
   managedWorkspaceBase?: string;
   /** Explicit, caller-confirmed exclusions for a new recovery run. */
   excludeRelpaths?: readonly string[];
+  /** Deterministic lifecycle seam for cancellation/recovery integration. */
+  onCheckpoint?: (checkpoint: PreparationCheckpoint) => void;
 }
+
+export type PreparationCheckpoint = "workspace-created";
+
+export type PrepareWorkspaceOutcome =
+  | { kind: "success"; report: PrepareReport; launchAllowed: boolean }
+  | { kind: "cancelled"; launchAllowed: false };
 
 /** OS-appropriate Yuhi-owned location, deliberately outside the source workspace. */
 export function managedWorkspaceBaseDir(): string {
@@ -378,6 +386,7 @@ export async function prepareWorkspace(
   const managedBase = path.resolve(options.managedWorkspaceBase ?? managedWorkspaceBaseDir());
   const outDir = path.join(managedBase, runId);
   await mkdir(outDir, { recursive: true, mode: 0o700 });
+  options.onCheckpoint?.("workspace-created");
   try {
   const infoByPath = new Map<string, FileInfo>(plan.scan.files.map((f) => [f.relpath, f]));
   const sourceIntegrityBefore = await captureSourceIntegrity(root, plan.scan.files, {
@@ -829,6 +838,26 @@ export async function prepareWorkspace(
     if (error instanceof DOMException && error.name === "AbortError") {
       await rm(outDir, { recursive: true, force: true });
       progress("Yuhi preparation cancelled");
+    }
+    throw error;
+  }
+}
+
+/** Converts intentional cancellation into a typed, non-launchable result. */
+export async function prepareWorkspaceOutcome(
+  dir: string,
+  options: PrepareWorkspaceOptions = {},
+): Promise<PrepareWorkspaceOutcome> {
+  try {
+    const report = await prepareWorkspace(dir, options);
+    return {
+      kind: "success",
+      report,
+      launchAllowed: report.tabularAcceptance?.launchAllowed ?? false,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return { kind: "cancelled", launchAllowed: false };
     }
     throw error;
   }
