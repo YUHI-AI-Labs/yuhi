@@ -2,6 +2,8 @@
 
 **Prepare your workspace on-device before anything is sent to Claude.**
 
+**Website:** https://yuhi-iota.vercel.app/
+
 Yuhi runs a small **local** model (via [Ollama](https://ollama.com)) to summarize and
 reduce your files, mask sensitive values, and run a deterministic safety check — all on
 your machine. You then **review** exactly what would be sent, as an Original ↔ Prepared

@@ -2,6 +2,8 @@
 
 > **Prepare the right context before AI starts.**
 
+**Website:** https://yuhi-iota.vercel.app/
+
 `yuhi` is a local-first CLI that decides — per file — what your AI coding agent
 (Claude Code, and more) **sees**, what gets **prepared locally** first (pseudonymize,
 mask secrets), and what **never leaves your machine**. It then runs the agent on a
