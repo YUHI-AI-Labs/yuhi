@@ -10,6 +10,11 @@ updates:
       timezone: "Etc/UTC"
     open-pull-requests-limit: 10
     versioning-strategy: increase
+    ignore:
+      # Defer major version bumps during the beta; revisit these deliberately,
+      # not as drive-by PRs. Minor/patch updates are grouped below.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
     commit-message:
