@@ -9,7 +9,9 @@ reduce your files, mask sensitive values, and run a deterministic safety check â
 your machine. You then **review** exactly what would be sent, as an Original â†” Prepared
 diff, before any of it leaves your computer. Your original files are never modified.
 
-> Beta. Yuhi prepares and reviews the initial context. It never silently submits a prompt.
+> **Early preview. Not yet recommended for production, regulated data, or highly
+> sensitive workflows.** Yuhi prepares and reviews the initial context. It never silently
+> submits a prompt.
 > A launched agent still has the OS and network access permitted by its runtime.
 
 ## Features
@@ -92,6 +94,18 @@ and caching.
 Yuhi guarantees the generated initial context and leaves original source files unchanged
 during preparation. It does not prevent parent-directory, home-directory, or absolute-path
 access after launch.
+
+## Known limitations
+
+- PDF parsing and transformation are not yet supported. PDF files are kept local when
+  verified inspection is unavailable.
+- XLSX safe parsing and transformation are not yet supported. Unsupported or unverified
+  workbooks are kept local; unresolved high-risk workbooks block launch.
+- Preparation may take time for large workspaces.
+- Yuhi prepares initial context but does not provide OS-level filesystem confinement.
+- Unsupported or unverified files may be kept local.
+- CLI agent launch is temporarily disabled until it reaches full preparation and recovery
+  parity. Use the VS Code workflow for Claude Code handoff in this release.
 
 Prepared Workspace metadata uses `schemaVersion: 2`. It keeps finding events, finding-file
 counts, masked-value counts, masked-file counts, and byte-different prepared-copy counts

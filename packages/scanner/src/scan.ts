@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { type FileInfo, type ScanFinding, type ScanResult, type Severity, sha256 } from "@yuhi/shared";
+import {
+  fileCapabilities,
+  type FileInfo,
+  type ScanFinding,
+  type ScanResult,
+  type Severity,
+  sha256,
+} from "@yuhi/shared";
 import { walkRepo } from "./walk.js";
 import { looksBinary } from "./binary.js";
 import { trackedFiles, isGitRepo } from "./git.js";
@@ -13,6 +20,7 @@ export interface ScanOptions {
   /** Max bytes to read for secret detection (skip huge files). */
   maxScanBytes?: number;
   detectors?: Detector[];
+  explicitIncludeDirs?: ReadonlySet<string>;
 }
 
 const DEFAULT_MAX_SCAN_BYTES = 2_000_000;
@@ -23,7 +31,11 @@ function emptyRisk(): Record<Severity, number> {
 
 export function scanRepo(root: string, options: ScanOptions): ScanResult {
   const absRoot = path.resolve(root);
-  const { entries, warnings } = walkRepo(absRoot);
+  const { entries, warnings } = walkRepo(absRoot, {
+    ...(options.explicitIncludeDirs !== undefined
+      ? { explicitIncludeDirs: options.explicitIncludeDirs }
+      : {}),
+  });
   const tracked = trackedFiles(absRoot);
   const maxScanBytes = options.maxScanBytes ?? DEFAULT_MAX_SCAN_BYTES;
   const detectorOpts: DetectorOptions = {
@@ -49,6 +61,12 @@ export function scanRepo(root: string, options: ScanOptions): ScanResult {
         ...(tracked !== null ? { tracked: tracked.has(entry.relpath) } : {}),
       },
       findings: [],
+      inspection: {
+        ...fileCapabilities(entry.relpath),
+        inspectionAttempted: false,
+        inspectionSucceeded: false,
+        contentVerified: false,
+      },
     };
 
     if (entry.isSymlink) {
@@ -68,11 +86,41 @@ export function scanRepo(root: string, options: ScanOptions): ScanResult {
         continue;
       }
       info.sha256 = sha256(buf);
-      if (looksBinary(buf)) {
-        info.flags.isBinary = true;
+      const detectedBinary = looksBinary(buf);
+      const capabilities = fileCapabilities(entry.relpath, detectedBinary);
+      if (detectedBinary || !capabilities.parserAvailable) {
+        info.flags.isBinary = detectedBinary;
+        info.inspection = {
+          ...capabilities,
+          inspectionAttempted: false,
+          inspectionSucceeded: false,
+          contentVerified: false,
+        };
+        if (/\.xlsx$/i.test(entry.relpath)) {
+          const finding: ScanFinding = {
+            detector: "tabular-unparsed-spreadsheet",
+            path: entry.relpath,
+            severity: "high",
+            maskedPreview: "[spreadsheet kept local]",
+            description: "Spreadsheet requires a configured local parser before safe inclusion",
+          };
+          info.findings = [finding];
+          allFindings.push(finding);
+          riskSummary.high += 1;
+        }
       } else {
+        info.inspection = {
+          ...fileCapabilities(entry.relpath, false),
+          inspectionAttempted: true,
+          inspectionSucceeded: true,
+          contentVerified: true,
+        };
         const content = buf.toString("utf8");
-        const findings = runDetectors(content, detectorOpts, options.detectors).map((f) => ({
+        const findings = runDetectors(
+          content,
+          { ...detectorOpts, relpath: entry.relpath },
+          options.detectors,
+        ).map((f) => ({
           ...f,
           path: entry.relpath,
         }));

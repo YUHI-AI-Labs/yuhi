@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { readFile } from "node:fs/promises";
 import { cliVersion } from "./version.js";
 import {
   YuhiError,
@@ -16,8 +17,11 @@ import {
   explainFromPlan,
   diffContext,
   contextSavings,
-  runAgent,
   prepareWorkspace,
+  assertSafeSourceWorkspace,
+  resolvePreparedRunReference,
+  readPreparedRunSession,
+  writePreparedRunSession,
   createWorkspaceForDir,
   listWorkspaces,
   inspectWorkspace,
@@ -40,7 +44,6 @@ import {
   renderExplain,
   renderStatus,
   renderDiff,
-  renderPrepareReport,
   renderModelTiers,
 } from "./render.js";
 import { confirm } from "./prompt.js";
@@ -56,6 +59,11 @@ import {
   installHintForPlatform,
   OLLAMA_DOWNLOAD_URL,
 } from "./local-ai.js";
+import {
+  buildCliPrepareResult,
+  cliPrepareExitCode,
+  formatCliPrepareResult,
+} from "./prepare-output.js";
 
 interface Globals {
   json: boolean;
@@ -109,11 +117,8 @@ function action(handler: (cmd: Command) => Promise<number | void>) {
   };
 }
 
-const FORWARDED: string[] = [];
-
 async function main(): Promise<void> {
-  const { main: mainArgv, forwarded } = splitForwarded(process.argv);
-  FORWARDED.push(...forwarded);
+  const { main: mainArgv } = splitForwarded(process.argv);
 
   const program = new Command();
   program
@@ -254,51 +259,28 @@ async function main(): Promise<void> {
   // ---- run ----
   program
     .command("run [agent]")
-    .description("Generate the context and launch an AI agent inside it")
+    .description("Temporarily disabled in the 0.2.2 early preview")
     .option("--dry-run", "prepare the workspace but do not launch", false)
     .option("--cleanup <mode>", "prompt | always | never")
     .option("--no-preview", "skip printing the preview before launching")
     .action(
       action(async (cmd) => {
-        const { g, t, dir } = getContext(cmd);
-        const opts = cmd.opts();
-        const agent = cmd.args[0];
-        const interactive = Boolean(process.stdout.isTTY) && !g.quiet;
-
-        const res = await runAgent(dir, {
-          ...(agent ? { agent } : {}),
-          forwardedArgs: FORWARDED,
-          interactive,
-          ...(opts.cleanup ? { cleanup: opts.cleanup } : {}),
-          dryRun: Boolean(opts.dryRun),
-          hooks: {
-            onBeforeLaunch: (preview) => {
-              if (g.json || g.quiet) return;
-              if (opts.preview !== false) renderPreview(preview, t);
-              console.log("\n" + ui.dim(t("limitation")));
-              if (!opts.dryRun) console.log("\n" + t("run.launching", { agent: preview.agent }) + "\n");
-            },
-            confirmCleanup: () => confirm(t("run.cleanupPrompt"), false),
-            onMissingEnv: (a, vars) =>
-              console.error(`${symbols.warn()} ${t("run.missingEnv", { vars: vars.join(", ") })}`),
-          },
-        });
-
-        if (opts.dryRun) {
-          if (g.json) return void printJson({ manifest: res.manifest });
-          console.log(ui.dim(t("run.dryRun")));
-          console.log(ui.dim(t("run.kept", { path: res.manifest.workspacePath })));
-          return;
+        const { g } = getContext(cmd);
+        const result = {
+          command: "run",
+          status: "Disabled",
+          launchAllowed: false,
+          agentStarted: false,
+          safeErrorCategory: "cli-agent-launch-disabled",
+        };
+        if (g.json) printJson(result);
+        else {
+          console.error(
+            "CLI agent launch is temporarily disabled in the 0.2.2 early preview.\n\n" +
+            "Use the Yuhi VS Code preparation and Claude Code handoff workflow.",
+          );
         }
-
-        if (g.json) {
-          printJson({ exitCode: res.exitCode, workspaceKept: res.workspaceKept, manifestId: res.manifest.id });
-        } else {
-          console.log(ui.dim(t("run.exit", { agent: res.preview.agent, code: String(res.exitCode ?? 0) })));
-          if (res.workspaceKept) console.log(ui.dim(t("run.kept", { path: res.manifest.workspacePath })));
-          else console.log(ui.dim(t("run.cleaned")));
-        }
-        return res.exitCode ?? 0;
+        return 4;
       }),
     );
 
@@ -560,7 +542,7 @@ async function main(): Promise<void> {
     .action(
       action(async (cmd) => {
         const { g } = getContext(cmd);
-        const target = cmd.args[0] ?? ".";
+        const target = await assertSafeSourceWorkspace(cmd.args[0] ?? ".");
 
         const loaded = await loadConfig(target);
         const provider = createLocalModelProvider(
@@ -588,10 +570,117 @@ async function main(): Promise<void> {
           provider,
           ...(mode !== undefined ? { mode } : {}),
         });
+        await writePreparedRunSession(res);
 
-        if (g.json) return void printJson(res);
-        renderPrepareReport(res);
-        return 0;
+        const result = buildCliPrepareResult(res);
+        if (g.json) printJson(result);
+        else if (result.status === "Success") console.log(formatCliPrepareResult(result));
+        else console.error(formatCliPrepareResult(result));
+        return cliPrepareExitCode(result);
+      }),
+    );
+
+  program
+    .command("review <run>")
+    .description("Review metadata for a Prepared Workspace without exposing source data")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        try {
+          const { session } = await readPreparedRunSession(cmd.args[0]!);
+          if (g.json) printJson({ command: "review", ...session.summary });
+          else {
+            const text = formatCliPrepareResult(session.summary);
+            if (session.summary.status === "Success") console.log(text);
+            else console.error(text);
+          }
+          return cliPrepareExitCode(session.summary);
+        } catch {
+          console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
+          return 3;
+        }
+      }),
+    );
+
+  program
+    .command("open <run> [agent]")
+    .description("Temporarily disabled in the 0.2.2 early preview")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const result = {
+          schemaVersion: 1,
+          command: "open",
+          status: "Disabled",
+          launchAllowed: false,
+          agentStarted: false,
+          safeErrorCategory: "cli-agent-launch-disabled",
+        };
+        if (g.json) printJson(result);
+        else {
+          console.error(
+            "CLI agent launch is temporarily disabled in the 0.2.2 early preview.\n\n" +
+            "Use the Yuhi VS Code preparation and Claude Code handoff workflow.",
+          );
+        }
+        return 4;
+      }),
+    );
+
+  program
+    .command("prepare-again <run>")
+    .description("Create a new run while explicitly excluding files blocked in an old run")
+    .requiredOption("--source <dir>", "original source folder (never read from persisted metadata)")
+    .option("--exclude-blocked", "explicitly exclude blocked/error files", false)
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts() as { source: string; excludeBlocked: boolean };
+        if (!opts.excludeBlocked) {
+          console.error("Invalid input\n\nUse --exclude-blocked to explicitly confirm exclusion.");
+          return 3;
+        }
+        let oldWorkspace: string;
+        try {
+          oldWorkspace = resolvePreparedRunReference(cmd.args[0]!);
+          await readPreparedRunSession(cmd.args[0]!);
+        } catch {
+          console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
+          return 3;
+        }
+        const manifest = JSON.parse(
+          await readFile(`${oldWorkspace}/manifest.json`, "utf8"),
+        ) as { files?: { relpath?: unknown; status?: unknown }[] };
+        const excluded = (manifest.files ?? [])
+          .filter((file) => file.status === "error" || file.status === "blocked")
+          .map((file) => file.relpath)
+          .filter((value): value is string => typeof value === "string");
+        if (excluded.length === 0) {
+          console.error("Invalid input\n\nSafe error category: no-blocked-files");
+          return 3;
+        }
+        const source = await assertSafeSourceWorkspace(opts.source);
+        const loaded = await loadConfig(source);
+        const provider = createLocalModelProvider(
+          providerConfigFromSettings(loaded.config.local_model),
+        );
+        if (!(await provider.health()).ok) {
+          console.error("Preparation failed\n\nSafe error category: local-model-unavailable");
+          return 4;
+        }
+        const report = await prepareWorkspace(source, {
+          provider,
+          excludeRelpaths: excluded,
+          ...(loaded.config.budget?.reduction_mode
+            ? { mode: loaded.config.budget.reduction_mode }
+            : {}),
+        });
+        await writePreparedRunSession(report);
+        const result = buildCliPrepareResult(report);
+        if (g.json) printJson({ command: "prepare-again", ...result });
+        else if (result.status === "Success") console.log(formatCliPrepareResult(result));
+        else console.error(formatCliPrepareResult(result));
+        return cliPrepareExitCode(result);
       }),
     );
 

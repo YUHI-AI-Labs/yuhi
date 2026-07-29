@@ -3,6 +3,7 @@ import { runDetectors } from "./detectors.js";
 import { shannonEntropy, maskSecret } from "./entropy.js";
 
 const opts = { entropyThreshold: 4.0, keywords: [] as string[] };
+const csvOpts = { ...opts, relpath: "synthetic.csv" };
 
 describe("detectors", () => {
   it("detects an AWS access key id and does NOT leak the raw value", () => {
@@ -48,6 +49,54 @@ describe("detectors", () => {
       keywords: ["Poseidon"],
     });
     expect(findings.some((f) => f.detector === "user-keyword")).toBe(true);
+  });
+
+  it("detects structured personal-data headers without retaining row values", () => {
+    const findings = runDetectors(
+      "\uFEFFフルネーム,IDナンバ,学生証番号,評定\nSynthetic Person,100001,200001,A",
+      csvOpts,
+    );
+    const finding = findings.find((item) => item.detector === "tabular-direct-identifier-column");
+    expect(finding?.severity).toBe("high");
+    expect(JSON.stringify(finding)).not.toContain("Synthetic Person");
+    expect(JSON.stringify(finding)).not.toContain("100001");
+  });
+
+  it.each([
+    ["employee and salary", "employee id,salary\nE-1,100\n", "tabular-associated-salary"],
+    ["names and email", "full name,email\nSynthetic A,a@example.test\n", "tabular-direct-identifier-column"],
+    ["phone", "name,phone number\nSynthetic A,+1-555-0000\n", "tabular-direct-identifier-column"],
+    ["grades only", "grade,quiz\nA,8\n", "tabular-associated-education-performance"],
+  ])("detects %s tables using metadata-only findings", (_label, content, detector) => {
+    const findings = runDetectors(content, csvOpts);
+    expect(findings.some((finding) => finding.detector === detector)).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain("Synthetic A");
+    expect(JSON.stringify(findings)).not.toContain("E-1");
+  });
+
+  it("fails closed on a malformed sensitive CSV header", () => {
+    const findings = runDetectors('full name,student id,grade\n"unterminated', csvOpts);
+    expect(findings.some((finding) => finding.detector === "tabular-malformed-sensitive-data"))
+      .toBe(true);
+  });
+
+  it("does not infer a structured table from an ordinary text file", () => {
+    const findings = runDetectors(
+      "name\nThis is ordinary prose and not a delimited table.",
+      { ...opts, relpath: "notes.txt" },
+    );
+    expect(findings.some((finding) => finding.detector.startsWith("tabular-"))).toBe(false);
+  });
+
+  it("fails closed on a repeated headerless identifier-and-score text table", () => {
+    const content = Array.from(
+      { length: 20 },
+      (_, index) => `123456,${String(300000 + index)},${index % 101}`,
+    ).join("\n");
+    const findings = runDetectors(content, { ...opts, relpath: "synthetic.txt" });
+    expect(findings.some((finding) =>
+      finding.detector === "tabular-headerless-sensitive-data"
+    )).toBe(true);
   });
 });
 

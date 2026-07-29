@@ -16,6 +16,26 @@ export interface Plan {
   isGitRepo: boolean;
 }
 
+function explicitIncludeDirs(rules: YuhiContext["config"]["rules"]): Set<string> {
+  const dirs = new Set<string>();
+  for (const rule of rules) {
+    for (const pattern of rule.match.paths ?? []) {
+      const normalized = pattern.replaceAll("\\", "/").replace(/^!/, "").replace(/^\.\/+/, "");
+      const top = normalized.split("/")[0];
+      if (
+        top &&
+        top !== ".git" &&
+        top !== ".yuhi" &&
+        !top.includes("*") &&
+        !top.includes("?")
+      ) {
+        dirs.add(top);
+      }
+    }
+  }
+  return dirs;
+}
+
 /** Load config, scan the repo, and resolve the policy. The shared core pipeline. */
 export async function computePlan(dir: string, options: PlanOptions): Promise<Plan> {
   const context = await loadContext(dir);
@@ -25,6 +45,7 @@ export async function computePlan(dir: string, options: PlanOptions): Promise<Pl
     largeFileBytes: config.workspace.large_file_bytes,
     entropyThreshold: config.scan.entropy_threshold,
     keywords: config.scan.keywords,
+    explicitIncludeDirs: explicitIncludeDirs(config.rules),
   });
 
   const evaluation = resolvePolicy(
@@ -33,7 +54,11 @@ export async function computePlan(dir: string, options: PlanOptions): Promise<Pl
       rules: config.rules,
       interactive: options.interactive,
     },
-    scan.files.map((f) => ({ relpath: f.relpath, findings: f.findings })),
+    scan.files.map((f) => ({
+      relpath: f.relpath,
+      findings: f.findings,
+      inspection: f.inspection,
+    })),
   );
 
   const agentId = options.agent ?? config.defaults.agent;

@@ -1,10 +1,11 @@
 import picomatch from "picomatch";
-import type { PolicyRule, ScanFinding } from "@yuhi/shared";
+import type { FileInfo, PolicyRule, ScanFinding } from "@yuhi/shared";
 
 export interface MatchableFile {
   /** repo-relative POSIX path */
   relpath: string;
   findings: ScanFinding[];
+  inspection?: FileInfo["inspection"];
 }
 
 /** Precompiled matcher for a rule (path globs + detector set). */

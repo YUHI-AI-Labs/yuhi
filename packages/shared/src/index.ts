@@ -9,3 +9,5 @@ export * from "./hash.js";
 export * from "./version.js";
 export * from "./tokens.js";
 export * from "./normalize.js";
+export * from "./student-records.js";
+export * from "./file-capabilities.js";

@@ -1,4 +1,11 @@
-import type { ScanFinding, Severity } from "@yuhi/shared";
+import {
+  classifyStudentRecordHeaders,
+  classifyStudentRecordTable,
+  parseDelimitedTable,
+  type ScanFinding,
+  type Severity,
+  type StudentRecordClassification,
+} from "@yuhi/shared";
 import { shannonEntropy, maskSecret } from "./entropy.js";
 
 /**
@@ -135,6 +142,8 @@ export interface DetectorOptions {
   entropyThreshold: number;
   /** Extra sensitive keywords the user configured. */
   keywords: string[];
+  /** Relative file path, used to scope format-aware detectors. */
+  relpath?: string;
 }
 
 /**
@@ -195,6 +204,89 @@ function scanKeywords(content: string, opts: DetectorOptions): ScanFinding[] {
   return findings;
 }
 
+function scanStructuredPersonalData(content: string, relpath?: string): ScanFinding[] {
+  // Delimited-table inference is intentionally limited to formats whose
+  // structure Yuhi can verify. Ordinary prose/code must never be promoted to a
+  // sensitive table merely because its first line resembles a column name.
+  if (!relpath || !/\.(?:csv|tsv|txt)$/i.test(relpath)) return [];
+  if (/\.txt$/i.test(relpath)) {
+    const firstLine = content.replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0] ?? "";
+    if (!firstLine.includes(",") && !firstLine.includes("\t")) return [];
+  }
+  let classification: StudentRecordClassification;
+  let malformed = false;
+  try {
+    const table = parseDelimitedTable(content);
+    classification = classifyStudentRecordTable(table.rows);
+    if (
+      classification.sensitivity === "none" &&
+      /\.txt$/i.test(relpath) &&
+      table.rows.length >= 10
+    ) {
+      const rows = table.rows;
+      const width = rows[0]?.length ?? 0;
+      const numericColumns = Array.from({ length: width }, (_, index) =>
+        rows.map((row) => (row[index] ?? "").trim()),
+      );
+      const idLike = numericColumns.some((values) =>
+        values.filter((value) => /^\d{5,12}$/.test(value)).length / values.length >= 0.8
+      );
+      const scoreLike = numericColumns.some((values) =>
+        values.filter((value) => /^\d{1,3}$/.test(value) && Number(value) <= 100).length /
+          values.length >= 0.8
+      );
+      if (idLike && scoreLike) {
+        return [{
+          detector: "tabular-headerless-sensitive-data",
+          path: "",
+          line: 1,
+          severity: "high",
+          maskedPreview: "[headerless identifier-like table]",
+          description: "Headerless structured data could not be classified safely",
+        }];
+      }
+    }
+  } catch {
+    malformed = true;
+    const header = content.replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0] ?? "";
+    const delimiter = header.includes("\t") ? "\t" : ",";
+    classification = classifyStudentRecordHeaders(header.split(delimiter));
+  }
+  if (classification.sensitivity === "none") return [];
+  const findings: ScanFinding[] = [];
+  for (let index = 0; index < classification.directIdentifierColumns; index += 1) {
+    findings.push({
+      detector: "tabular-direct-identifier-column",
+      path: "",
+      line: 1,
+      severity: classification.sensitivity === "restricted" ? "high" : "medium",
+      maskedPreview: "[direct identifier column]",
+      description: "Direct-identifier column detected in structured data",
+    });
+  }
+  for (const category of classification.associatedCategories) {
+    findings.push({
+      detector: `tabular-associated-${category}`,
+      path: "",
+      line: 1,
+      severity: classification.sensitivity === "restricted" ? "high" : "medium",
+      maskedPreview: "[sensitive associated data]",
+      description: "Sensitive associated-data column detected in structured data",
+    });
+  }
+  if (malformed) {
+    findings.push({
+      detector: "tabular-malformed-sensitive-data",
+      path: "",
+      line: 1,
+      severity: "high",
+      maskedPreview: "[malformed sensitive table]",
+      description: "Sensitive table could not be parsed safely",
+    });
+  }
+  return findings;
+}
+
 /** Run all detectors against text content. Returns findings without a path set. */
 export function runDetectors(
   content: string,
@@ -214,6 +306,7 @@ export function runDetectors(
       });
     }
   }
+  findings.push(...scanStructuredPersonalData(content, opts.relpath));
   findings.push(...scanEntropy(content, opts));
   findings.push(...scanKeywords(content, opts));
   return findings;

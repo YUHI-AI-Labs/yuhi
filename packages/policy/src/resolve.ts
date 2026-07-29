@@ -8,6 +8,8 @@ import {
   type PolicyInput,
   type PolicyRule,
   ACTIONS,
+  fileCapabilities,
+  processorSupported,
 } from "@yuhi/shared";
 import { compileRule, ruleMatches, type MatchableFile, type CompiledRule } from "./match.js";
 
@@ -69,8 +71,72 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
       action = next;
     }
 
-    // Detector escalation: any finding forces at least `redact`.
-    if (file.findings.length > 0 && ACTION_RANK[action] < ACTION_RANK["redact"]) {
+    const sensitiveTabularData = file.findings.some(
+      (finding) => finding.detector.startsWith("tabular-"),
+    );
+    const tabularDirectIdentifiers = file.findings.some(
+      (finding) => finding.detector === "tabular-direct-identifier-column",
+    );
+    const registeredCapabilities = fileCapabilities(file.relpath);
+    const capabilities = file.inspection ?? {
+      ...registeredCapabilities,
+      inspectionAttempted: registeredCapabilities.parserAvailable,
+      inspectionSucceeded: registeredCapabilities.parserAvailable,
+      contentVerified: registeredCapabilities.parserAvailable,
+    };
+
+    // An unavailable parser is a final local-only route, not an `allow` that a
+    // later binary check silently discards. Likewise, never select a processor
+    // that cannot accept and verify this file type.
+    if (
+      !capabilities.parserAvailable ||
+      !capabilities.scannerAvailable ||
+      !capabilities.contentVerified
+    ) {
+      if (action !== "block") {
+        action = "local-only";
+        winningRule = capabilities.parserAvailable
+          ? `file-type:${capabilities.fileType}-inspection-incomplete`
+          : `file-type:${capabilities.fileType}-inspection-unavailable`;
+        reason =
+          capabilities.fileType === "xlsx" && sensitiveTabularData
+            ? "Restricted workbook kept local because verified local inspection and transformation are unavailable."
+            : capabilities.parserAvailable
+              ? "File kept local because content inspection did not complete."
+              : `File kept local because verified local ${capabilities.fileType.toUpperCase()} inspection is unavailable.`;
+        winningDestinations = ["local"];
+      }
+      winningProcessors = undefined;
+    } else if (
+      winningProcessors?.some((processor) => !processorSupported(capabilities, processor))
+    ) {
+      action = "local-only";
+      winningRule = `file-type:${capabilities.fileType}-transformation-unavailable`;
+      reason = "File kept local because the selected transformation cannot be executed and verified for this file type.";
+      winningDestinations = ["local"];
+      winningProcessors = undefined;
+
+    // A raw allow is never a safe outcome for detected tabular personal data.
+    // Explicit safe transformations remain authoritative. Otherwise Yuhi
+    // attempts a deterministic schema-aware transform and verifies its output.
+    } else if (sensitiveTabularData && (winningRule === "default" || action === "allow")) {
+      action = "prepare-locally";
+      winningRule = tabularDirectIdentifiers
+        ? "detector:tabular-auto-pseudonymize"
+        : "detector:tabular-auto-aggregate";
+      reason = tabularDirectIdentifiers
+        ? "Sensitive tabular data detected; direct identifiers will be pseudonymized locally and the exact output rescanned."
+        : "Sensitive associated tabular data detected; individual rows will be aggregated locally and the exact output rescanned.";
+      winningDestinations = ["external", "local"];
+      winningProcessors = tabularDirectIdentifiers
+        ? ["pseudonymize-student-records", "safety-check"]
+        : ["aggregate-student-records", "safety-check"];
+    // Other detector findings force at least `redact`.
+    } else if (
+      file.findings.length > 0 &&
+      winningRule === "default" &&
+      ACTION_RANK[action] < ACTION_RANK["redact"]
+    ) {
       action = "redact";
       const ids = [...new Set(file.findings.map((f) => f.detector))].join(",");
       winningRule = `detector:${ids}`;

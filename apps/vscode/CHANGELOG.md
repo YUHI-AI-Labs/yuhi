@@ -7,6 +7,9 @@ releases may include breaking changes.
 
 ## [0.2.2]
 
+> Early preview. Not yet recommended for production, regulated data, or highly
+> sensitive workflows.
+
 ### Added
 
 - Yuhi-first Prepared Workspace launch commands for a new VS Code window and for
@@ -25,6 +28,16 @@ releases may include breaking changes.
 - Generated Yuhi state and local `yuhi.yaml` files are excluded from the VSIX.
 - The UI explicitly states that Yuhi prepares initial context but does not provide an
   OS-level sandbox.
+- Unsupported PDF files are kept local when verified inspection is unavailable.
+- Unsupported high-risk XLSX files remain local, produce a Partial result, and block
+  Claude Code launch. Raw source files are never used as fallback.
+
+### Known limitations
+
+- PDF and XLSX parsing/transformation are not supported in this release.
+- Large workspaces may take longer to prepare.
+- Yuhi does not provide OS-level filesystem confinement.
+- CLI agent launch is temporarily disabled until full parity is complete.
 
 ## [0.1.0] — Beta
 

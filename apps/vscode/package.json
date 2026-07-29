@@ -42,6 +42,23 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "yuhi",
+          "title": "Claude Code with Yuhi",
+          "icon": "media/yuhi-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "yuhi": [
+        {
+          "id": "yuhi.workspace",
+          "name": "Claude Code with Yuhi"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "yuhi.doctor",
@@ -72,6 +89,36 @@
         "command": "yuhi.prepareAndStartClaude",
         "title": "Yuhi: Prepare and Start Claude Code",
         "icon": "$(shield)"
+      },
+      {
+        "command": "yuhi.openClaudeHere",
+        "title": "Yuhi: Open Claude Code in Prepared Workspace",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "yuhi.switchWorkspace",
+        "title": "Yuhi: Switch Workspace and Start Claude Code",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "yuhi.exitWorkspace",
+        "title": "Yuhi: Exit Prepared Workspace",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "yuhi.restartFlow",
+        "title": "Yuhi: Start Over and Choose Source Folder",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "yuhi.openSourceWorkspace",
+        "title": "Yuhi: Open Source Workspace",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "yuhi.dismissPreviousRun",
+        "title": "Yuhi: Dismiss Previous Run",
+        "icon": "$(close)"
       }
     ],
     "menus": {

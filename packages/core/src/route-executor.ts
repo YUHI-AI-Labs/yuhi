@@ -1,5 +1,10 @@
 import {
   processorId,
+  aggregateStudentRecords,
+  classifyStudentRecordHeaders,
+  parseDelimitedTable,
+  pseudonymizeStudentRecords,
+  type StudentAliasContext,
   type LocalModelProvider,
   type ProcessorAudit,
   type ProcessorResult,
@@ -27,23 +32,20 @@ export interface RouteResult {
 
 /** Heuristic: pull identifier-like values from a CSV (name/id/email columns). */
 function extractCsvIdentifiers(content: string): string[] {
-  const lines = content.split(/\r?\n/).filter((l) => l.trim() !== "");
-  if (lines.length < 2) return [];
-  const header = lines[0]!.split(",").map((h) => h.trim());
-  const idCols: number[] = [];
-  header.forEach((h, i) => {
-    if (/(^|[_\s])(name|id|email|e-mail|phone|student|patient)/i.test(h)) idCols.push(i);
-  });
-  if (idCols.length === 0) return [];
-  const ids = new Set<string>();
-  for (const line of lines.slice(1)) {
-    const cells = line.split(",");
-    for (const i of idCols) {
-      const v = (cells[i] ?? "").trim();
-      if (v) ids.add(v);
+  try {
+    const table = parseDelimitedTable(content);
+    const classification = classifyStudentRecordHeaders(table.rows[0]!);
+    const ids = new Set<string>();
+    for (const row of table.rows.slice(1)) {
+      for (const index of classification.directIdentifierIndexes) {
+        const value = (row[index] ?? "").trim();
+        if (value) ids.add(value);
+      }
     }
+    return [...ids];
+  } catch {
+    return [];
   }
-  return [...ids];
 }
 
 /**
@@ -140,9 +142,20 @@ export async function runLocalPreparation(
     signal?: AbortSignal;
     /** Reduction mode for summarize-local (conservative fails on overflow, etc.). */
     mode?: ReductionMode;
+    /** Run-scoped in-memory linkage for explicit tabular pseudonymization. */
+    studentAliases?: StudentAliasContext;
   } = {},
 ): Promise<LocalPreparationResult> {
   const identifiers = extractCsvIdentifiers(content);
+  // Schema-aware tabular validation checks identifier columns and preserves
+  // analytical columns by position. A numeric student ID may legitimately
+  // equal a score or count, so a whole-output substring ban would be a false
+  // positive. Non-numeric identifiers remain forbidden everywhere.
+  const safetyIdentifiers = specs.some(
+    (spec) => processorId(spec) === "pseudonymize-student-records",
+  )
+    ? identifiers.filter((value) => !/^[+-]?(?:\d+|\d*\.\d+)$/.test(value.trim()))
+    : identifiers;
   const store = inMemoryMappingStore();
   const audits: ProcessorAudit[] = [];
   const steps: string[] = [];
@@ -184,10 +197,34 @@ export async function runLocalPreparation(
         output = r.output;
         audits.push(r.audit);
         steps.push(r.safePreview);
+      } else if (id === "pseudonymize-student-records") {
+        const transformed = opts.studentAliases
+          ? pseudonymizeStudentRecords(output, opts.studentAliases)
+          : pseudonymizeStudentRecords(output);
+        output = transformed.output;
+        audits.push({
+          processorId: id,
+          version: "1.0.0",
+          kind: "rule-based",
+          itemsChanged: transformed.valuesReplaced,
+          note: `${transformed.aliasesCreated} stable alias(es) created in memory`,
+        });
+        steps.push(`${transformed.valuesReplaced} direct-identifier value(s) pseudonymized locally`);
+      } else if (id === "aggregate-student-records") {
+        const transformed = aggregateStudentRecords(output);
+        output = transformed.output;
+        audits.push({
+          processorId: id,
+          version: "1.0.0",
+          kind: "rule-based",
+          itemsChanged: transformed.valuesReplaced,
+          note: "Individual rows removed; aggregate metrics retained",
+        });
+        steps.push("Individual rows aggregated locally");
       } else if (id === "safety-check") {
         const r = createValidator({
-          forbid: identifiers,
-          labels: identifiers.map(() => "identifier"),
+          forbid: safetyIdentifiers,
+          labels: safetyIdentifiers.map(() => "identifier"),
         }).process(output) as ProcessorResult;
         audits.push(r.audit);
         steps.push(r.safePreview);

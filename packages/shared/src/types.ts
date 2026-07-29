@@ -1,5 +1,6 @@
 import type { Action, Destination } from "./actions.js";
 import type { ProcessorSpec } from "./processors.js";
+import type { FileCapabilities } from "./file-capabilities.js";
 
 /** Severity used by scanner findings and risk summaries. */
 export type Severity = "critical" | "high" | "medium" | "low";
@@ -42,6 +43,11 @@ export interface FileInfo {
   sha256?: string;
   flags: FileFlags;
   findings: ScanFinding[];
+  inspection: FileCapabilities & {
+    inspectionAttempted: boolean;
+    inspectionSucceeded: boolean;
+    contentVerified: boolean;
+  };
 }
 
 export interface ScanResult {

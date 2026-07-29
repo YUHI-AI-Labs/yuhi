@@ -1,12 +1,3 @@
-/**
- * "Context Savings" review webview. Shows Original vs Prepared *estimated* tokens,
- * the reduction, which files were excluded / summarized / had sensitive values
- * masked, and the invariant "Source files modified: 0". Each file offers an
- * Original ↔ Prepared diff (handled by the extension via vscode.diff).
- *
- * Vocabulary is deliberately plain: no processor/provider jargon. Token counts are
- * always labelled "Estimated".
- */
 import type { PreparedMetrics, PreparedRuntimeBoundary } from "@yuhi/core";
 
 export interface ReviewFile {
@@ -16,7 +7,6 @@ export interface ReviewFile {
   omitted: boolean;
   beforeTokens: number;
   afterTokens: number;
-  /** true when a prepared copy exists that can be diffed against the original. */
   diffable: boolean;
   sensitivity: string;
   findingCategoryCounts: Record<string, number>;
@@ -27,175 +17,146 @@ export interface ReviewFile {
   included: boolean;
   claudeReceives: "Unchanged" | "Transformed" | "No";
   transformed: boolean;
-  transformations: ("summarized" | "pseudonymized" | "masked")[];
+  transformations: ("summarized" | "aggregated" | "pseudonymized" | "masked")[];
   unresolvedHighRiskCount: number;
+  outcome?: string;
+  fileType?: string;
+  inspectionStatus?: string;
+  limitationShown?: boolean;
 }
 
 export interface ReviewData {
+  launchDecisionEnabled: boolean;
+  /** A standalone review opened inside an already-validated Prepared Workspace. */
+  openClaudeHereEnabled: boolean;
   project: string;
   agent: string;
   runId: string;
   outcome: string;
   osSandboxEnabled: false;
-  /** Prepared output directory, relative to the workspace root (display only). */
   outDir: string;
   report: {
     beforeTokens: number;
     afterTokens: number;
-    tokensSaved: number; // signed; negative = increase
-    percentReduction: number; // signed fraction
+    tokensSaved: number;
+    percentReduction: number;
     hasData: boolean;
     filesExcluded: number;
     filesSummarized: number;
     sensitiveMasked: number;
-    sourceModified: number; // always 0
+    sourceModified: number;
     approx: boolean;
   };
   metrics: PreparedMetrics;
   runtime: PreparedRuntimeBoundary;
+  acceptance: {
+    entitiesPseudonymized: number;
+    identifierColumnsTransformed: number;
+    analyticalColumnsPreserved: number;
+    postTransformScanPassed: boolean;
+    malformedTables: number;
+    unverifiedTransformations: number;
+    rawFallbackUsed: false;
+    launchAllowed: boolean;
+    claudeCodeStarted: boolean;
+    unsupportedOrUnverifiedFiles?: number;
+    restrictedUnresolvedFiles?: number;
+    hasLimitations?: boolean;
+  };
   files: ReviewFile[];
-  /** Exact current on-disk Prepared Workspace tree; never derived from the source tree. */
+  projectFiles: string[];
+  metadataFiles: string[];
   preparedTree: string[];
 }
 
 export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: string): string {
   const json = JSON.stringify(data).replace(/</g, "\\u003c");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+  const launch = data.launchDecisionEnabled
+    ? '<button class="button primary launchAction">Open with Claude Code</button>'
+    : data.openClaudeHereEnabled
+      ? '<button class="button primary openClaudeHere">Open Claude Code</button>'
+    : "";
+  const cancelLabel = data.launchDecisionEnabled ? "Cancel" : "Close";
+  const recoveryActions = data.outcome === "Partial"
+    ? '<button class="button primary" id="excludeBlocked">Exclude blocked files and prepare again</button><button class="button" id="reviewBlocked">Review blocked files</button><button class="button" id="chooseSource">Choose another source folder</button>'
+    : "";
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';script-src 'nonce-${nonce}'">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  :root{--ink:#f3f6fb;--muted:#8a97ab;--faint:#525d6d;--hair:#1f2836;--panel:#111621;--panel2:#0c1017;
-    --green:#2ad46b;--purple:#b98cff;--gray:#7f8b9c;--green-b:#0d2c1c;--purple-b:#241a45;--gray-b:#161c26;
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;--sans:var(--vscode-font-family,system-ui,sans-serif);}
-  body.vscode-light{--ink:#0a0f19;--muted:#5a6678;--faint:#93a0b4;--hair:#e2e8f1;--panel:#fff;--panel2:#f5f8fc;--green:#0f9b48;--purple:#7b4fd8;--gray:#788498;--green-b:#e2f7ea;--purple-b:#f0e9fd;--gray-b:#eef2f7;}
-  *{box-sizing:border-box}
-  body{margin:0;background:transparent;color:var(--ink);font-family:var(--sans);font-size:13px;line-height:1.5}
-  .wrap{padding:16px 18px 40px;max-width:960px;margin:0 auto}
-  h1{font-size:16px;font-weight:800;margin:0 0 2px}
-  .sub{color:var(--faint);font-size:12px;margin-bottom:16px}
-  .sub code{font-family:var(--mono)}
-  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin-bottom:14px}
-  .oc{border-radius:14px;padding:14px 16px;border:1px solid var(--hair);background:var(--panel)}
-  .oc .n{font-family:var(--mono);font-weight:850;letter-spacing:-1px;font-size:30px;line-height:1}
-  .oc .t{font-weight:700;font-size:12.5px;margin-top:7px}.oc .d{color:var(--faint);font-size:11px;margin-top:2px}
-  .oc.before .n{color:var(--gray)} .oc.after .n{color:var(--green)}
-  .oc.save{background:radial-gradient(120% 130% at 50% 0%,var(--purple-b),var(--panel) 72%);border-color:color-mix(in oklab,var(--purple) 42%,transparent)}
-  .oc.save .n{color:var(--purple)}.oc.save .t{color:var(--purple)}
-  .stats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
-  .stat{font-size:11.5px;padding:5px 10px;border:1px solid var(--hair);border-radius:999px;color:var(--muted);background:var(--panel)}
-  .stat b{color:var(--ink);font-weight:750}
-  .stat.safe{color:var(--green);border-color:color-mix(in oklab,var(--green) 38%,transparent);background:var(--green-b)}
-  .card{background:var(--panel);border:1px solid var(--hair);border-radius:14px;overflow:hidden}
-  .ch{padding:10px 14px;border-bottom:1px solid var(--hair);font-size:10px;letter-spacing:.7px;text-transform:uppercase;color:var(--faint);font-weight:600;display:flex;justify-content:space-between}
-  .list{padding:5px;max-height:56vh;overflow:auto}
-  .row{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:0;color:var(--ink);font:inherit;padding:8px 9px;border-radius:9px}
-  .row.diffable{cursor:pointer}.row.diffable:hover{background:var(--panel2)}
-  .row .fp{font-family:var(--mono);font-size:12px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .row .tk{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap}
-  .badge{font-family:var(--mono);font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap}
-  .b-send{color:var(--green);background:var(--green-b)}.b-prep{color:var(--purple);background:var(--purple-b)}.b-kept{color:var(--gray);background:var(--gray-b)}.b-blocked{color:var(--gray);background:var(--gray-b)}
-  .diffhint{font-size:10px;color:var(--faint);white-space:nowrap}
-  .foot{margin-top:16px;color:var(--faint);font-size:11.5px}
-  .empty{padding:24px;text-align:center;color:var(--faint)}
-  h2{font-size:13px;margin:20px 0 8px}.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 18px;padding:12px 14px}
-  .fact{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--hair);padding:4px 0}.fact span{color:var(--muted)}
-  .filters{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--hair)}.filters select{background:var(--panel2);color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px 7px}
-  .table{overflow:auto}.decision{display:grid;grid-template-columns:minmax(150px,1.4fr) 90px 105px minmax(110px,1fr) minmax(150px,1.2fr) 65px 80px 100px;gap:9px;padding:8px 12px;border-top:1px solid var(--hair);align-items:start}
-  .decision.head{font-size:10px;color:var(--faint);text-transform:uppercase;border-top:0}.reason{color:var(--muted);font-size:11px}.tree{font:11px var(--mono);white-space:pre-wrap;padding:12px 14px;color:var(--muted)}
-  .warn{border-left:3px solid var(--vscode-notificationsWarningIcon-foreground,#cca700);padding:10px 12px;background:var(--panel);margin-top:16px}
-</style></head><body>
-<div class="wrap">
-  <h1>Prepared by Yuhi</h1>
-  <div class="sub">Prepared locally for <b id="proj"></b> · written to <code id="outdir"></code> · <b>token counts are estimated</b></div>
-  <h2>Overview</h2>
-  <div class="card facts" id="overview"></div>
-  <h2>Context reduction</h2>
-  <div class="cards" id="cards"></div>
-  <div class="stats" id="stats"></div>
-  <h2>Sensitive data handling</h2>
-  <div class="card facts" id="sensitive"></div>
-  <h2>File decisions</h2>
-  <div class="card">
-    <div class="filters"><label for="filter">Filter</label><select id="filter"><option value="all">All files</option><option value="included">Included</option><option value="transformed">Transformed</option><option value="masked">Masked</option><option value="excluded">Excluded</option><option value="kept-local">Kept local</option><option value="unresolved">Unresolved high risk</option></select></div>
-    <div class="table" id="list"></div>
-  </div>
-  <h2>What Claude Code receives</h2>
-  <div class="card tree" id="tree"></div>
-  <h2>Runtime access</h2>
-  <div class="card facts" id="runtime"></div>
-  <div class="warn"><b>Workspace boundary: advisory</b><br>Claude Code starts in a Yuhi Prepared Workspace. The agent may access files outside the Prepared Workspace if the runtime or user permits it. Yuhi does not prevent parent-directory, home-directory, or absolute-path access.</div>
-  <div class="foot">Original files modified: 0 · OS sandbox: not enabled.<br><br>Estimated from the Prepared Workspace content. Actual model input usage may differ because agents add system prompts, tool output, cached context, and conversation history. No financial claim is made.</div>
-</div>
+:root{--bg:var(--vscode-editor-background,#0b0b0b);--fg:var(--vscode-editor-foreground,#f5f5f5);--muted:var(--vscode-descriptionForeground,#a3a3a3);--panel:var(--vscode-sideBar-background,#121212);--line:var(--vscode-panel-border,#303030);--accent:var(--vscode-button-background,#fff);--accent-fg:var(--vscode-button-foreground,#000);--soft:var(--vscode-list-hoverBackground,#202020);--good:#67d391;--warn:var(--vscode-notificationsWarningIcon-foreground,#d9a441);--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:var(--vscode-font-family,system-ui,sans-serif)}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 var(--sans);overflow-x:hidden}
+.wrap{width:min(1160px,100%);margin:auto;padding:32px 28px 110px}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.hero{padding:34px;border:1px solid var(--line);border-radius:18px;background:var(--panel)}h1{font-size:32px;line-height:1.15;margin:8px 0 8px;letter-spacing:-.03em}h2{font-size:20px;margin:34px 0 5px}h3{font-size:14px;margin:0}.lead{font-size:16px;color:var(--muted);margin:0 0 22px}
+.facts{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}.pill{border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted)}.pill b{color:var(--fg)}
+.hero-top{display:flex;justify-content:space-between;gap:16px}.ready{font-size:12px;font-weight:800;letter-spacing:.08em;color:var(--good)}
+.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.button{border:1px solid var(--line);border-radius:8px;padding:9px 15px;background:transparent;color:var(--fg);font:600 14px var(--sans);cursor:pointer}.button:hover{background:var(--soft)}.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:800}.link{border:0;background:none;color:var(--fg);text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:9px}
+.sub{color:var(--muted);margin:0 0 14px}.card{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden}.groups{display:grid;grid-template-columns:1fr 1fr}.group{padding:18px}.group+.group{border-left:1px solid var(--line)}.count{color:var(--muted);font-weight:400}.file-list{list-style:none;padding:0;margin:10px 0 0}.file-list li{display:flex;gap:9px;align-items:center;padding:6px 0;min-width:0}.file-list code{font:12px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.file-icon{color:var(--muted)}details.metadata{border-top:1px solid var(--line);padding:0 18px 14px}details summary{cursor:pointer;padding:13px 0;font-weight:700;color:var(--muted)}.note{font-size:12px;color:var(--muted)}
+.summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metric{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.metric b{display:block;font:700 24px var(--mono)}.metric span{color:var(--muted)}.metric.reduction{grid-column:span 2}.metric.reduction b{font-family:var(--sans)}.explanation{font-size:12px;margin-top:5px;color:var(--muted)}
+.calm{margin-top:28px;padding:15px 17px;border-left:3px solid var(--warn);background:var(--panel);border-radius:4px 12px 12px 4px}.calm p{margin:0}.calm details summary{padding-bottom:3px}.calm .detail{color:var(--muted);font-size:13px}
+.empty-state{padding:16px;color:var(--muted)}.toolbar{display:flex;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line)}select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px}.table{overflow:hidden}.row{display:grid;grid-template-columns:minmax(180px,1.5fr) 150px 140px minmax(180px,1fr);gap:14px;align-items:center;padding:11px 14px;border-top:1px solid var(--line);min-width:0}.row.head{position:sticky;top:0;background:var(--panel);z-index:1;border-top:0;color:var(--muted);font-size:11px;text-transform:uppercase}.path{font:12px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.diff{border:0;background:none;color:var(--fg);text-align:left;padding:0;cursor:pointer}.why{color:var(--muted);font-size:13px}.badge{width:max-content;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font-size:12px}.advanced-row{padding:10px 14px;border-top:1px dashed var(--line);color:var(--muted);font-size:12px}
+.advanced{margin-top:28px}.advanced .inside{padding:4px 18px 18px}.advanced-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 24px}.fact{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px solid var(--line)}.fact span{color:var(--muted)}.sticky{position:fixed;z-index:4;left:0;right:0;bottom:0;border-top:1px solid var(--line);background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(12px)}.sticky .inner{width:min(1160px,100%);margin:auto;padding:12px 28px;display:flex;justify-content:flex-end;gap:10px}
+@media(max-width:800px){.wrap{padding:20px 16px 100px}.hero{padding:24px}h1{font-size:27px}.groups{grid-template-columns:1fr}.group+.group{border-left:0;border-top:1px solid var(--line)}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.row{grid-template-columns:minmax(150px,1fr) 130px 120px}.row>*:nth-child(4){display:none}.advanced-grid{grid-template-columns:1fr}.sticky .inner{padding:10px 16px}.metric.reduction{grid-column:1/-1}}
+@media(max-width:520px){.summary-grid{grid-template-columns:1fr}.metric.reduction{grid-column:auto}.row{grid-template-columns:minmax(130px,1fr) 115px}.row>*:nth-child(3),.row>*:nth-child(4){display:none}.hero .actions{align-items:stretch}.hero .actions .button{width:100%}}
+</style></head><body><main class="wrap">
+<section class="hero">
+ <div class="hero-top"><div class="eyebrow">YUHI</div><div class="ready">${data.outcome === "Partial" ? "BLOCKED" : data.acceptance.hasLimitations ? "LIMITED" : "READY"}</div></div><h1>${data.outcome === "Partial" ? "Preparation incomplete" : data.acceptance.hasLimitations ? "Prepared with limitations" : "Ready for Claude Code"}</h1>
+ <p class="lead" id="heroLead"></p>
+ <div class="facts" id="heroFacts"></div>
+ <div class="actions">${launch}${recoveryActions}<button class="button" id="review">View files</button><button class="link" id="cancel">${cancelLabel}</button></div>
+ <p class="sub">${data.outcome === "Partial" ? "Some files could not be safely prepared. Claude Code was not started." : "Claude Code will start in the Prepared Workspace."}</p>
+</section>
+<section id="files"><h2 id="receiveTitle"></h2><p class="sub">This is the actual Prepared Workspace, not your original workspace.</p>
+ <div class="card"><div class="groups"><div class="group"><h3>Project files <span class="count" id="projectCount"></span></h3><ul class="file-list" id="projectFiles"></ul></div>
+ <div class="group"><h3>Result</h3><div id="fileResult" class="empty-state"></div></div></div>
+ <details class="metadata"><summary id="metadataTitle"></summary><p class="note">Yuhi metadata supports review and audit. It is not part of your project source. These files are present in the Prepared Workspace and Claude Code may read them.</p><ul class="file-list" id="metadataFiles"></ul></details></div>
+</section>
+<aside class="calm" id="privacyDecision" hidden></aside>
+<section><h2>Preparation summary</h2><p class="sub">A concise view of what Yuhi changed before handoff.</p><div class="summary-grid" id="summary"></div></section>
+<aside class="calm"><p><b id="runtimeNotice"></b></p><details><summary>Runtime boundary details</summary><div class="detail" id="runtimeExplanation"></div><div id="runtimeFacts"></div></details></aside>
+<details class="card advanced"><summary>Advanced details</summary><div class="inside"><div class="advanced-grid" id="advanced"></div><h3>Scanner and policy details</h3><div class="advanced-grid" id="scanner"></div><p class="note">Estimated context reduction is calculated from Prepared Workspace content. Actual agent usage may differ because of system prompts, tool output, conversation history, and caching. This is not a billing or cost-savings measurement.</p></div></details>
+<details class="card advanced"><summary>Full file decisions</summary><div class="inside"><p class="sub">Why each project file was included, changed, or withheld.</p><div class="card table"><div class="toolbar"><label for="filter">Show</label><select id="filter"><option value="all">All files</option><option value="included">Included</option><option value="transformed">Transformed</option><option value="excluded">Excluded</option><option value="kept">Kept local</option></select></div><div id="decisions"></div></div></div></details>
+</main>
+<div class="sticky"><div class="inner"><button class="button" id="backToFiles">Back to files</button>${launch}<button class="link" id="cancelSticky">${cancelLabel}</button></div></div>
 <script nonce="${nonce}">
-const DATA=${json};const vscode=acquireVsCodeApi();
-const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-const nf=n=>Intl.NumberFormat().format(n);
-const r=DATA.report;
-const m=DATA.metrics;
-document.getElementById("proj").textContent=DATA.project;
-document.getElementById("outdir").textContent=DATA.outDir;
-const pct=m.estimatedReductionPercent.toFixed(1);
-const facts=(items)=>items.map(x=>'<div class="fact"><span>'+esc(x[0])+'</span><b>'+esc(x[1])+'</b></div>').join("");
-document.getElementById("overview").innerHTML=facts([
-  ["Agent",DATA.agent],["Run ID",DATA.runId],["Preparation result",DATA.outcome],
-  ["Initial context","Prepared by Yuhi"],["Original source files modified","0"],
-  ["Workspace boundary",DATA.runtime.workspaceBoundary],["OS sandbox",DATA.runtime.osSandboxEnabled?"Enabled":"Not enabled"]
-]);
-let hero;
-if(!r.hasData){hero='<div class="oc save"><div class="n">—</div><div class="t">Estimated Claude input avoided</div><div class="d">unavailable (no summarizable content)</div></div>';}
-else if(r.tokensSaved>=0){hero='<div class="oc save"><div class="n">'+nf(r.tokensSaved)+'</div><div class="t">Estimated tokens avoided</div><div class="d">Estimated context reduction: '+pct+'%</div></div>';}
-else{hero='<div class="oc save"><div class="n">+'+nf(-r.tokensSaved)+'</div><div class="t">Estimated Claude input INCREASED</div><div class="d">≈ '+Math.abs(pct)+'% more — summary larger than source</div></div>';}
-document.getElementById("cards").innerHTML=
-  hero+
-  '<div class="oc before"><div class="n">'+nf(r.beforeTokens)+'</div><div class="t">Estimated input before</div><div class="d">estimated tokens</div></div>'+
-  '<div class="oc after"><div class="n">'+nf(r.afterTokens)+'</div><div class="t">Estimated input after</div><div class="d">estimated tokens</div></div>';
-document.getElementById("stats").innerHTML=
-  '<span class="stat"><b>'+m.filesSentUnchanged+'</b> sent unchanged</span>'+
-  '<span class="stat"><b>'+m.filesPreparedLocally+'</b> prepared locally</span>'+
-  '<span class="stat"><b>'+m.filesSummarized+'</b> summarized locally</span>'+
-  '<span class="stat"><b>'+m.filesPseudonymized+'</b> pseudonymized</span>'+
-  '<span class="stat"><b>'+m.filesWithMaskedValues+'</b> files with masked values</span>'+
-  '<span class="stat"><b>'+m.sensitiveValuesMasked+'</b> sensitive values masked</span>'+
-  '<span class="stat"><b>'+m.preparedFilesModified+'</b> Prepared copies transformed</span>'+
-  '<span class="stat"><b>'+m.filesKeptLocal+'</b> kept local</span>'+
-  '<span class="stat"><b>'+m.filesExcluded+'</b> excluded</span>'+
-  '<span class="stat safe">Original source files modified: '+m.originalSourceFilesModified+'</span>';
-document.getElementById("sensitive").innerHTML=facts([
-  ["Sensitive findings detected",String(m.sensitiveFindings)],
-  ["Files containing sensitive findings",String(m.filesWithSensitiveFindings)],
-  ["Sensitive values masked",String(m.sensitiveValuesMasked)],
-  ["Files containing masked values",String(m.filesWithMaskedValues)],
-  ["Sensitive files excluded",String(m.sensitiveFilesExcluded)],
-  ["Files kept local",String(m.filesKeptLocal)],
-  ["Unresolved high-risk findings",String(m.unresolvedHighRiskFindings)],
-  ["Launch",m.unresolvedHighRiskFindings>0?"Blocked":"Allowed"]
-]);
-document.getElementById("runtime").innerHTML=facts([
-  ["Start directory",DATA.runtime.startDirectory==="prepared-workspace"?"Prepared Workspace":DATA.runtime.startDirectory],
-  ["Workspace instruction present",DATA.runtime.workspaceInstructionPresent?"Yes":"No"],
-  ["Workspace boundary",DATA.runtime.workspaceBoundary],
-  ["Filesystem enforcement",DATA.runtime.filesystemEnforcement==="none"?"Not enabled":DATA.runtime.filesystemEnforcement],
-  ["OS sandbox",DATA.runtime.osSandboxEnabled?"Enabled":"Not enabled"],
-  ["External-path access",DATA.runtime.externalPathAccessPossible?"May still be possible":"Not reported"]
-]);
-// action -> badge label/class
-const B={allow:["Sent","b-send"],redact:["Prepared","b-prep"],"prepare-locally":["Prepared","b-prep"],
-  "summarize-local":["Prepared","b-prep"],"metadata-only":["Kept","b-kept"],inject:["Runtime only","b-kept"],
-  "local-only":["Kept local","b-kept"],ask:["Kept","b-kept"],block:["Excluded","b-blocked"]};
-const badge=f=>{const b=B[f.action]||["Kept","b-kept"];let label=b[0];if(f.omitted&&f.action!=="block"&&b[1]!=="b-kept")label="Excluded";return '<span class="badge '+b[1]+'">'+label+'</span>';};
-const list=document.getElementById("list");
-const files=DATA.files.slice().sort((a,b)=>a.path.localeCompare(b.path));
-const renderFiles=(selected)=>{
-const visible=files.filter(f=>selected==="all"||selected==="included"&&f.included||selected==="transformed"&&f.transformed||selected==="masked"&&f.transformations.includes("masked")||selected==="excluded"&&f.omitted&&!["local-only","inject","ask","metadata-only"].includes(f.action)||selected==="kept-local"&&f.omitted&&["local-only","inject","ask","metadata-only"].includes(f.action)||selected==="unresolved"&&f.unresolvedHighRiskCount>0);
-if(!visible.length){list.innerHTML='<div class="empty">No matching files in this run.</div>';return;}
-list.innerHTML='<div class="decision head"><span>File</span><span>Sensitivity</span><span>Yuhi action</span><span>Rule</span><span>Reason</span><span>Included</span><span>Transformed</span><span>Claude receives</span></div>'+visible.map(f=>{
-  const tk=f.omitted?'omitted':nf(f.beforeTokens)+' → '+nf(f.afterTokens);
-  const file=f.diffable?'<button class="row diffable" data-p="'+esc(f.path)+'"><span class="fp">'+esc(f.path)+'</span><span class="diffhint">diff ↔</span></button>':'<span class="fp">'+esc(f.path)+'</span>';
-  return '<div class="decision">'+file+'<span>'+esc(f.sensitivity)+'</span>'+badge(f)+'<span>'+esc(f.rule)+'<br><small>'+esc(f.classificationSource)+'</small></span><span class="reason">'+esc(f.reason)+'</span><span>'+(f.included?'Yes':'No')+'</span><span>'+(f.transformed?'Yes':'No')+'</span><span class="tk">'+esc(f.claudeReceives)+(f.transformations.length?' · '+esc(f.transformations.join(", ")):'')+'<br>'+tk+'</span></div>';
-}).join("");};
-renderFiles("all");
-document.getElementById("filter").addEventListener("change",e=>renderFiles(e.target.value));
-list.addEventListener("click",e=>{const row=e.target.closest(".diffable");if(row)vscode.postMessage({type:"diff",path:row.dataset.p});});
-document.getElementById("tree").textContent=DATA.preparedTree.map(p=>"• "+p).join("\\n")||"No files included.";
+const DATA=${json},vscode=acquireVsCodeApi(),m=DATA.metrics,r=DATA.report,a=DATA.acceptance;
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const nf=n=>Intl.NumberFormat().format(n),pct=m.estimatedReductionPercent.toFixed(1);
+const transformed=m.preparedFilesModified,included=DATA.projectFiles.length;
+const enforced=DATA.runtime.filesystemEnforcement==="claude-code-sandbox"&&DATA.runtime.osSandboxEnabled&&!DATA.runtime.externalPathAccessPossible;
+document.getElementById("runtimeNotice").textContent=enforced?"Yuhi prepared the initial context. Claude Code sandbox policy is enforced.":"Yuhi prepared the initial context. External filesystem access is not restricted.";
+document.getElementById("runtimeExplanation").textContent=enforced?"Claude Code starts in the Prepared Workspace. Yuhi denies reads from the home directory and re-allows only this Prepared Workspace. Launch fails if the sandbox policy cannot be installed or verified.":"This is an advisory Prepared Workspace. Return to the original workspace and prepare again before launching Claude Code.";
+document.getElementById("heroLead").textContent=included+" project "+(included===1?"file was":"files were")+" reviewed and prepared. Your original workspace was not modified.";
+document.getElementById("heroFacts").innerHTML=[
+ [included,"Included"],[transformed,"Transformed"],[m.sensitiveValuesMasked,"Masked"],[m.filesExcluded+m.filesKeptLocal,"Withheld"],[m.originalSourceFilesModified,"Source changed"]
+].map(x=>'<span class="pill"><b>'+x[0]+'</b> '+x[1]+'</span>').join("");
+document.getElementById("receiveTitle").textContent="Claude Code will receive "+included+" project "+(included===1?"file":"files");
+document.getElementById("projectCount").textContent="· "+included;
+const fileList=items=>items.length?items.map(p=>'<li title="'+esc(p)+'"><span class="file-icon">□</span><code>'+esc(p)+'</code></li>').join(""):'<li class="note">None</li>';
+document.getElementById("projectFiles").innerHTML=fileList(DATA.projectFiles);
+document.getElementById("metadataTitle").textContent="Yuhi metadata · "+DATA.metadataFiles.length+" "+(DATA.metadataFiles.length===1?"file":"files");
+document.getElementById("metadataFiles").innerHTML=fileList(DATA.metadataFiles);
+document.getElementById("fileResult").textContent=transformed===0?"All included files are unchanged":transformed+" included "+(transformed===1?"file was":"files were")+" transformed";
+const reductionNote=!r.hasData?"Token estimate unavailable.":m.estimatedReductionPercent===0?"No reduction was applied because all included files were kept unchanged.":m.estimatedReductionPercent<0?"Prepared content is larger than the original estimate.":nf(r.beforeTokens)+" → "+nf(r.afterTokens)+" estimated tokens";
+const cards=[["Included",included],["Transformed",transformed],["Masked values",m.sensitiveValuesMasked],["Excluded",m.filesExcluded],["Kept local",m.filesKeptLocal],["Source changed",m.originalSourceFilesModified]];
+document.getElementById("summary").innerHTML='<div class="metric reduction"><span>Estimated context reduction</span><b>'+pct+'%</b><div class="explanation">'+esc(reductionNote)+'</div></div>'+cards.map(x=>'<div class="metric"><span>'+x[0]+'</span><b>'+x[1]+'</b></div>').join("");
+const facts=items=>items.map(x=>'<div class="fact"><span>'+esc(x[0])+'</span><b>'+esc(x[1])+'</b></div>').join("");
+const restricted=DATA.files.filter(f=>f.sensitivity==="Restricted"),limited=DATA.files.filter(f=>f.limitationShown),box=document.getElementById("privacyDecision");
+const limitationDetails=()=>limited.map(f=>"<p><b>"+(f.sensitivity==="Restricted"?"Restricted workbook kept local":"File kept local")+"</b></p>"+facts([["Type",f.fileType??"Unknown"],["Inspection",f.inspectionStatus??"Not available"],["Transformation",f.outcome==="local-only-unverified"?"Not available":"Not attempted"],["Claude receives","Nothing"],["Reason",f.fileType==="PDF"?"No verified local PDF inspection is available":"Verified local inspection or transformation is unavailable"],["Unresolved high-risk data",f.sensitivity==="Restricted"?"Yes":"No"]])).join("");
+if(DATA.outcome==="Partial"){box.hidden=false;box.innerHTML="<p><b>Preparation incomplete</b></p>"+facts([["Malformed tables",String(a.malformedTables)],["Unverified transformations",String(a.unverifiedTransformations)],["Unsupported or unverified files",String(a.unsupportedOrUnverifiedFiles??0)],["Restricted unresolved files",String(a.restrictedUnresolvedFiles??0)],["Files kept local",String(m.filesKeptLocal)],["Raw fallback used","No"],["Claude Code started","No"]])+"<p>Some files could not be safely inspected or transformed.</p>"+limitationDetails()}
+else if(a.hasLimitations){box.hidden=false;box.innerHTML="<p><b>Some files could not be safely inspected or transformed.</b></p>"+facts([["Unsupported or unverified files",String(a.unsupportedOrUnverifiedFiles??0)],["Restricted unresolved files",String(a.restrictedUnresolvedFiles??0)],["Raw fallback used","No"]])+limitationDetails()}
+else if(restricted.length){box.hidden=false;box.innerHTML="<p><b>Restricted tabular data transformed locally</b></p>"+facts([["Entities pseudonymized",String(a.entitiesPseudonymized)],["Identifier columns transformed",String(a.identifierColumnsTransformed)],["Analytical columns preserved",String(a.analyticalColumnsPreserved)],["Post-transformation scan",a.postTransformScanPassed?"Passed":"Failed"],["Raw fallback used","No"],["Original source modified","No"],["Claude receives","Verified transformed copy"]])}
+document.getElementById("runtimeFacts").innerHTML=facts([["Starts in","Prepared Workspace"],["Workspace boundary",DATA.runtime.workspaceBoundary==="enforced"?"Enforced":"Advisory"],["Filesystem enforcement",DATA.runtime.filesystemEnforcement==="claude-code-sandbox"?"Claude Code sandbox":"Not enabled"],["OS sandbox",DATA.runtime.osSandboxEnabled?"Enabled":"Not enabled"],["External-path access",DATA.runtime.externalPathAccessPossible?"May still be possible":"Blocked by policy"]]);
+const action=f=>f.outcome==="local-only-unsupported"?"File kept local":f.outcome==="local-only-unverified"?"Restricted workbook kept local":f.outcome==="excluded-by-user"?"Excluded by user":f.outcome==="excluded-by-policy"?"Excluded by policy":f.omitted?(["local-only","inject","ask","metadata-only"].includes(f.action)?"Kept local":"Excluded"):f.transformations.includes("aggregated")?"Aggregated locally":f.transformations.includes("pseudonymized")?"Pseudonymized locally":f.transformations.includes("masked")?"Masked locally":f.transformations.includes("summarized")?"Summarized locally":"Included unchanged";
+const receive=f=>f.claudeReceives==="No"?"Nothing":f.transformations.includes("aggregated")?"Aggregated copy":f.transformations.includes("pseudonymized")?"Pseudonymized copy":f.transformed?"Prepared copy":"Unchanged";
+const files=DATA.files.slice().sort((a,b)=>a.path.localeCompare(b.path)),decisions=document.getElementById("decisions");
+function render(selected){const shown=files.filter(f=>selected==="all"||selected==="included"&&f.included||selected==="transformed"&&f.transformed||selected==="excluded"&&f.omitted&&!["local-only","inject","ask","metadata-only"].includes(f.action)||selected==="kept"&&f.omitted&&["local-only","inject","ask","metadata-only"].includes(f.action));if(!shown.length){decisions.innerHTML='<div class="empty-state">No matching files.</div>';return}decisions.innerHTML='<div class="row head"><span>File</span><span>Yuhi action</span><span>Claude receives</span><span>Why</span></div>'+shown.map(f=>{const p='<span class="path" title="'+esc(f.path)+'">'+esc(f.path)+'</span>';return '<div class="row">'+(f.diffable?'<button class="diff" data-p="'+esc(f.path)+'">'+p+'</button>':p)+'<span class="badge">'+action(f)+'</span><span>'+receive(f)+'</span><span class="why">'+esc(f.reason)+'</span></div>'}).join("")}
+render("all");document.getElementById("filter").addEventListener("change",e=>render(e.target.value));decisions.addEventListener("click",e=>{const row=e.target.closest(".diff");if(row)vscode.postMessage({type:"diff",path:row.dataset.p})});
+document.getElementById("advanced").innerHTML=facts([["Preparation result",DATA.outcome],["Run ID",DATA.runId],["Prepared output",DATA.outDir],["Project files inspected",String(m.filesInspected)],["Project files included",String(included)],["Generated Yuhi metadata files",String(DATA.metadataFiles.length)],["Estimated tokens before",String(r.beforeTokens)],["Estimated tokens after",String(r.afterTokens)]]);
+const noFindings=m.sensitiveFindings===0?"No sensitive findings detected":m.sensitiveFindings+" sensitive findings detected";
+const noWithheld=m.filesExcluded===0&&m.filesKeptLocal===0?"No files were withheld":m.filesExcluded+" excluded · "+m.filesKeptLocal+" kept local";
+document.getElementById("scanner").innerHTML='<p>'+esc(noFindings)+'</p><p>'+esc(noWithheld)+'</p>'+facts([["Files containing findings",String(m.filesWithSensitiveFindings)],["Files containing masked values",String(m.filesWithMaskedValues)],["Unresolved high-risk findings",String(m.unresolvedHighRiskFindings)]]);
+const send=t=>vscode.postMessage({type:t});document.querySelectorAll(".launchAction").forEach(b=>b.addEventListener("click",()=>send("launch")));document.querySelectorAll(".openClaudeHere").forEach(b=>b.addEventListener("click",()=>send("openClaudeHere")));document.querySelectorAll("#cancel,#cancelSticky").forEach(b=>b.addEventListener("click",()=>send("cancel")));document.getElementById("review").addEventListener("click",()=>document.getElementById("files").scrollIntoView());document.getElementById("backToFiles").addEventListener("click",()=>document.getElementById("files").scrollIntoView());
+document.getElementById("excludeBlocked")?.addEventListener("click",()=>send("excludeBlockedAndRetry"));document.getElementById("reviewBlocked")?.addEventListener("click",()=>{document.getElementById("filter").value="kept";render("kept");document.getElementById("files").scrollIntoView()});document.getElementById("chooseSource")?.addEventListener("click",()=>send("chooseSource"));
 </script></body></html>`;
 }

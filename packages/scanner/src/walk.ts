@@ -3,8 +3,30 @@ import path from "node:path";
 import ignore, { type Ignore } from "ignore";
 import { toPosix } from "@yuhi/shared";
 
-/** Directories always skipped regardless of ignore files. */
-const ALWAYS_SKIP_DIRS = new Set([".git", "node_modules", ".yuhi"]);
+/** Security/state directories never become source candidates. */
+const ALWAYS_SKIP_DIRS = new Set([".git", ".yuhi"]);
+
+/** Generated dependency/cache directories skipped unless a safe explicit rule includes them. */
+export const DEFAULT_SKIP_DIRS = new Set([
+  "node_modules",
+  ".venv",
+  "venv",
+  ".tox",
+  ".mypy_cache",
+  ".pytest_cache",
+  "__pycache__",
+  ".next",
+  ".turbo",
+  "dist",
+  "build",
+  "coverage",
+  "target",
+  "out",
+  ".pnpm-store",
+  ".yarn",
+  ".cache",
+  ".gradle",
+]);
 
 /** Ignore files honored by `yuhi init`/`scan` (in addition to explicit rules). */
 const IGNORE_FILES = [".gitignore", ".dockerignore", ".npmignore", ".ignore"];
@@ -41,7 +63,12 @@ function loadIgnores(root: string): Ignore {
  * symlinks (symlinks are reported, not traversed). Purely lexical + lstat; no
  * shell, no path escaping.
  */
-export function walkRepo(root: string): WalkResult {
+export interface WalkOptions {
+  /** Top-level generated directories explicitly included by a yuhi.yaml path rule. */
+  explicitIncludeDirs?: ReadonlySet<string>;
+}
+
+export function walkRepo(root: string, options: WalkOptions = {}): WalkResult {
   const absRoot = path.resolve(root);
   const ig = loadIgnores(absRoot);
   const entries: WalkEntry[] = [];
@@ -91,6 +118,12 @@ export function walkRepo(root: string): WalkResult {
 
       if (st.isDirectory()) {
         if (ALWAYS_SKIP_DIRS.has(dirent.name)) continue;
+        if (
+          DEFAULT_SKIP_DIRS.has(dirent.name) &&
+          !options.explicitIncludeDirs?.has(rel.split("/")[0]!)
+        ) {
+          continue;
+        }
         // ignore matching (append "/" so dir globs match)
         if (ig.ignores(rel + "/") || ig.ignores(rel)) continue;
         stack.push(abs);

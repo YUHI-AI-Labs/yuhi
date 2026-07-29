@@ -10,15 +10,88 @@
  * Claude orchestrator, so future agents (Codex, Gemini) can add their own adapter.
  */
 import * as path from "node:path";
-import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import {
   buildPreparedMetrics,
   buildPreparedRuntimeBoundary,
+  managedWorkspaceBaseDir,
   opaqueWorkspaceId,
+  SOURCE_INTEGRITY_ERROR,
   type PreparedMetrics,
   type PreparedRuntimeBoundary,
   type PrepareReport,
 } from "@yuhi/core";
+
+export type VisibleLaunchFailureKind =
+  | "preparation-failure"
+  | "source-integrity"
+  | "post-prepare-validation"
+  | "confirmation-failure"
+  | "review-ui-failure"
+  | "prepared-workspace-open-failure";
+
+const VISIBLE_FAILURE_MESSAGES: Record<VisibleLaunchFailureKind, string> = {
+  "preparation-failure":
+    "Yuhi could not complete workspace preparation. View Yuhi Output or retry.",
+  "source-integrity": SOURCE_INTEGRITY_ERROR,
+  "post-prepare-validation":
+    "Yuhi prepared the workspace, but could not validate the post-prepare launch state. View Yuhi Output or retry.",
+  "confirmation-failure":
+    "Yuhi prepared the workspace, but could not show the launch confirmation. View Yuhi Output or retry.",
+  "review-ui-failure":
+    "Yuhi prepared the workspace, but could not open Review Prepared Context. View Yuhi Output or retry.",
+  "prepared-workspace-open-failure":
+    "Yuhi prepared the workspace, but could not open the Prepared Workspace. View Yuhi Output or retry.",
+};
+
+export class VisibleLaunchError extends Error {
+  constructor(readonly kind: Exclude<VisibleLaunchFailureKind, "source-integrity">) {
+    super(VISIBLE_FAILURE_MESSAGES[kind]);
+    this.name = "VisibleLaunchError";
+  }
+}
+
+async function launchStage<T>(
+  kind: Exclude<VisibleLaunchFailureKind, "source-integrity">,
+  task: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await task();
+  } catch (error) {
+    if (error instanceof Error && error.message === SOURCE_INTEGRITY_ERROR) throw error;
+    if (error instanceof VisibleLaunchError) throw error;
+    throw new VisibleLaunchError(kind);
+  }
+}
+
+/**
+ * VS Code command callbacks must never leak a rejected promise after progress
+ * completes. Convert every failure into a safe, actionable notification without
+ * persisting exception text, source paths, or source content.
+ */
+export async function runVisibleLaunchCommand(
+  task: () => Promise<unknown>,
+  showFailure: (message: string, kind: VisibleLaunchFailureKind) => Promise<void>,
+): Promise<"completed" | "failed"> {
+  try {
+    await task();
+    return "completed";
+  } catch (error) {
+    const integrityFailure = error instanceof Error && error.message === SOURCE_INTEGRITY_ERROR;
+    const kind: VisibleLaunchFailureKind = integrityFailure
+      ? "source-integrity"
+      : error instanceof VisibleLaunchError
+        ? error.kind
+        : "post-prepare-validation";
+    try {
+      await showFailure(VISIBLE_FAILURE_MESSAGES[kind], kind);
+    } catch {
+      // The command boundary must settle even if VS Code cannot render the
+      // notification (for example, while its window is shutting down).
+    }
+    return "failed";
+  }
+}
 
 /** Command IDs added by this feature. Single source of truth for registration + package.json parity. */
 export const LAUNCH_COMMANDS = {
@@ -64,7 +137,7 @@ export const LAUNCH_MESSAGES = {
   cancelled: "Yuhi: preparation cancelled — no workspace was opened.",
   confirmOpen: "Open the prepared workspace in a new VS Code window?",
   extensionOpened:
-    "Prepared workspace opened. Start Claude Code from its sidebar or command palette.",
+    "Prepared Workspace opened\n\nClaude Code is ready to use in this window. Open Claude Code from the Activity Bar or Command Palette.",
   claudeNotInstalled:
     "The Claude Code extension is not installed. You can install it, or open the prepared workspace anyway.",
   cliNotInstalled:
@@ -74,7 +147,7 @@ export const LAUNCH_MESSAGES = {
 /** Quick Pick action ids for the "extension not installed" branch. */
 export const CLAUDE_MISSING_ACTIONS = {
   marketplace: "Install Claude Code",
-  openAnyway: "Open Prepared Workspace Anyway",
+  openAnyway: "Open Prepared Workspace anyway",
   cancel: "Cancel",
 } as const;
 
@@ -162,7 +235,7 @@ export function buildSummary(
 
 /** Multi-line, human-readable summary block (no source path, no machine info). */
 export function formatSummaryDetail(s: PreparedSummary): string {
-  const runtime = buildPreparedRuntimeBoundary();
+  const runtime = buildPreparedRuntimeBoundary("claude-code-sandbox");
   return [
     "Prepared by Yuhi",
     "",
@@ -196,7 +269,7 @@ export function formatSummaryDetail(s: PreparedSummary): string {
     `Workspace-only instruction: ${runtime.workspaceInstructionPresent ? "enabled" : "not present"}`,
     `Filesystem enforcement: ${runtime.filesystemEnforcement === "none" ? "not enabled" : runtime.filesystemEnforcement}`,
     `OS sandbox: ${runtime.osSandboxEnabled ? "enabled" : "not enabled"}`,
-    "The agent may access files outside the Prepared Workspace if the runtime or user permits it.",
+    "External filesystem reads are restricted to the Prepared Workspace by Claude Code sandbox policy.",
   ].join("\n");
 }
 
@@ -213,7 +286,7 @@ export function formatPreparedStatusText(metrics: PreparedMetrics): string {
 }
 
 export function preparedStatusTooltipLines(runId: string, metrics: PreparedMetrics): string[] {
-  const runtime = buildPreparedRuntimeBoundary();
+  const runtime = buildPreparedRuntimeBoundary("claude-code-sandbox");
   return [
     "**Prepared by Yuhi**",
     `Run ID: \`${runId}\``,
@@ -230,7 +303,7 @@ export function preparedStatusTooltipLines(runId: string, metrics: PreparedMetri
     `Workspace-only instruction: ${runtime.workspaceInstructionPresent ? "enabled" : "not present"}`,
     `Filesystem enforcement: ${runtime.filesystemEnforcement === "none" ? "not enabled" : runtime.filesystemEnforcement}`,
     `OS sandbox: ${runtime.osSandboxEnabled ? "enabled" : "not enabled"}`,
-    "The agent may access files outside the Prepared Workspace if the runtime or user permits it.",
+    "External filesystem reads are restricted to the Prepared Workspace by Claude Code sandbox policy.",
   ];
 }
 
@@ -252,10 +325,9 @@ This is a generated **Yuhi Prepared Workspace**.
 - Missing information should be reported instead of retrieving files from parent
   directories or absolute paths.
 - Yuhi controls the initial prepared context.
-- Yuhi does not provide OS-level sandboxing.
-- Workspace boundary: advisory.
-- The agent may access files outside the Prepared Workspace if the runtime or
-  user permits it.
+- Yuhi configures Claude Code's OS-level sandbox for this workspace.
+- Workspace boundary: enforced for Claude Code file and Bash access.
+- Reading outside this Prepared Workspace is denied.
 
 ## Guidance for any AI agent working here
 
@@ -271,14 +343,13 @@ Base all analysis and edits only on files available in this prepared workspace.
 If required information is missing, stop and report what is missing rather than
 opening external paths.
 
-Yuhi controls the prepared input context. This workspace-only instruction is
-advisory: filesystem enforcement is not enabled. It does **not** provide
-OS-level sandboxing, and the agent may access parent directories, the user's
-home directory, or other absolute paths if the runtime or user permits it.
+Yuhi controls the prepared input context and installs a fail-closed Claude Code
+sandbox policy. If the sandbox is unavailable or the policy cannot be verified,
+Claude Code must not start from this workspace.
 `;
 
 export function formatPreparedWorkspaceNotice(metrics: PreparedMetrics): string {
-  const runtime = buildPreparedRuntimeBoundary();
+  const runtime = buildPreparedRuntimeBoundary("claude-code-sandbox");
   return PREPARED_WORKSPACE_NOTICE.replace(
     "This is a generated **Yuhi Prepared Workspace**.",
     [
@@ -328,12 +399,12 @@ export async function writePreparedNotice(
 // ---------------------------------------------------------------------------
 
 /**
- * A prepared path is valid only when it is exactly `<root>/.yuhi/prepared/<runId>`:
- * one path segment under the prepared base, with no `..` traversal. Guards the
- * open/terminal targets before we act on them.
+ * A new prepared path is valid only when it is one direct child of Yuhi's
+ * OS-managed workspace root. The source root is accepted only as an unused
+ * compatibility parameter; it is never the prepared base.
  */
-export function validatePreparedPath(root: string, outDir: string): boolean {
-  const base = path.resolve(root, ".yuhi", "prepared");
+export function validatePreparedPath(_root: string, outDir: string): boolean {
+  const base = path.resolve(managedWorkspaceBaseDir());
   const resolved = path.resolve(outDir);
   const rel = path.relative(base, resolved);
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel) && !rel.includes(path.sep);
@@ -348,10 +419,10 @@ export async function assertPreparedPath(root: string, outDir: string): Promise<
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error("Refusing to use a prepared workspace that is not a real directory.");
   }
-  const base = await realpath(path.resolve(root, ".yuhi", "prepared"));
+  const base = await realpath(path.resolve(managedWorkspaceBaseDir()));
   const target = await realpath(outDir);
   if (path.dirname(target) !== base) {
-    throw new Error("Refusing to use a prepared workspace outside Yuhi's prepared directory.");
+    throw new Error("Refusing to use a prepared workspace outside Yuhi's managed workspace directory.");
   }
 }
 
@@ -369,6 +440,55 @@ export interface PreparedSession {
 
 export const PREPARED_SESSION_RELPATH = path.join(".yuhi", "session.json");
 export const PREPARED_AUDIT_RELPATH = path.join(".yuhi", "launch-audit.jsonl");
+export const CLAUDE_SANDBOX_RELPATH = path.join(".claude", "settings.json");
+
+export const CLAUDE_SANDBOX_POLICY = {
+  sandbox: {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    excludedCommands: [],
+    autoAllowBashIfSandboxed: false,
+    filesystem: {
+      denyRead: ["~/"],
+      allowRead: ["."],
+    },
+  },
+  permissions: {
+    defaultMode: "default",
+    disableBypassPermissionsMode: "disable",
+    disableAutoMode: "disable",
+  },
+} as const;
+
+export async function writeAndVerifyClaudeSandboxPolicy(
+  root: string,
+  outDir: string,
+): Promise<string> {
+  await assertPreparedPath(root, outDir);
+  const target = path.join(outDir, CLAUDE_SANDBOX_RELPATH);
+  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  await writeFile(target, JSON.stringify(CLAUDE_SANDBOX_POLICY, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await chmod(target, 0o600);
+  const saved = JSON.parse(await readFile(target, "utf8")) as typeof CLAUDE_SANDBOX_POLICY;
+  if (
+    saved.sandbox?.enabled !== true ||
+    saved.sandbox?.failIfUnavailable !== true ||
+    saved.sandbox?.allowUnsandboxedCommands !== false ||
+    !Array.isArray(saved.sandbox?.excludedCommands) ||
+    saved.sandbox.excludedCommands.length !== 0 ||
+    saved.sandbox?.filesystem?.denyRead?.[0] !== "~/" ||
+    saved.sandbox?.filesystem?.allowRead?.[0] !== "." ||
+    saved.permissions?.disableBypassPermissionsMode !== "disable" ||
+    saved.permissions?.disableAutoMode !== "disable"
+  ) {
+    throw new Error("Yuhi could not verify the Claude Code sandbox policy. Launch blocked.");
+  }
+  return target;
+}
 
 /** Read schema v2 and upgrade schema v1 metadata in memory without rewriting it. */
 export function normalizePreparedSession(value: unknown): PreparedSession {
@@ -407,6 +527,14 @@ export function normalizePreparedSession(value: unknown): PreparedSession {
     estimatedReductionPercent: number("estimatedReductionPercent"),
     originalSourceFilesModified: 0,
   };
+  const storedRuntime = raw.runtime as Record<string, unknown> | undefined;
+  const runtime =
+    raw.schemaVersion === 2 &&
+    storedRuntime?.filesystemEnforcement === "claude-code-sandbox" &&
+    storedRuntime.osSandboxEnabled === true &&
+    storedRuntime.externalPathAccessPossible === false
+      ? buildPreparedRuntimeBoundary("claude-code-sandbox")
+      : buildPreparedRuntimeBoundary();
   return {
     schemaVersion: 2,
     preparedBy: "Yuhi",
@@ -416,7 +544,7 @@ export function normalizePreparedSession(value: unknown): PreparedSession {
     sourceWorkspaceId: typeof raw.sourceWorkspaceId === "string" ? raw.sourceWorkspaceId : "",
     preparationResult: raw.preparationResult === "complete-with-warnings" ? "complete-with-warnings" : "complete",
     metrics,
-    runtime: buildPreparedRuntimeBoundary(),
+    runtime,
   };
 }
 
@@ -436,7 +564,7 @@ export async function writeSessionMetadata(
     sourceWorkspaceId: opaqueWorkspaceId(root),
     preparationResult: outcome === "Complete" ? "complete" : "complete-with-warnings",
     metrics: buildPreparedMetrics(report),
-    runtime: buildPreparedRuntimeBoundary(),
+    runtime: buildPreparedRuntimeBoundary("claude-code-sandbox"),
   };
   const target = path.join(report.outDir, PREPARED_SESSION_RELPATH);
   await mkdir(path.dirname(target), { recursive: true });
@@ -473,6 +601,7 @@ async function writePreparedArtifacts(
   outcome: LaunchOutcome,
 ): Promise<void> {
   await assertPreparedPath(root, report.outDir);
+  await writeAndVerifyClaudeSandboxPolicy(root, report.outDir);
   await writePreparedNotice(report.outDir, buildPreparedMetrics(report));
   await writeSessionMetadata(root, report, outcome);
 }
@@ -569,6 +698,8 @@ export interface PrepareDeps {
    * This is the single preparation entry point — no command duplicates it.
    */
   prepare(root: string): Promise<PrepareReport | undefined>;
+  /** Open metadata-safe blocked review when preparation cannot launch. */
+  reviewBlocked?(): Promise<unknown>;
 }
 
 export interface PrepareAndOpenDeps extends PrepareDeps {
@@ -592,25 +723,33 @@ export async function runPrepareAndOpen(deps: PrepareAndOpenDeps): Promise<Prepa
     await deps.host.showInfo(LAUNCH_MESSAGES.noWorkspace);
     return { status: "no-workspace" };
   }
-  const report = await deps.prepare(root);
+  const report = await launchStage("preparation-failure", () => deps.prepare(root));
   if (!report) {
     await deps.host.showInfo(LAUNCH_MESSAGES.cancelled);
     return { status: "cancelled" };
   }
   const outcome = classifyOutcome(report);
-  await appendLaunchAudit(root, report.outDir, report.runId, "preparation-started");
-  await appendLaunchAudit(root, report.outDir, report.runId, "preparation-completed");
+  await launchStage("post-prepare-validation", async () => {
+    await appendLaunchAudit(root, report.outDir, report.runId, "preparation-started");
+    await appendLaunchAudit(root, report.outDir, report.runId, "preparation-completed");
+  });
   if (!canOpen(outcome)) {
-    await deps.host.showError(
-      `Yuhi: preparation ended "${outcome}" — not opening a partial workspace. Run Doctor to diagnose.`,
-    );
+    if (deps.reviewBlocked) {
+      await launchStage("review-ui-failure", () => deps.reviewBlocked!());
+    } else {
+      await deps.host.showError(
+        `Yuhi: preparation ended "${outcome}" — not opening a partial workspace. Review the blocked files and prepare again.`,
+      );
+    }
     return { status: "blocked", outcome };
   }
   const summary = buildSummary(report, root);
   if (summary.unresolvedHighRiskFindings > 0) {
     const overridden =
       deps.confirmHighRiskOverride !== undefined &&
-      (await deps.confirmHighRiskOverride(summary.unresolvedHighRiskFindings));
+      (await launchStage("confirmation-failure", () =>
+        deps.confirmHighRiskOverride!(summary.unresolvedHighRiskFindings),
+      ));
     if (!overridden) {
       await deps.host.showError(
         `Yuhi: ${summary.unresolvedHighRiskFindings} unresolved high-risk finding(s) remain — launch blocked.`,
@@ -619,14 +758,18 @@ export async function runPrepareAndOpen(deps: PrepareAndOpenDeps): Promise<Prepa
     }
     await appendLaunchAudit(root, report.outDir, report.runId, "unresolved-finding-override");
   }
-  const confirmed = await deps.confirmOpen(summary);
+  const confirmed = await launchStage("confirmation-failure", () => deps.confirmOpen(summary));
   if (!confirmed) {
     await appendLaunchAudit(root, report.outDir, report.runId, "launch-cancelled");
     return { status: "declined" };
   }
-  await writePreparedArtifacts(root, report, outcome);
-  await appendLaunchAudit(root, report.outDir, report.runId, "launch-approved");
-  await openPreparedWorkspace(deps.host, root, report.outDir);
+  await launchStage("post-prepare-validation", async () => {
+    await writePreparedArtifacts(root, report, outcome);
+    await appendLaunchAudit(root, report.outDir, report.runId, "launch-approved");
+  });
+  await launchStage("prepared-workspace-open-failure", () =>
+    openPreparedWorkspace(deps.host, root, report.outDir),
+  );
   await appendLaunchAudit(root, report.outDir, report.runId, "prepared-workspace-opened");
   await deps.host.showInfo(formatOpenedMessage(summary));
   return { status: "opened", outDir: report.outDir, outcome };
@@ -643,7 +786,7 @@ export interface PrepareAndStartClaudeDeps extends PrepareDeps {
   forwardedArgs?: string[];
   /** Required human review/confirmation before any Claude launch. */
   confirmLaunch(summary: PreparedSummary): Promise<"open" | "review" | "cancel">;
-  reviewDetails(): Promise<void>;
+  reviewDetails(): Promise<"open" | "cancel" | void>;
   /** Separate, explicit acknowledgement when high-risk findings would remain unchanged. */
   confirmHighRiskOverride?(count: number): Promise<boolean>;
 }
@@ -666,28 +809,41 @@ export async function runPrepareAndStartClaude(
     await deps.host.showInfo(LAUNCH_MESSAGES.noWorkspace);
     return { status: "no-workspace" };
   }
-  const mode = await deps.pickMode();
-  if (!mode) return { status: "cancelled" };
-
-  const report = await deps.prepare(root);
+  const report = await launchStage("preparation-failure", () => deps.prepare(root));
   if (!report) {
     await deps.host.showInfo(LAUNCH_MESSAGES.cancelled);
     return { status: "cancelled" };
   }
   const outcome = classifyOutcome(report);
-  await appendLaunchAudit(root, report.outDir, report.runId, "preparation-started");
-  await appendLaunchAudit(root, report.outDir, report.runId, "preparation-completed");
+  await launchStage("post-prepare-validation", async () => {
+    await appendLaunchAudit(root, report.outDir, report.runId, "preparation-started");
+    await appendLaunchAudit(root, report.outDir, report.runId, "preparation-completed");
+  });
   if (!canOpen(outcome)) {
-    await deps.host.showError(
-      `Yuhi: preparation ended "${outcome}" — not opening a partial workspace. Run Doctor to diagnose.`,
-    );
+    if (deps.reviewBlocked) {
+      await launchStage("review-ui-failure", () => deps.reviewBlocked!());
+    } else {
+      await deps.host.showError(
+        `Yuhi: preparation ended "${outcome}" — not opening a partial workspace. Review the blocked files and prepare again.`,
+      );
+    }
     return { status: "blocked", outcome };
+  }
+  await launchStage("post-prepare-validation", () =>
+    writeAndVerifyClaudeSandboxPolicy(root, report.outDir),
+  );
+  const mode = await launchStage("confirmation-failure", () => deps.pickMode());
+  if (!mode) {
+    await appendLaunchAudit(root, report.outDir, report.runId, "launch-cancelled");
+    return { status: "cancelled" };
   }
   const summary = buildSummary(report, root);
   if (summary.unresolvedHighRiskFindings > 0) {
     const overridden =
       deps.confirmHighRiskOverride !== undefined &&
-      (await deps.confirmHighRiskOverride(summary.unresolvedHighRiskFindings));
+      (await launchStage("confirmation-failure", () =>
+        deps.confirmHighRiskOverride!(summary.unresolvedHighRiskFindings),
+      ));
     if (!overridden) {
       await deps.host.showError(
         `Yuhi: ${summary.unresolvedHighRiskFindings} unresolved high-risk finding(s) remain — launch blocked.`,
@@ -697,9 +853,16 @@ export async function runPrepareAndStartClaude(
     await appendLaunchAudit(root, report.outDir, report.runId, "unresolved-finding-override");
   }
   while (true) {
-    const confirmation = await deps.confirmLaunch(summary);
+    const confirmation = await launchStage("confirmation-failure", () =>
+      deps.confirmLaunch(summary),
+    );
     if (confirmation === "review") {
-      await deps.reviewDetails();
+      const reviewDecision = await launchStage("review-ui-failure", () => deps.reviewDetails());
+      if (reviewDecision === "open") break;
+      if (reviewDecision === "cancel") {
+        await appendLaunchAudit(root, report.outDir, report.runId, "launch-cancelled");
+        return { status: "cancelled" };
+      }
       continue;
     }
     if (confirmation === "cancel") {
@@ -708,8 +871,10 @@ export async function runPrepareAndStartClaude(
     }
     break;
   }
-  await writePreparedArtifacts(root, report, outcome);
-  await appendLaunchAudit(root, report.outDir, report.runId, "launch-approved");
+  await launchStage("post-prepare-validation", async () => {
+    await writePreparedArtifacts(root, report, outcome);
+    await appendLaunchAudit(root, report.outDir, report.runId, "launch-approved");
+  });
 
   if (mode === "extension") return startClaudeExtensionMode(deps, root, report);
   return startClaudeCliMode(deps, root, report);
@@ -720,6 +885,7 @@ async function startClaudeExtensionMode(
   root: string,
   report: PrepareReport,
 ): Promise<PrepareAndStartClaudeResult> {
+  await writeAndVerifyClaudeSandboxPolicy(root, report.outDir);
   const claude = resolveClaudeIntegration(deps.host);
   if (!claude.installed) {
     const choice = await deps.host.showWarning(
@@ -754,6 +920,7 @@ async function startClaudeCliMode(
   root: string,
   report: PrepareReport,
 ): Promise<PrepareAndStartClaudeResult> {
+  await writeAndVerifyClaudeSandboxPolicy(root, report.outDir);
   const cliFile = deps.resolveCliFile();
   if (!cliFile) {
     const choice = await deps.host.showWarning(LAUNCH_MESSAGES.cliNotInstalled, "Open installation docs");

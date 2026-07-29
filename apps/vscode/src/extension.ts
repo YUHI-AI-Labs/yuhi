@@ -9,6 +9,7 @@ import {
   buildPreparedFileDecisions,
   buildPreparedRuntimeBoundary,
   lookupOnPath,
+  managedWorkspaceBaseDir,
   prepareWorkspace,
   runInit,
   type PrepareReport,
@@ -28,19 +29,25 @@ import {
 import { loadConfig } from "@yuhi/config";
 import { parseDocument } from "yaml";
 import { renderSavingsHtml, type ReviewData } from "./webview.js";
+import { YUHI_ACTIVITY_VIEW_ID, YuhiActivityProvider } from "./activity-view.js";
+import { PREPARED_WINDOW_TITLE, PREPARED_WORKBENCH_COLORS } from "./branding.js";
+import { validatePreparedWorkspace, type RecoveryReason } from "./recovery.js";
 import {
   CLAUDE_INTEGRATION,
+  CLAUDE_SANDBOX_RELPATH,
   LAUNCH_COMMANDS,
   appendLaunchAudit,
   buildSummary,
   formatSummaryDetail,
-  formatPreparedStatusText,
   normalizePreparedSession,
   preparedStatusTooltipLines,
   runPrepareAndOpen,
   runPrepareAndStartClaude,
+  runVisibleLaunchCommand,
+  writeAndVerifyClaudeSandboxPolicy,
   type ClaudeMode,
   type LaunchHost,
+  type VisibleLaunchFailureKind,
 } from "./launch.js";
 
 const OLLAMA_DOWNLOAD = "https://ollama.com/download";
@@ -54,6 +61,7 @@ type StatusState =
   | "inference-failed"
   | "preparing"
   | "ready-for-review"
+  | "recovery-required"
   | "failed";
 
 const STATUS: Record<StatusState, { text: string; icon: string; command?: string; tip: string }> = {
@@ -64,6 +72,7 @@ const STATUS: Record<StatusState, { text: string; icon: string; command?: string
   "inference-failed": { text: "Inference failed", icon: "error", command: "yuhi.doctor", tip: "Ollama is installed but generation failed. Run Doctor for the reason and fixes." },
   preparing: { text: "Preparing…", icon: "sync~spin", tip: "Preparing your workspace locally…" },
   "ready-for-review": { text: "Ready for review", icon: "eye", command: "yuhi.reviewPrepared", tip: "Preparation complete. Review what would be sent." },
+  "recovery-required": { text: "Recovery required", icon: "warning", command: "yuhi.restartFlow", tip: "Choose a source folder and create a new safe Prepared Workspace." },
   failed: { text: "Preparation failed", icon: "error", command: "yuhi.doctor", tip: "Preparation failed. Run Doctor to diagnose." },
 };
 
@@ -82,10 +91,87 @@ let lastReportRoot: string | undefined;
 let reviewPanel: vscode.WebviewPanel | undefined;
 let preparedStatusBar: vscode.StatusBarItem | undefined;
 let reviewingOpenedPreparedWorkspace = false;
+let preparedSandboxVerified = false;
+let yuhiOutput: vscode.OutputChannel | undefined;
+let pendingReviewDecision: ((decision: "open" | "cancel") => void) | undefined;
+let activityProvider: YuhiActivityProvider | undefined;
+let claudeOpenPromise: Promise<boolean> | undefined;
+let visibleCommandRunning = false;
+let activePrepareController: AbortController | undefined;
+let activePrepareDone: Promise<void> | undefined;
+let restartFlowRunning = false;
+let recoveryReason: RecoveryReason | undefined;
+const PREPARATION_WATCHDOG_MS = 10 * 60_000;
+
+const CLAUDE_OPEN_COMMANDS = [
+  "claude-vscode.sidebar.open",
+  "claude-vscode.editor.openLast",
+] as const;
 
 // ---- helpers ----
 function firstWorkspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function quarantineBaseDir(): string {
+  return path.join(path.dirname(managedWorkspaceBaseDir()), "quarantine");
+}
+
+function isManagedYuhiWorkspace(candidate: string): boolean {
+  const resolved = path.resolve(candidate);
+  const storage = path.resolve(path.dirname(managedWorkspaceBaseDir()));
+  return resolved === storage || resolved.startsWith(`${storage}${path.sep}`);
+}
+
+async function reconcilePreparedWorkspace(
+  workspace: string,
+  expectedWorkspace?: string,
+) {
+  return await validatePreparedWorkspace({
+    workspace,
+    ...(expectedWorkspace ? { expectedWorkspace } : {}),
+    managedBase: managedWorkspaceBaseDir(),
+    quarantineBase: quarantineBaseDir(),
+  });
+}
+
+function enterRecovery(reason: RecoveryReason, message: string): void {
+  recoveryReason = reason;
+  reviewingOpenedPreparedWorkspace = false;
+  preparedSandboxVerified = false;
+  setStatus("recovery-required");
+  activityProvider?.setRecoveryRequired(message);
+  preparedStatusBar?.hide();
+  appendSafeRecoveryCheckpoint("recovery-required", reason);
+}
+
+async function showRecoveryRequired(reason: RecoveryReason, message: string): Promise<void> {
+  enterRecovery(reason, message);
+  const choice = await vscode.window.showWarningMessage(
+    message,
+    {
+      modal: true,
+      detail: "This run cannot be opened because it was removed, quarantined, incomplete, or invalid. Create a new safe Prepared Workspace to continue.",
+    },
+    "Choose Source Folder and Prepare Again",
+    "Open Source Workspace",
+    "Dismiss Previous Run",
+  );
+  if (choice === "Choose Source Folder and Prepare Again") {
+    await vscode.commands.executeCommand("yuhi.restartFlow");
+  } else if (choice === "Open Source Workspace") {
+    await vscode.commands.executeCommand("yuhi.openSourceWorkspace");
+  } else if (choice === "Dismiss Previous Run") {
+    await vscode.commands.executeCommand("yuhi.dismissPreviousRun");
+  }
+}
+
+function appendSafeRecoveryCheckpoint(stage: string, result: string): void {
+  yuhiOutput?.appendLine(JSON.stringify({
+    runId: lastReport?.runId ?? "not-available",
+    stage,
+    result,
+  }));
 }
 
 /** Walk up from `start` to find the directory that holds yuhi.yaml; else the workspace root. */
@@ -433,17 +519,39 @@ async function saveModelToConfig(root: string, model: string): Promise<void> {
 }
 
 // ---- prepare workspace ----
-async function prepareWorkspaceForLaunch(root: string): Promise<PrepareReport | undefined> {
+async function prepareWorkspaceForLaunch(
+  root: string,
+  excludeRelpaths: readonly string[] = [],
+): Promise<PrepareReport | undefined> {
   // Onboarding gates: config + local AI must be ready before preparing.
   if (!existsSync(path.join(root, CONFIG_FILENAME))) {
     const init = await vscode.window.showInformationMessage(
-      "Yuhi is not initialized here. Create a yuhi.yaml to define what stays local?",
+      "Set up this folder for Claude Code with Yuhi?",
+      {
+        modal: true,
+        detail:
+          "Yuhi needs a yuhi.yaml policy before it can prepare the initial context. " +
+          "Initialize creates the local policy file in the selected source folder. Claude Code will not be opened in that source folder.",
+      },
       "Initialize",
+      "Cancel",
     );
-    if (init === "Initialize") await initializeProject(root);
-    return undefined;
+    if (init !== "Initialize") return undefined;
+    await initializeProject(root);
+    if (!existsSync(path.join(root, CONFIG_FILENAME))) return undefined;
   }
-  const state = await runDoctorChecks(root);
+  setStatus("preparing");
+  const state = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Yuhi: checking local AI readiness",
+      cancellable: false,
+    },
+    async (progress) => {
+      progress.report({ message: "Checking Ollama, model, and local inference…" });
+      return await runDoctorChecks(root);
+    },
+  );
   if (state.status !== "ready") {
     setStatus(state.status);
     const fix = await vscode.window.showWarningMessage(
@@ -456,23 +564,59 @@ async function prepareWorkspaceForLaunch(root: string): Promise<PrepareReport | 
     return undefined;
   }
 
-  setStatus("preparing");
   try {
     return await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: "Yuhi: preparing workspace locally",
+        title: "Preparing with Yuhi",
         cancellable: true,
       },
       async (progress, token) => {
+        progress.report({
+          message: "Yuhi is preparing your workspace locally before Claude Code opens.",
+        });
         const provider = await buildProvider(root);
         const controller = new AbortController();
+        activePrepareController = controller;
         token.onCancellationRequested(() => controller.abort());
-        return prepareWorkspace(root, {
-          provider,
-          signal: controller.signal,
-          onProgress: (msg) => progress.report({ message: msg }),
-        });
+        let watchdog: ReturnType<typeof setTimeout> | undefined;
+        let longRunningNotice: ReturnType<typeof setTimeout> | undefined;
+        let sixtySecondNotice: ReturnType<typeof setTimeout> | undefined;
+        try {
+          longRunningNotice = setTimeout(() => {
+            progress.report({
+              message: "Yuhi preparation is still running. Large workspaces may take longer.",
+            });
+          }, 20_000);
+          sixtySecondNotice = setTimeout(() => {
+            progress.report({
+              message:
+                "Yuhi is still preparing your workspace. No files have been sent to Claude Code yet.",
+            });
+          }, 60_000);
+          const preparation = prepareWorkspace(root, {
+            provider,
+            signal: controller.signal,
+            onProgress: (msg) => progress.report({ message: msg }),
+            excludeRelpaths,
+          });
+          activePrepareDone = preparation.then(() => undefined, () => undefined);
+          return await Promise.race([
+            preparation,
+            new Promise<never>((_resolve, reject) => {
+              watchdog = setTimeout(() => {
+                controller.abort();
+                reject(new Error("Yuhi preparation watchdog timeout."));
+              }, PREPARATION_WATCHDOG_MS);
+            }),
+          ]);
+        } finally {
+          if (watchdog) clearTimeout(watchdog);
+          if (longRunningNotice) clearTimeout(longRunningNotice);
+          if (sixtySecondNotice) clearTimeout(sixtySecondNotice);
+          if (activePrepareController === controller) activePrepareController = undefined;
+          activePrepareDone = undefined;
+        }
       },
     );
   } catch (e) {
@@ -486,6 +630,17 @@ async function prepareWorkspaceForLaunch(root: string): Promise<PrepareReport | 
 }
 
 async function commandPrepare(target?: vscode.Uri): Promise<void> {
+  if (reviewingOpenedPreparedWorkspace) {
+    void vscode.window.showInformationMessage(
+      "Yuhi: this is already a Prepared Workspace. Open Claude Code or review the prepared context instead.",
+      "Open Claude Code",
+      "Review Prepared Context",
+    ).then((choice) => {
+      if (choice === "Open Claude Code") void vscode.commands.executeCommand("yuhi.openClaudeHere");
+      if (choice === "Review Prepared Context") void vscode.commands.executeCommand("yuhi.reviewPrepared");
+    });
+    return;
+  }
   const start = target?.fsPath ?? firstWorkspaceRoot();
   if (!start) {
     void vscode.window.showInformationMessage("Yuhi: open a folder to prepare.");
@@ -503,6 +658,7 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
 
     lastReport = report;
     lastReportRoot = root;
+    activityProvider?.setPrepared(buildPreparedMetrics(report));
 
     // Outcome: Complete / Complete with warnings / Partial / Failed (failures visible).
     const errs = report.errors.length;
@@ -561,7 +717,21 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
 function launchHost(): LaunchHost {
   return {
     openFolder: async (folderPath, newWindow) => {
-      await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(folderPath), newWindow);
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Opening Claude Code",
+          cancellable: false,
+        },
+        async (progress) => {
+          progress.report({ message: "Opening Claude Code in the Prepared Workspace." });
+          await vscode.commands.executeCommand(
+            "vscode.openFolder",
+            vscode.Uri.file(folderPath),
+            newWindow,
+          );
+        },
+      );
     },
     isExtensionInstalled: (id) => vscode.extensions.getExtension(id) !== undefined,
     createTerminal: (name, cwd) => vscode.window.createTerminal({ name, cwd }),
@@ -577,6 +747,7 @@ async function rememberReport(root: string): Promise<PrepareReport | undefined> 
   if (report) {
     lastReport = report;
     lastReportRoot = root;
+    activityProvider?.setPrepared(buildPreparedMetrics(report));
     setStatus("ready-for-review");
   }
   return report;
@@ -625,11 +796,16 @@ async function confirmHighRiskOverride(count: number): Promise<boolean> {
 }
 
 async function commandPrepareAndOpen(): Promise<void> {
+  if (reviewingOpenedPreparedWorkspace) {
+    await commandPrepare();
+    return;
+  }
   const host = launchHost();
   await runPrepareAndOpen({
     host,
     getWorkspaceRoot: firstWorkspaceRoot,
     prepare: rememberReport,
+    reviewBlocked: () => commandReview(),
     confirmHighRiskOverride,
     confirmOpen: async (summary) => {
       while (true) {
@@ -668,34 +844,258 @@ async function pickClaudeMode(context: vscode.ExtensionContext): Promise<ClaudeM
   return picked.mode;
 }
 
-async function commandPrepareAndStartClaude(context: vscode.ExtensionContext): Promise<void> {
+async function sourceWorkspaceForClaudeLaunch(
+  title = "Choose a folder to prepare with Yuhi",
+  openLabel = "Prepare this folder",
+): Promise<string | undefined> {
+  const openRoot = firstWorkspaceRoot();
+  const selected = await vscode.window.showOpenDialog({
+    title,
+    openLabel,
+    ...(!reviewingOpenedPreparedWorkspace && openRoot
+      ? { defaultUri: vscode.Uri.file(openRoot) }
+      : {}),
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+  });
+  if (!selected?.[0]) {
+    await vscode.window.showInformationMessage(
+      "Yuhi did not start because no source folder was selected.",
+    );
+    return undefined;
+  }
+  const selectedRoot = path.resolve(selected[0].fsPath);
+  if (isManagedYuhiWorkspace(selectedRoot)) {
+    await vscode.window.showErrorMessage(
+      "Choose an original source folder, not a Yuhi Prepared Workspace.",
+    );
+    return undefined;
+  }
+  return selectedRoot;
+}
+
+async function startClaudeFromSourceWorkspace(
+  context: vscode.ExtensionContext,
+  sourceRoot: string,
+): Promise<void> {
   const host = launchHost();
   await runPrepareAndStartClaude({
     host,
-    getWorkspaceRoot: firstWorkspaceRoot,
+    getWorkspaceRoot: () => sourceRoot,
     prepare: rememberReport,
+    reviewBlocked: () => commandReview(),
     pickMode: () => pickClaudeMode(context),
     resolveCliFile: () => lookupOnPath(CLAUDE_INTEGRATION.cliCommand),
     confirmLaunch: (summary) => confirmPreparedLaunch(summary, "Open with Claude Code"),
-    reviewDetails: commandReview,
+    reviewDetails: () => commandReview(true),
     confirmHighRiskOverride,
   });
 }
 
+async function commandPrepareAndStartClaude(context: vscode.ExtensionContext): Promise<void> {
+  const sourceRoot = await sourceWorkspaceForClaudeLaunch();
+  if (!sourceRoot) return;
+  await startClaudeFromSourceWorkspace(context, sourceRoot);
+}
+
+async function commandOpenClaudeHere(): Promise<void> {
+  const currentRoot = firstWorkspaceRoot();
+  if (reviewingOpenedPreparedWorkspace && preparedSandboxVerified && currentRoot) {
+    appendSafeRecoveryCheckpoint("state-validation-started", "open-claude");
+    const state = await reconcilePreparedWorkspace(currentRoot, lastReport?.outDir);
+    appendSafeRecoveryCheckpoint("state-validation-result", state.kind);
+    if (state.kind === "recovery-required") {
+      await showRecoveryRequired(state.reason, state.message);
+      return;
+    }
+    await openClaudeInPreparedWorkspace();
+    return;
+  }
+  await showRecoveryRequired(
+    recoveryReason ?? "unexpected-workspace",
+    "Previous Prepared Workspace is no longer available",
+  );
+}
+
+async function commandSwitchWorkspace(context: vscode.ExtensionContext): Promise<void> {
+  const sourceRoot = await sourceWorkspaceForClaudeLaunch(
+    "Switch Claude Code with Yuhi to another workspace",
+    "Prepare and switch",
+  );
+  if (!sourceRoot) return;
+  await startClaudeFromSourceWorkspace(context, sourceRoot);
+}
+
+async function commandExitYuhiWorkspace(): Promise<void> {
+  if (!reviewingOpenedPreparedWorkspace) {
+    await vscode.window.showInformationMessage(
+      "This window is not a Yuhi Prepared Workspace.",
+    );
+    return;
+  }
+  const choice = await vscode.window.showWarningMessage(
+    "Exit this Yuhi Prepared Workspace?",
+    {
+      modal: true,
+      detail:
+        "Claude Code with Yuhi will stop in this window. The generated Prepared Workspace remains local until you remove it separately.",
+    },
+    "Exit Yuhi Workspace",
+    "Cancel",
+  );
+  if (choice !== "Exit Yuhi Workspace") return;
+  await vscode.commands.executeCommand("workbench.action.closeFolder");
+}
+
+async function commandRestartFlow(context: vscode.ExtensionContext): Promise<void> {
+  if (restartFlowRunning) {
+    await vscode.window.showInformationMessage("Yuhi is already recovering. Follow the active folder picker or progress.");
+    return;
+  }
+  restartFlowRunning = true;
+  try {
+  activePrepareController?.abort();
+  await activePrepareDone;
+  pendingReviewDecision?.("cancel");
+  pendingReviewDecision = undefined;
+  reviewPanel?.dispose();
+  reviewPanel = undefined;
+  lastReport = undefined;
+  lastReportRoot = undefined;
+  visibleCommandRunning = false;
+  setStatus("ready");
+  activityProvider?.setNotPrepared();
+  void vscode.window.showInformationMessage(
+    "Yuhi flow reset. Choose the original source folder to start again.",
+  );
+  await commandPrepareAndStartClaude(context);
+  } finally {
+    restartFlowRunning = false;
+  }
+}
+
+async function commandOpenSourceWorkspace(): Promise<void> {
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    title: "Choose the original source workspace",
+    openLabel: "Open Source Workspace",
+  });
+  if (!selected?.[0]) {
+    setStatus(recoveryReason ? "recovery-required" : "ready");
+    return;
+  }
+  const selectedRoot = selected[0].fsPath;
+  if (isManagedYuhiWorkspace(selectedRoot)) {
+    await vscode.window.showErrorMessage(
+      "Yuhi internal storage cannot be opened as a source workspace. Choose the original project folder.",
+    );
+    setStatus("recovery-required");
+    return;
+  }
+  await vscode.commands.executeCommand("vscode.openFolder", selected[0], true);
+}
+
+async function commandDismissPreviousRun(): Promise<void> {
+  lastReport = undefined;
+  lastReportRoot = undefined;
+  recoveryReason = undefined;
+  reviewPanel?.dispose();
+  reviewPanel = undefined;
+  setStatus("ready");
+  activityProvider?.setNotPrepared();
+  await vscode.window.showInformationMessage(
+    "Previous Yuhi run dismissed. Choose a source folder when you are ready.",
+  );
+}
+
+async function runVisibleCommand(task: () => Promise<unknown>): Promise<void> {
+  if (visibleCommandRunning) {
+    await vscode.window.showInformationMessage(
+      "Yuhi is already preparing or opening Claude Code. Follow the active Yuhi progress notification.",
+    );
+    return;
+  }
+  visibleCommandRunning = true;
+  const startedAt = Date.now();
+  appendSafeLaunchDiagnostic("post-prepare-validation", "started", 0);
+  let retry = false;
+  try {
+    const result = await runVisibleLaunchCommand(task, async (message, kind) => {
+      setStatus("failed");
+      appendSafeLaunchDiagnostic(kind, "failed", Date.now() - startedAt);
+      const choice = await vscode.window.showErrorMessage(
+        `${message} Error category: ${kind}.`,
+        "View Yuhi Output",
+        "Retry",
+        "Cancel",
+      );
+      if (choice === "View Yuhi Output") yuhiOutput?.show(true);
+      retry = choice === "Retry";
+    });
+    if (result === "completed") {
+      appendSafeLaunchDiagnostic("post-prepare-validation", "completed", Date.now() - startedAt);
+    }
+  } finally {
+    visibleCommandRunning = false;
+  }
+  if (retry) await runVisibleCommand(task);
+}
+
+function appendSafeLaunchDiagnostic(
+  stage: VisibleLaunchFailureKind,
+  result: "started" | "completed" | "failed",
+  elapsedMs: number,
+): void {
+  yuhiOutput?.appendLine(
+    JSON.stringify({
+      runId: lastReport?.runId ?? "not-available",
+      stage,
+      errorCategory: result === "failed" ? stage : "none",
+      elapsedMs,
+      result,
+    }),
+  );
+}
+
 // ---- review prepared ----
-function toReviewData(report: PrepareReport, root: string, preparedTree: string[]): ReviewData {
+function toReviewData(
+  report: PrepareReport,
+  root: string,
+  preparedTree: string[],
+  launchDecisionEnabled: boolean,
+): ReviewData {
   const est = (chars: number) => Math.ceil(chars / 4); // matches @yuhi/shared estimateTokens heuristic
   const decisions = new Map(buildPreparedFileDecisions(report).map((d) => [d.relativePath, d]));
+  let restrictedIndex = 0;
+  let blockedIndex = 0;
+  let unsupportedIndex = 0;
   const files = report.files.map((f: PreparedFileEntry) => {
     const d = decisions.get(f.relpath);
+    const restricted = d?.sensitivityLevel === "Restricted";
+    const unsupported = d?.limitationShown === true;
+    const blocked = f.status === "error" || f.status === "blocked";
+    const displayPath = f.limitation && !blocked && !restricted
+      ? `Unsupported file ${++unsupportedIndex}`
+      : blocked
+      ? `Blocked file ${++blockedIndex}`
+      : restricted
+        ? `Restricted table ${++restrictedIndex}`
+        : unsupported
+          ? `${d?.fileType ?? "Unsupported"} file kept local`
+          : f.relpath;
     return {
-      path: f.relpath,
+      path: displayPath,
       action: f.action,
       status: f.status,
       omitted: !!f.omitted,
       beforeTokens: est(f.beforeChars),
       afterTokens: f.omitted ? 0 : est(f.afterChars),
-      diffable: !reviewingOpenedPreparedWorkspace && f.status === "ok" && !f.omitted,
+      diffable:
+        !restricted && !blocked && !reviewingOpenedPreparedWorkspace &&
+        f.status === "ok" && !f.omitted,
       sensitivity: d?.sensitivityLevel ?? "Unknown",
       findingCategoryCounts: d?.findingCategoryCounts ?? {},
       findingCount: d?.findingCount ?? 0,
@@ -707,17 +1107,47 @@ function toReviewData(report: PrepareReport, root: string, preparedTree: string[
       transformed: d?.transformed ?? false,
       transformations: d?.transformationKinds ?? [],
       unresolvedHighRiskCount: d?.unresolvedHighRiskCount ?? 0,
+      outcome: d?.outcome ?? "failed",
+      fileType: d?.fileType ?? "Unknown",
+      inspectionStatus: d?.inspectionStatus ?? "Incomplete",
+      limitationShown: d?.limitationShown ?? false,
     };
   });
   const r = report.report;
   const metrics = buildPreparedMetrics(report);
+  const acceptance = report.tabularAcceptance ?? {
+    entitiesPseudonymized: 0,
+    identifierColumnsTransformed: 0,
+    analyticalColumnsPreserved: 0,
+    postTransformScanPassed: false,
+    malformedTables: report.errors.filter((file) =>
+      file.error?.startsWith("Malformed delimited table:")
+    ).length,
+    unverifiedTransformations: report.errors.filter((file) =>
+      !file.error?.startsWith("Malformed delimited table:")
+    ).length,
+    rawFallbackUsed: false as const,
+    launchAllowed: false,
+    claudeCodeStarted: false as const,
+    unsupportedOrUnverifiedFiles: 0,
+    restrictedUnresolvedFiles: 0,
+    hasLimitations: false,
+  };
+  const projectFiles = files.filter((file) => file.included).map((file) => file.path).sort();
+  const actualProjectFileSet = new Set(
+    report.files.filter((file) => file.status === "ok" && !file.omitted).map((file) => file.relpath),
+  );
+  const metadataFiles = preparedTree.filter((file) => !actualProjectFileSet.has(file));
   return {
+    launchDecisionEnabled: launchDecisionEnabled && acceptance.launchAllowed,
+    openClaudeHereEnabled:
+      reviewingOpenedPreparedWorkspace && !launchDecisionEnabled && acceptance.launchAllowed,
     project: path.basename(root),
     agent: "Claude Code",
     runId: report.runId,
     outcome: report.errors.length > 0 ? "Partial" : report.blocked.length > 0 ? "Complete with warnings" : "Complete",
     osSandboxEnabled: false,
-    outDir: path.relative(root, report.outDir),
+    outDir: "Yuhi-managed workspace",
     report: {
       beforeTokens: r.beforeTokens,
       afterTokens: r.afterTokens,
@@ -731,9 +1161,16 @@ function toReviewData(report: PrepareReport, root: string, preparedTree: string[
       approx: r.approx,
     },
     metrics,
-    runtime: buildPreparedRuntimeBoundary(),
+    runtime: buildPreparedRuntimeBoundary(
+      existsSync(path.join(report.outDir, CLAUDE_SANDBOX_RELPATH))
+        ? "claude-code-sandbox"
+        : "advisory",
+    ),
+    acceptance,
     files,
-    preparedTree,
+    projectFiles,
+    metadataFiles,
+    preparedTree: [...projectFiles, ...metadataFiles],
   };
 }
 
@@ -752,7 +1189,7 @@ async function listPreparedTree(root: string, dir = root): Promise<string[]> {
   return output;
 }
 
-async function commandReview(): Promise<void> {
+async function commandReview(awaitDecision = false): Promise<"open" | "cancel" | void> {
   if (!lastReport || !lastReportRoot) {
     const choice = await vscode.window.showInformationMessage(
       "Yuhi: nothing prepared yet. Run “Prepare Workspace” first.",
@@ -763,6 +1200,15 @@ async function commandReview(): Promise<void> {
   }
   const root = lastReportRoot;
   const report = lastReport;
+  if (reviewingOpenedPreparedWorkspace) {
+    appendSafeRecoveryCheckpoint("state-validation-started", "review");
+    const reconciled = await reconcilePreparedWorkspace(report.outDir, report.outDir);
+    appendSafeRecoveryCheckpoint("state-validation-result", reconciled.kind);
+    if (reconciled.kind === "recovery-required") {
+      await showRecoveryRequired(reconciled.reason, reconciled.message);
+      return;
+    }
+  }
   if (!reviewingOpenedPreparedWorkspace) {
     try {
       await appendLaunchAudit(root, report.outDir, report.runId, "review-opened");
@@ -778,23 +1224,87 @@ async function commandReview(): Promise<void> {
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
-    reviewPanel.onDidDispose(() => (reviewPanel = undefined));
+    reviewPanel.onDidDispose(() => {
+      reviewPanel = undefined;
+      pendingReviewDecision?.("cancel");
+      pendingReviewDecision = undefined;
+    });
     reviewPanel.webview.onDidReceiveMessage((msg) => {
       if (msg?.type === "diff" && typeof msg.path === "string") void openDiff(root, report, msg.path);
+      if (msg?.type === "openClaudeHere" && reviewingOpenedPreparedWorkspace) {
+        void openClaudeInPreparedWorkspace();
+      }
+      if (msg?.type === "chooseSource") {
+        void vscode.commands.executeCommand("yuhi.restartFlow");
+      }
+      if (msg?.type === "excludeBlockedAndRetry") {
+        void (async () => {
+          const excluded = report.files
+            .filter((file) => file.status === "error" || file.status === "blocked")
+            .map((file) => file.relpath);
+          if (excluded.length === 0) return;
+          const choice = await vscode.window.showWarningMessage(
+            "Exclude blocked files and prepare again?",
+            {
+              modal: true,
+              detail:
+                `${excluded.length} blocked file(s) will be explicitly excluded from a new run. ` +
+                "The previous Partial run will remain unchanged and non-launchable.",
+            },
+            "Exclude and Prepare Again",
+            "Cancel",
+          );
+          if (choice !== "Exclude and Prepare Again") return;
+          const next = await prepareWorkspaceForLaunch(root, excluded);
+          if (!next) return;
+          if (next.runId === report.runId) {
+            await vscode.window.showErrorMessage(
+              "Yuhi could not create a new recovery run. The previous run was not changed.",
+            );
+            return;
+          }
+          lastReport = next;
+          lastReportRoot = root;
+          activityProvider?.setPrepared(buildPreparedMetrics(next));
+          reviewPanel?.dispose();
+          reviewPanel = undefined;
+          await commandReview();
+        })();
+      }
+      if (msg?.type === "launch" || msg?.type === "cancel") {
+        const resolveDecision = pendingReviewDecision;
+        pendingReviewDecision = undefined;
+        resolveDecision?.(msg.type === "launch" ? "open" : "cancel");
+        if (msg.type === "cancel") reviewPanel?.dispose();
+      }
     });
   }
   const preparedTree = await listPreparedTree(report.outDir);
   reviewPanel.webview.html = renderSavingsHtml(
-    toReviewData(report, root, preparedTree),
+    toReviewData(report, root, preparedTree, awaitDecision),
     reviewPanel.webview.cspSource,
     nonce(),
   );
   reviewPanel.reveal();
+  if (awaitDecision) {
+    return await new Promise<"open" | "cancel">((resolve) => {
+      pendingReviewDecision = resolve;
+    });
+  }
 }
 
 async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext, root: string): Promise<boolean> {
   const sessionPath = path.join(root, ".yuhi", "session.json");
   const manifestPath = path.join(root, "manifest.json");
+  if (isManagedYuhiWorkspace(root)) {
+    appendSafeRecoveryCheckpoint("state-validation-started", "activation");
+    const reconciled = await reconcilePreparedWorkspace(root, root);
+    appendSafeRecoveryCheckpoint("state-validation-result", reconciled.kind);
+    if (reconciled.kind === "recovery-required") {
+      enterRecovery(reconciled.reason, reconciled.message);
+      return true;
+    }
+  }
   if (!existsSync(sessionPath) || !existsSync(manifestPath)) return false;
   try {
     const session = normalizePreparedSession(JSON.parse(await readFile(sessionPath, "utf8")));
@@ -812,6 +1322,7 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         findings?: { detector?: string; severity?: "low" | "medium" | "high" | "critical" }[];
       })[];
       sourceModified: number;
+      tabularAcceptance?: PrepareReport["tabularAcceptance"];
     };
     const metadataFindings = (file: (typeof manifest.files)[number]) => {
       const severities: ("low" | "medium" | "high" | "critical")[] = [];
@@ -855,24 +1366,158 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         findings: metadataFindings(f),
       })),
       sourceModified: manifest.sourceModified,
+      ...(manifest.tabularAcceptance
+        ? { tabularAcceptance: manifest.tabularAcceptance }
+        : {}),
     };
     lastReportRoot = root;
     reviewingOpenedPreparedWorkspace = true;
+    try {
+      await writeAndVerifyClaudeSandboxPolicy(root, root);
+      preparedSandboxVerified = true;
+    } catch {
+      preparedSandboxVerified = false;
+      activityProvider?.setPrepared(session.metrics, "Legacy advisory run · launch blocked", false);
+      void vscode.window.showErrorMessage(
+        "Yuhi: this Prepared Workspace uses the old advisory boundary. Claude Code launch is blocked. Return to the original workspace and prepare again.",
+      );
+    }
 
     const m = session.metrics;
+    activityProvider?.setPrepared(
+      m,
+      preparedSandboxVerified ? "Sandbox policy verified" : "Launch blocked",
+      preparedSandboxVerified,
+    );
+    await applyPreparedWorkspaceBranding();
     preparedStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
-    preparedStatusBar.text = formatPreparedStatusText(m);
+    preparedStatusBar.name = "Claude Code with Yuhi";
+    preparedStatusBar.text = preparedSandboxVerified
+      ? "$(shield) CLAUDE CODE WITH YUHI — SANDBOXED"
+      : "$(error) YUHI ADVISORY WORKSPACE — CLAUDE BLOCKED";
     preparedStatusBar.tooltip = new vscode.MarkdownString(
-      preparedStatusTooltipLines(session.runId, m).join("  \n"),
+      [
+        "**Claude Code with Yuhi**",
+        "",
+        "This window is a Yuhi Prepared Workspace.",
+        "",
+        ...preparedStatusTooltipLines(session.runId, m),
+        "",
+        "Click to review the prepared context.",
+      ].join("  \n"),
     );
     preparedStatusBar.command = "yuhi.reviewPrepared";
     preparedStatusBar.show();
     context.subscriptions.push(preparedStatusBar);
+    const welcomeKey = `yuhi.preparedWelcome.${session.runId}`;
+    if (!context.workspaceState.get<boolean>(welcomeKey)) {
+      await context.workspaceState.update(welcomeKey, true);
+      void vscode.window.showInformationMessage(
+        "Prepared Workspace opened",
+        {
+          modal: false,
+          detail:
+            "Claude Code is ready to use in this window. Open Claude Code from the Activity Bar or Command Palette.",
+        },
+        "Review Prepared Context",
+      ).then((choice) => {
+        if (choice === "Review Prepared Context") {
+          void vscode.commands.executeCommand("yuhi.reviewPrepared");
+        }
+      });
+    }
+    const claudeLaunchKey = `yuhi.claudeOpened.${session.runId}`;
+    if (preparedSandboxVerified && !context.workspaceState.get<boolean>(claudeLaunchKey)) {
+      void openClaudeInPreparedWorkspace().then(async (opened) => {
+        if (opened) await context.workspaceState.update(claudeLaunchKey, true);
+      });
+    }
     return true;
   } catch (e) {
     void vscode.window.showWarningMessage(`Yuhi: Prepared Workspace metadata could not be validated — ${errText(e)}`);
     return false;
   }
+}
+
+async function applyPreparedWorkspaceBranding(): Promise<void> {
+  await vscode.workspace
+    .getConfiguration("window")
+    .update("title", PREPARED_WINDOW_TITLE, vscode.ConfigurationTarget.Workspace);
+  const workbench = vscode.workspace.getConfiguration("workbench");
+  const existing = workbench.get<Record<string, string>>("colorCustomizations", {});
+  await workbench.update(
+    "colorCustomizations",
+    { ...existing, ...PREPARED_WORKBENCH_COLORS },
+    vscode.ConfigurationTarget.Workspace,
+  );
+}
+
+async function openClaudeInPreparedWorkspace(): Promise<boolean> {
+  if (claudeOpenPromise) return claudeOpenPromise;
+  claudeOpenPromise = performOpenClaudeInPreparedWorkspace().finally(() => {
+    claudeOpenPromise = undefined;
+  });
+  return claudeOpenPromise;
+}
+
+async function performOpenClaudeInPreparedWorkspace(): Promise<boolean> {
+  if (!reviewingOpenedPreparedWorkspace) {
+    void vscode.window.showWarningMessage(
+      "Yuhi: Claude Code can only be opened from this action inside a Prepared Workspace.",
+    );
+    return false;
+  }
+  if (!preparedSandboxVerified) {
+    void vscode.window.showErrorMessage(
+      "Yuhi: Claude Code launch blocked because the enforced sandbox policy is not verified. Return to the original workspace and prepare again.",
+    );
+    return false;
+  }
+  const claude = vscode.extensions.getExtension("anthropic.claude-code");
+  if (!claude) {
+    const choice = await vscode.window.showWarningMessage(
+      "Claude Code is not installed in this VS Code profile.",
+      "Install Claude Code",
+      "Cancel",
+    );
+    if (choice === "Install Claude Code") {
+      await vscode.env.openExternal(
+        vscode.Uri.parse(
+          "https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code",
+        ),
+      );
+    }
+    return false;
+  }
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Preparing with Yuhi",
+      cancellable: false,
+    },
+    async (progress) => {
+      progress.report({ message: "Opening Claude Code" });
+      await claude.activate();
+    },
+  );
+  const commands = new Set(await vscode.commands.getCommands(true));
+  const command = CLAUDE_OPEN_COMMANDS.find((candidate) => commands.has(candidate));
+  if (!command) {
+    void vscode.window.showWarningMessage(
+      "Claude Code is installed, but this version does not expose a supported open action. Open Claude Code from the Activity Bar or Command Palette.",
+    );
+    return false;
+  }
+  await vscode.commands.executeCommand(command);
+  void vscode.window.showInformationMessage(
+    "Claude Code with Yuhi is active in this Prepared Workspace. Yuhi installed and verified the fail-closed Claude Code sandbox policy.",
+    "Review Prepared Context",
+  ).then((choice) => {
+    if (choice === "Review Prepared Context") {
+      void vscode.commands.executeCommand("yuhi.reviewPrepared");
+    }
+  });
+  return true;
 }
 
 /** Open Original ↔ Prepared for one prepared file. */
@@ -943,27 +1588,70 @@ async function onboard(root: string): Promise<void> {
 
 // ---- activation ----
 export function activate(context: vscode.ExtensionContext): void {
+  yuhiOutput = vscode.window.createOutputChannel("Yuhi");
+  context.subscriptions.push(yuhiOutput);
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  activityProvider = new YuhiActivityProvider();
+  const activityView = vscode.window.createTreeView(YUHI_ACTIVITY_VIEW_ID, {
+    treeDataProvider: activityProvider,
+    showCollapseAll: false,
+  });
+  context.subscriptions.push(activityView.onDidChangeVisibility(({ visible }) => {
+    if (!visible) return;
+    const current = firstWorkspaceRoot();
+    if (!current || !isManagedYuhiWorkspace(current)) return;
+    void reconcilePreparedWorkspace(current, current).then((state) => {
+      if (state.kind === "recovery-required") enterRecovery(state.reason, state.message);
+    });
+  }));
+  let preparedWorkspaceCheck = Promise.resolve(false);
   setStatus("ready");
 
   context.subscriptions.push(
     statusBar,
+    activityView,
     vscode.commands.registerCommand("yuhi.doctor", () => commandDoctor()),
     vscode.commands.registerCommand("yuhi.setupLocalAI", () => commandSetupLocalAI()),
     vscode.commands.registerCommand("yuhi.prepareWorkspace", () => commandPrepare()),
     vscode.commands.registerCommand("yuhi.prepareHere", (uri?: vscode.Uri) => commandPrepare(uri)),
     vscode.commands.registerCommand("yuhi.reviewPrepared", () => commandReview()),
-    vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndOpen, () => commandPrepareAndOpen()),
+    vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndOpen, () =>
+      runVisibleCommand(commandPrepareAndOpen),
+    ),
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndStartClaude, () =>
-      commandPrepareAndStartClaude(context),
+      runVisibleCommand(() => commandPrepareAndStartClaude(context)),
+    ),
+    vscode.commands.registerCommand("yuhi.openClaudeHere", () =>
+      runVisibleCommand(commandOpenClaudeHere),
+    ),
+    vscode.commands.registerCommand("yuhi.switchWorkspace", () =>
+      runVisibleCommand(() => commandSwitchWorkspace(context)),
+    ),
+    vscode.commands.registerCommand("yuhi.exitWorkspace", () =>
+      runVisibleCommand(commandExitYuhiWorkspace),
+    ),
+    // Recovery deliberately bypasses the normal in-progress guard so a user can
+    // always escape a stale prompt, cancelled review, or interrupted prepare.
+    vscode.commands.registerCommand("yuhi.restartFlow", () =>
+      commandRestartFlow(context),
+    ),
+    vscode.commands.registerCommand("yuhi.openSourceWorkspace", () =>
+      runVisibleCommand(commandOpenSourceWorkspace),
+    ),
+    vscode.commands.registerCommand("yuhi.dismissPreviousRun", () =>
+      runVisibleCommand(commandDismissPreviousRun),
     ),
   );
 
   const root = firstWorkspaceRoot();
   if (root) {
-    void activatePreparedWorkspaceBanner(context, root).then((isPrepared) => {
-      if (isPrepared) statusBar.hide();
-      else void onboard(root);
+    preparedWorkspaceCheck = activatePreparedWorkspaceBanner(context, root);
+    void preparedWorkspaceCheck.then((isPrepared) => {
+      if (isPrepared) {
+        statusBar.hide();
+      } else {
+        void onboard(root);
+      }
     });
   }
 }

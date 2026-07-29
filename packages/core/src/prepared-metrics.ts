@@ -17,9 +17,13 @@ export interface PreparedFileDecision {
   transformed: boolean;
   included: boolean;
   omitted: boolean;
-  transformationKinds: ("summarized" | "pseudonymized" | "masked")[];
+  transformationKinds: ("summarized" | "aggregated" | "pseudonymized" | "masked")[];
   agentReceives: "Unchanged" | "Transformed" | "No";
   unresolvedHighRiskCount: number;
+  outcome: NonNullable<PreparedFileEntry["outcome"]>;
+  fileType: string;
+  inspectionStatus: "Verified" | "Incomplete" | "Not available";
+  limitationShown: boolean;
 }
 
 export interface PreparedMetrics {
@@ -50,6 +54,9 @@ const PREPARED = new Set<Action>(["redact", "prepare-locally", "summarize-local"
 
 export function classifySensitiveFinding(finding: Pick<ScanFinding, "detector">): string {
   const id = finding.detector.toLowerCase();
+  if (id === "tabular-direct-identifier-column") return "direct-identifier-column";
+  if (id.startsWith("tabular-associated-")) return id.replace("tabular-associated-", "");
+  if (id === "tabular-malformed-sensitive-data") return "malformed-sensitive-table";
   if (id.includes("email")) return "email";
   if (id.includes("phone")) return "phone";
   if (id.includes("student")) return "student-id";
@@ -65,6 +72,20 @@ export function classifySensitiveFinding(finding: Pick<ScanFinding, "detector">)
 
 function sensitivityFor(decision: FileDecision | undefined, entry: PreparedFileEntry): SensitivityLevel {
   if (!decision) return "Unknown";
+  if (entry.inspection && !entry.inspection.contentVerified) {
+    if (decision.findings.some((f) => f.severity === "critical" || f.severity === "high")) {
+      return "Restricted";
+    }
+    return "Unknown";
+  }
+  const hasDirectIdentifiers = decision.findings.some(
+    (finding) => finding.detector === "tabular-direct-identifier-column",
+  );
+  const hasSensitiveAssociatedData = decision.findings.some(
+    (finding) => finding.detector.startsWith("tabular-associated-"),
+  );
+  if (hasDirectIdentifiers && hasSensitiveAssociatedData) return "Restricted";
+  if (hasDirectIdentifiers || hasSensitiveAssociatedData) return "Confidential";
   if (entry.omitted && (decision.action === "block" || decision.action === "local-only")) return "Restricted";
   if (decision.findings.some((f) => f.severity === "critical" || f.severity === "high")) {
     return entry.omitted ? "Restricted" : "Confidential";
@@ -103,6 +124,23 @@ export function buildFileDecision(
     included && entry.action === "allow"
       ? (decision?.findings ?? []).filter((finding) => highRisk(finding.severity)).length
       : 0;
+  const outcome = entry.outcome ?? (
+    included
+      ? transformed
+        ? "included-transformed"
+        : "included-unchanged"
+      : entry.status === "error"
+        ? "failed"
+        : KEPT_LOCAL.has(entry.action)
+          ? "local-only-unverified"
+          : "excluded-by-policy"
+  );
+  const inspectionStatus =
+    !entry.inspection?.parserAvailable
+      ? "Not available"
+      : entry.inspection.contentVerified
+        ? "Verified"
+        : "Incomplete";
   return {
     relativePath: normalizedRelativePath(entry.relpath),
     action: entry.action,
@@ -118,6 +156,10 @@ export function buildFileDecision(
     transformationKinds: entry.transformations ?? [],
     agentReceives: !included ? "No" : transformed ? "Transformed" : "Unchanged",
     unresolvedHighRiskCount,
+    outcome,
+    fileType: entry.inspection?.fileType.toUpperCase() ?? "Unknown",
+    inspectionStatus,
+    limitationShown: entry.limitation !== undefined,
   };
 }
 
@@ -180,13 +222,26 @@ export interface PreparedRuntimeBoundary {
   initialContextPrepared: true;
   startDirectory: "prepared-workspace";
   workspaceInstructionPresent: true;
-  workspaceBoundary: "advisory";
-  filesystemEnforcement: "none";
-  osSandboxEnabled: false;
-  externalPathAccessPossible: true;
+  workspaceBoundary: "advisory" | "enforced";
+  filesystemEnforcement: "none" | "claude-code-sandbox";
+  osSandboxEnabled: boolean;
+  externalPathAccessPossible: boolean;
 }
 
-export function buildPreparedRuntimeBoundary(): PreparedRuntimeBoundary {
+export function buildPreparedRuntimeBoundary(
+  mode: "advisory" | "claude-code-sandbox" = "advisory",
+): PreparedRuntimeBoundary {
+  if (mode === "claude-code-sandbox") {
+    return {
+      initialContextPrepared: true,
+      startDirectory: "prepared-workspace",
+      workspaceInstructionPresent: true,
+      workspaceBoundary: "enforced",
+      filesystemEnforcement: "claude-code-sandbox",
+      osSandboxEnabled: true,
+      externalPathAccessPossible: false,
+    };
+  }
   return {
     initialContextPrepared: true,
     startDirectory: "prepared-workspace",

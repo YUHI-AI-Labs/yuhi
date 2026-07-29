@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { PolicyInput, ScanFinding } from "@yuhi/shared";
+import { fileCapabilities, type PolicyInput, type ScanFinding } from "@yuhi/shared";
 import { resolvePolicy } from "./resolve.js";
 
 function finding(detector: string): ScanFinding {
@@ -61,6 +61,105 @@ describe("resolvePolicy", () => {
     ]);
     expect(decisions[0]?.action).toBe("redact");
     expect(decisions[0]?.ruleName).toContain("detector:");
+  });
+
+  it("automatically selects deterministic pseudonymization for sensitive tabular data", () => {
+    const { decisions } = resolvePolicy(input({ rules: [] }), [
+      { relpath: "grades.csv", findings: [finding("tabular-direct-identifier-column")] },
+    ]);
+    expect(decisions[0]?.action).toBe("prepare-locally");
+    expect(decisions[0]?.processors).toEqual(["pseudonymize-student-records", "safety-check"]);
+    expect(decisions[0]?.ruleName).toBe("detector:tabular-auto-pseudonymize");
+  });
+
+  it("routes an unparsed PDF local-only instead of allow", () => {
+    const inspection = {
+      fileType: "pdf" as const,
+      parserAvailable: false,
+      scannerAvailable: false,
+      transformers: [],
+      verifierAvailable: false,
+      inspectionAttempted: false,
+      inspectionSucceeded: false,
+      contentVerified: false,
+    };
+    const decision = resolvePolicy(input({ rules: [] }), [
+      { relpath: "synthetic.pdf", findings: [], inspection },
+    ]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "local-only",
+      ruleName: "file-type:pdf-inspection-unavailable",
+    });
+    expect(decision).not.toHaveProperty("processors");
+  });
+
+  it("never selects an XLSX processor when no parser exists", () => {
+    const inspection = {
+      fileType: "xlsx" as const,
+      parserAvailable: false,
+      scannerAvailable: false,
+      transformers: [],
+      verifierAvailable: false,
+      inspectionAttempted: false,
+      inspectionSucceeded: false,
+      contentVerified: false,
+    };
+    const decision = resolvePolicy(input({ rules: [] }), [
+      {
+        relpath: "synthetic.xlsx",
+        findings: [finding("tabular-unparsed-spreadsheet")],
+        inspection,
+      },
+    ]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "local-only",
+      ruleName: "file-type:xlsx-inspection-unavailable",
+    });
+    expect(decision).not.toHaveProperty("processors");
+  });
+
+  it("does not allow a file whose available parser did not complete inspection", () => {
+    const registered = fileCapabilities("large.txt");
+    const decision = resolvePolicy(input({ rules: [] }), [{
+      relpath: "large.txt",
+      findings: [],
+      inspection: {
+        ...registered,
+        inspectionAttempted: false,
+        inspectionSucceeded: false,
+        contentVerified: false,
+      },
+    }]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "local-only",
+      ruleName: "file-type:text-inspection-incomplete",
+    });
+    expect(decision?.processors).toBeUndefined();
+  });
+
+  it("does not allow an explicit raw allow to downgrade sensitive tabular data", () => {
+    const rules: PolicyInput["rules"] = [
+      { name: "explicit-reviewed-export", match: { paths: ["grades.csv"] }, action: "allow" },
+    ];
+    const { decisions } = resolvePolicy(input({ rules }), [
+      { relpath: "grades.csv", findings: [finding("tabular-direct-identifier-column")] },
+    ]);
+    expect(decisions[0]?.action).toBe("prepare-locally");
+    expect(decisions[0]?.ruleName).toBe("detector:tabular-auto-pseudonymize");
+  });
+
+  it("honors an explicit supported local transformation", () => {
+    const rules: PolicyInput["rules"] = [{
+      name: "pseudonymize-students",
+      match: { paths: ["grades.csv"] },
+      action: "prepare-locally",
+      processors: ["pseudonymize-student-records", "safety-check"],
+    }];
+    const { decisions } = resolvePolicy(input({ rules }), [
+      { relpath: "grades.csv", findings: [finding("tabular-direct-identifier-column")] },
+    ]);
+    expect(decisions[0]?.action).toBe("prepare-locally");
+    expect(decisions[0]?.ruleName).toBe("pseudonymize-students");
   });
 
   it("does not downgrade block to redact when a secret is present in a blocked file", () => {
