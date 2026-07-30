@@ -269,6 +269,25 @@
     html{scroll-behavior:auto}
     .reveal{opacity:1;transform:none}
   }
+  .vsc{border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);background:#0e1420;font-family:var(--mono);margin-top:30px}
+  .vsc-bar{display:flex;align-items:center;gap:7px;padding:10px 14px;background:#161d2b;border-bottom:1px solid rgba(255,255,255,.06)}
+  .vsc-bar i{width:11px;height:11px;border-radius:50%;background:#3a465c}.vsc-bar i:nth-child(1){background:#e5634d}.vsc-bar i:nth-child(2){background:#f3a83a}.vsc-bar i:nth-child(3){background:#3fae7a}
+  .vsc-bar .t{margin-left:8px;font-size:12px;color:#8a97ad}
+  .vsc-body{display:grid;grid-template-columns:44px 190px 1fr;min-height:300px}
+  .vsc-act{background:#0b1017;border-right:1px solid rgba(255,255,255,.05);display:flex;flex-direction:column;align-items:center;gap:16px;padding:14px 0;color:#5b6a82;font-size:15px}
+  .vsc-side{background:#121926;border-right:1px solid rgba(255,255,255,.05);padding:12px 10px;font-size:12px}
+  .vsc-side .fh{color:#7d8aa0;text-transform:uppercase;letter-spacing:.1em;font-size:10px;margin-bottom:8px}
+  .vsc-side .f{padding:3px 6px;border-radius:5px;color:#95a3ba;line-height:1.9}
+  .vsc-side .f.dir{color:#c8d3e6}.vsc-side .f.hl{background:rgba(99,195,242,.12);color:#8fd6f5}.vsc-side .f.ind{padding-left:18px}
+  .vsc-main{padding:18px 20px}
+  .vsc-panel{border:1px solid rgba(99,195,242,.28);border-radius:10px;background:rgba(99,195,242,.05);padding:16px}
+  .vsc-panel .ph{display:flex;align-items:center;gap:8px;font-weight:700;color:#fff;font-size:14px;margin-bottom:12px}
+  .vsc-panel .ph .badge{margin-left:auto;font-size:10px;color:#8ad39a;border:1px solid rgba(138,211,154,.4);border-radius:999px;padding:2px 8px}
+  .vsc-st{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#b8c4d8;padding:4px 0}.vsc-st .ck{color:#8ad39a;font-weight:700}
+  .vsc-gen{margin-top:12px;font-size:11.5px;color:#8fd6f5;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:7px;padding:8px 10px}
+  .vsc-btn{margin-top:14px;display:inline-flex;align-items:center;gap:8px;background:linear-gradient(90deg,#2E6AD1,#63C3F2);color:#0b1017;font-weight:700;font-size:13px;border-radius:9px;padding:9px 16px}
+  .vsc-cap{margin-top:14px;font-size:13px;color:var(--ink-faint)}
+  @media(max-width:720px){.vsc-body{grid-template-columns:1fr}.vsc-act,.vsc-side{display:none}}
 </style>
 </head>
 <body>
@@ -355,6 +374,46 @@
   </section>
 
   <!-- ROUTES -->
+  <section id="vscode">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="vsc_ey">エディタの中で</p>
+        <h2 data-i18n="vsc_h2">準備して起動 — VS Code の中で。</h2>
+        <p data-i18n="vsc_sub">拡張から Yuhi を実行し、準備された文脈を確認して、Claude Code を開始。</p>
+      </div>
+      <div class="vsc">
+        <div class="vsc-bar"><i></i><i></i><i></i><span class="t">Visual Studio Code — my-project</span></div>
+        <div class="vsc-body">
+          <div class="vsc-act">▢<br>⌕<br>⑂<br>▷</div>
+          <div class="vsc-side">
+            <div class="fh">Explorer</div>
+            <div class="f dir">▸ src</div><div class="f dir">▸ docs</div>
+            <div class="f dir hl">▾ .yuhi / context</div>
+            <div class="f ind hl">document-index.md</div><div class="f ind hl">summaries /</div><div class="f ind hl">AGENT_HANDOFF.md</div>
+          </div>
+          <div class="vsc-main">
+            <div class="vsc-panel">
+              <div class="ph">YUHI · Preparation <span class="badge">Ready</span></div>
+              <div style="font-size:10px;color:#7d8aa0;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Workspace</div>
+              <div class="vsc-st"><span class="ck">✓</span> 24 files discovered</div>
+              <div class="vsc-st"><span class="ck">✓</span> 3 documents inspected</div>
+              <div class="vsc-st"><span class="ck">✓</span> Context index created</div>
+              <div class="vsc-st"><span class="ck">✓</span> Agent handoff ready</div>
+              <div class="vsc-gen"><b style="color:#8fd6f5">.yuhi/context/</b> → document-index.md · summaries/ · AGENT_HANDOFF.md</div>
+              <div class="vsc-btn">▷ Start Claude Code</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="vsc-cap" data-i18n="vsc_cap">拡張は VS Code Marketplace で Available — Beta。</p>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:18px;align-items:center">
+        <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode" target="_blank" rel="noopener">Install VS Code Extension</a>
+        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" target="_blank" rel="noopener">View on GitHub</a>
+        <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)">or CLI (advanced): <code>npx @yuhi-ai-labs/yuhi@beta</code></span>
+      </div>
+    </div>
+  </section>
+
   <section id="routes">
     <div class="wrap">
       <div class="sec-head">
@@ -489,7 +548,7 @@
       nav_install:"Install", nav_docs:"Documentation", nav_roadmap:"Roadmap",
       ey_tel:"no telemetry", ey_off:"works offline",
       hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
-      hero_sub:"Yuhi prepares your workspace before AI agents start working — it understands your project locally, builds the right context, and helps Claude Code work more effectively.",
+      hero_sub:"Yuhi prepares your workspace before AI agents start working — it understands your project locally, builds the right context, and helps Claude Code work more effectively.", vsc_ey:"In your editor", vsc_h2:"Prepare and launch — inside VS Code.", vsc_sub:"Run Yuhi from the extension, review the prepared context, then start Claude Code.", vsc_cap:"The extension is Available — Beta on the VS Code Marketplace.",
       hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"Get started", hero_github:"View on GitHub →", copy:"copy",
       flow_n1k:"Your repository", flow_n1v:"files, secrets, data", flow_midv:"prepared locally", flow_n3k:"Your agent", flow_n3v:"a clean context",
@@ -542,7 +601,7 @@
       nav_install:"インストール", nav_docs:"ドキュメント", nav_roadmap:"ロードマップ",
       ey_tel:"テレメトリなし", ey_off:"オフライン動作",
       hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
-      hero_sub:"Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。",
+      hero_sub:"Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。", vsc_ey:"エディタの中で", vsc_h2:"準備して起動 — VS Code の中で。", vsc_sub:"拡張から Yuhi を実行し、準備された文脈を確認して、Claude Code を開始。", vsc_cap:"拡張は VS Code Marketplace で Available — Beta。",
       hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"使ってみる", hero_github:"GitHubを見る →", copy:"コピー",
       flow_n1k:"あなたのリポジトリ", flow_n1v:"ファイル・秘密情報・データ", flow_midv:"ローカルで準備", flow_n3k:"あなたのエージェント", flow_n3v:"整えられた文脈",
@@ -595,7 +654,7 @@
       nav_install:"安装", nav_docs:"文档", nav_roadmap:"路线图",
       ey_tel:"无遥测", ey_off:"离线可用",
       hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
-      hero_sub:"Yuhi 在 AI Agent 开始工作前，先在本地理解你的项目并准备好所需的上下文，帮助 Claude Code 更高效地工作。",
+      hero_sub:"Yuhi 在 AI Agent 开始工作前，先在本地理解你的项目并准备好所需的上下文，帮助 Claude Code 更高效地工作。", vsc_ey:"在你的编辑器中", vsc_h2:"在 VS Code 中准备并启动。", vsc_sub:"在扩展中运行 Yuhi，检查准备好的上下文，然后启动 Claude Code。", vsc_cap:"扩展已在 VS Code Marketplace 上线（Available — Beta）。",
       hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"开始使用", hero_github:"在 GitHub 查看 →", copy:"复制",
       flow_n1k:"你的仓库", flow_n1v:"文件、密钥、数据", flow_midv:"本地整理", flow_n3k:"你的 AI 代理", flow_n3v:"干净的上下文",
