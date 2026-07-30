@@ -294,9 +294,9 @@
   <section class="hero">
     <div class="wrap">
       <p class="eyebrow"><b>local-first</b><span class="dot-sep"></span>Apache-2.0<span class="dot-sep"></span><span data-i18n="ey_tel">テレメトリなし</span><span class="dot-sep"></span><span data-i18n="ey_off">オフライン動作</span></p>
-      <h1 data-i18n="hero_h1"><span class="swap">Claude</span>に、全部を渡さない。</h1>
-      <p class="sub" data-i18n="hero_sub">Yuhiは、文書やコードをAIに渡す前にローカルで整えます。送る内容を確認し、機密情報を端末内に残しながら、不要なClaude入力トークンを減らします。</p>
-      <p class="tag" data-i18n="hero_tag">ローカルで整え、必要な情報だけを送る。</p>
+      <h1 data-i18n="hero_h1">Claude Code with <span class="swap">Yuhi</span></h1>
+      <p class="sub" data-i18n="hero_sub">Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。</p>
+      <p class="tag" data-i18n="hero_tag">Prepare your workspace. Let AI agents work better.</p>
       <div class="cta">
         <a class="btn btn-primary" href="#start" data-i18n="hero_start">使ってみる</a>
         <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">GitHubを見る →</a>
@@ -420,7 +420,7 @@
         <div class="card isnot">
           <h3 data-i18n="isnot_h">＃ Yuhiでないもの</h3>
           <ul>
-            <li data-i18n="isnot_1">サンドボックスではありません。エージェントのファイルシステムやネットワークをOSレベルで隔離しません。</li>
+            <li data-i18n="isnot_1">ワークスペース境界は勧告です。初期コンテキストは Yuhi が準備しますが、OS サンドボックスとファイルシステム強制は有効ではありません。ランタイムまたはユーザーが許可すれば、エージェントは Prepared Workspace 外のファイルへアクセスできます。</li>
             <li data-i18n="isnot_2">「ゼロ漏洩」の保証ではありません。意図を持ったプロセスは、準備済みコピーの外にも到達し得ます。</li>
             <li data-i18n="isnot_3">クラウドサービスではありません。Yuhiへのアップロードはなく、Yuhiのサーバーは存在しません。</li>
           </ul>
@@ -488,9 +488,9 @@
       _desc:"Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.",
       nav_install:"Install", nav_docs:"Documentation", nav_roadmap:"Roadmap",
       ey_tel:"no telemetry", ey_off:"works offline",
-      hero_h1:'Don\'t send everything to <span class="swap">Claude</span>.',
-      hero_sub:"Yuhi prepares documents and code locally before they reach AI. Review what will be sent, keep sensitive context on your machine, and reduce unnecessary Claude input tokens.",
-      hero_tag:"Prepare locally. Send only what matters.",
+      hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
+      hero_sub:"Yuhi prepares your workspace before AI agents start working — it understands your project locally, builds the right context, and helps Claude Code work more effectively.",
+      hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"Get started", hero_github:"View on GitHub →", copy:"copy",
       flow_n1k:"Your repository", flow_n1v:"files, secrets, data", flow_midv:"prepared locally", flow_n3k:"Your agent", flow_n3v:"a clean context",
       demo_ey:"30-second demo",
@@ -541,9 +541,9 @@
       _desc:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。",
       nav_install:"インストール", nav_docs:"ドキュメント", nav_roadmap:"ロードマップ",
       ey_tel:"テレメトリなし", ey_off:"オフライン動作",
-      hero_h1:'<span class="swap">Claude</span>に、全部を渡さない。',
-      hero_sub:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。送る内容を確認し、機密情報を端末内に残しながら、不要なClaude入力トークンを減らします。",
-      hero_tag:"ローカルで整え、必要な情報だけを送る。",
+      hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
+      hero_sub:"Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。",
+      hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"使ってみる", hero_github:"GitHubを見る →", copy:"コピー",
       flow_n1k:"あなたのリポジトリ", flow_n1v:"ファイル・秘密情報・データ", flow_midv:"ローカルで準備", flow_n3k:"あなたのエージェント", flow_n3v:"整えられた文脈",
       demo_ey:"30秒デモ",
@@ -594,9 +594,9 @@
       _desc:"Yuhi 会在本地整理文档和代码，只把真正需要的上下文发送给 AI，同时减少敏感信息暴露和输入 Token 消耗。本地优先，Apache-2.0。",
       nav_install:"安装", nav_docs:"文档", nav_roadmap:"路线图",
       ey_tel:"无遥测", ey_off:"离线可用",
-      hero_h1:'不要把所有内容都交给 <span class="swap">Claude</span>。',
-      hero_sub:"Yuhi 会在本地整理文档和代码。你可以在发送前检查上下文，将敏感信息保留在设备上，并减少不必要的 Claude 输入 Token。",
-      hero_tag:"本地整理，只发送真正需要的内容。",
+      hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
+      hero_sub:"Yuhi 在 AI Agent 开始工作前，先在本地理解你的项目并准备好所需的上下文，帮助 Claude Code 更高效地工作。",
+      hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"开始使用", hero_github:"在 GitHub 查看 →", copy:"复制",
       flow_n1k:"你的仓库", flow_n1v:"文件、密钥、数据", flow_midv:"本地整理", flow_n3k:"你的 AI 代理", flow_n3v:"干净的上下文",
       demo_ey:"30 秒演示",
@@ -760,6 +760,7 @@
   } else { showFinal(); }
 })();
 </script>
+
 
 
 </body></html>
