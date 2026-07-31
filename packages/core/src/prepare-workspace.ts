@@ -48,6 +48,7 @@ import {
   type SafetyMode,
 } from "./safety-mode.js";
 import { runLocalPreparation } from "./route-executor.js";
+import { BackgroundQueue, type BackgroundPreparationKind } from "./background/index.js";
 
 /** The pipeline every summarize target is run through (local model → mask → gate). */
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
@@ -265,7 +266,10 @@ export interface PreparedFileEntry {
     | "local-only-transformation-failed"
     | "blocked-high-risk"
     | "malformed"
-    | "failed";
+    | "failed"
+    // v0.3.5: the file's original stays local-only, but a persistent background item
+    // was successfully enqueued to produce its safe companion after Yuhi Mode launches.
+    | "background-processing-pending";
   transmission: TransmissionState;
   beforeChars: number;
   afterChars: number;
@@ -1248,6 +1252,18 @@ export async function prepareWorkspace(
 
   const files: PreparedFileEntry[] = [];
   const provenance: ProvenanceEntry[] = [];
+  // v0.3.5: deferred heavy work to register as persistent BACKGROUND items after the
+  // fast phase. Each descriptor pins the ORIGINAL (kept-local) file — enqueued only
+  // once the deterministic Context ID is known; on a successful enqueue the paired
+  // entry's outcome is flipped to `background-processing-pending` (never before).
+  const backgroundEnqueue: {
+    entry: PreparedFileEntry;
+    kind: BackgroundPreparationKind;
+    relpath: string;
+    sourceArtifactPath: string;
+    sourceContentHash: string;
+    processorVersion: string;
+  }[] = [];
   let beforeTokens = 0;
   let afterTokens = 0;
   let approx = false;
@@ -1920,6 +1936,22 @@ export async function prepareWorkspace(
             : "Local model was disabled for this run (timeout or budget); this file needs local " +
                 "summarization to be de-identified, so it was kept on this computer. Review or include it later.",
         );
+        // v0.3.5: an INTENTIONAL foreground deferral (deferLocalSummary) is registered as
+        // a persistent background item so its safe companion is produced after launch. A
+        // timeout/budget shutdown (local-model-disabled) is NOT auto-processed later — it
+        // stays kept-local. The entry becomes `background-processing-pending` only if the
+        // enqueue below succeeds; the original file is never delivered un-inspected.
+        if (deferred && info) {
+          backgroundEnqueue.push({
+            entry: files[files.length - 1]!,
+            kind: "summarize-local",
+            relpath,
+            sourceArtifactPath: info.absPath,
+            sourceContentHash:
+              info.sha256 ?? createHash("sha256").update(content).digest("hex"),
+            processorVersion: `summarize-local@${YUHI_VERSION}`,
+          });
+        }
         decisionsProcessed += 1;
         detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
         continue;
@@ -3061,6 +3093,39 @@ export async function prepareWorkspace(
     reductionMode: effectiveMode,
     compressionThresholdTokens: options.compressionThresholdTokens ?? null,
   });
+
+  // ===== v0.3.5 FOREGROUND → BACKGROUND QUEUE REGISTRATION =====
+  // Persist each deferred item into the run's queue so the heavy work (summarize-local
+  // / document extraction / OCR) runs AFTER Yuhi Mode has launched. The foreground made
+  // ZERO heavy-processor calls; this is only durable JSON book-keeping. A file's status
+  // becomes `background-processing-pending` ONLY after its enqueue succeeds — an enqueue
+  // failure leaves it kept-local (never mislabeled), and its original stays local-only.
+  if (backgroundEnqueue.length > 0) {
+    try {
+      const queue = await BackgroundQueue.open(path.join(outDir, ".yuhi", "background"));
+      for (const pending of backgroundEnqueue) {
+        try {
+          await queue.enqueue({
+            runId,
+            contextId,
+            relpath: pending.relpath,
+            kind: pending.kind,
+            sourceArtifactPath: pending.sourceArtifactPath,
+            sourceContentHash: pending.sourceContentHash,
+            processorVersion: pending.processorVersion,
+            policyHash: plan.context.policyHash,
+          });
+          // Pending is asserted ONLY on a durable enqueue success.
+          pending.entry.outcome = "background-processing-pending";
+        } catch {
+          // Enqueue failed for this item → keep it local-only; do not mislabel it.
+        }
+      }
+    } catch {
+      // The queue could not be opened → every deferred file stays kept-local. The run
+      // still launches; nothing is delivered un-inspected.
+    }
+  }
 
   const manifest = {
     schemaVersion: manifestSchemaVersion,

@@ -68,6 +68,12 @@ export {
 } from "./worker.js";
 
 export {
+  runBackgroundForRun,
+  type BackgroundRunSummary,
+  type RunBackgroundForRunInput,
+} from "./wiring.js";
+
+export {
   computeRevisionId,
   canonicalizeRevisionIdInput,
   reduceProgressiveContextState,
