@@ -71,6 +71,7 @@ import {
   cliPrepareExitCode,
   formatCliPrepareResult,
 } from "./prepare-output.js";
+import { performLaunch } from "./launch.js";
 
 interface Globals {
   json: boolean;
@@ -125,7 +126,7 @@ function action(handler: (cmd: Command) => Promise<number | void>) {
 }
 
 async function main(): Promise<void> {
-  const { main: mainArgv } = splitForwarded(process.argv);
+  const { main: mainArgv, forwarded } = splitForwarded(process.argv);
 
   const program = new Command();
   program
@@ -897,6 +898,35 @@ async function main(): Promise<void> {
         }
       }),
     );
+
+  // ---- launch ----  personal-first: run an installed agent on a prepared run
+  const launch = program
+    .command("launch")
+    .description("Launch an installed agent (claude | codex) on a prepared run");
+  for (const spec of [
+    { id: "claude", display: "Claude Code" },
+    { id: "codex", display: "OpenAI Codex CLI" },
+  ] as const) {
+    launch
+      .command(spec.id)
+      .description(`Launch ${spec.display} on a prepared run`)
+      .option("--run <id>", "prepared run id (default: the latest completed run)")
+      .option("--dry-run", "prepare + print the Ready summary but do not launch", false)
+      .action(
+        action(async (cmd) => {
+          const { g } = getContext(cmd);
+          const opts = cmd.opts();
+          return await performLaunch({
+            agentId: spec.id,
+            ...(opts.run ? { runRef: String(opts.run) } : {}),
+            forwardedArgs: forwarded,
+            spawn: !opts.dryRun,
+            json: g.json,
+            verbose: g.verbose,
+          });
+        }),
+      );
+  }
 
   await program.parseAsync(mainArgv);
 }

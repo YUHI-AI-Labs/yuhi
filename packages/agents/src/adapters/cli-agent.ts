@@ -21,15 +21,39 @@ import type {
   PreparedAgentContext,
   PreparedAgentLaunch,
 } from "../adapter.js";
+import type { AgentInstructionFile } from "../adapter.js";
 import { DEFAULT_DETECT_TIMEOUT_MS } from "../adapter.js";
 import type { CliAgentSpec } from "../registry.js";
 import { lookupOnPath } from "../which.js";
 import { buildChildEnv } from "../env.js";
 import { runCommand } from "../run.js";
+import {
+  buildYuhiInstructionSection,
+  instructionFileNameFor,
+  mergeInstructionFile,
+} from "./instructions.js";
 import { randomUUID } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import * as path from "node:path";
 
 /** Adapter implementation version — recorded in the Agent Session Manifest. */
 export const CLI_AGENT_ADAPTER_VERSION = "0.3.4";
+
+/**
+ * Resolve a repo-relative POSIX path to an absolute path that is GUARANTEED to
+ * stay inside `root` (THREAT_MODEL: no path traversal / symlink escape out of the
+ * prepared repo). Returns null when the target would escape.
+ */
+function resolveInside(root: string, relpath: string): string | null {
+  if (path.isAbsolute(relpath)) return null;
+  const normalizedRoot = path.resolve(root);
+  const target = path.resolve(normalizedRoot, relpath);
+  if (target !== normalizedRoot && !target.startsWith(normalizedRoot + path.sep)) {
+    return null;
+  }
+  return target;
+}
 
 class CliAgentAdapter implements AgentAdapter {
   readonly id: string;
@@ -76,18 +100,85 @@ class CliAgentAdapter implements AgentAdapter {
       ...(this.spec.envPassthrough ?? []),
       ...(options?.envPassthrough ?? []),
     ];
+
+    // Generate the agent-specific instruction file INTO the prepared repo,
+    // additively and merge-safely. Vendor-neutral agents (no convention) ship none.
+    const instructionFiles = await this.writeInstructionFiles(context, warnings);
+
     return {
       adapterId: this.id,
       contextId: context.contextId,
       workingDirectory: context.workingDirectory,
       executable: executable ?? this.spec.command,
       args,
-      // Agent-specific instruction files are the adapter's job; the foundation
-      // adapter ships none (the prepared repo already carries Yuhi's handoff).
-      instructionFiles: [],
+      instructionFiles,
       envPassthrough,
       warnings,
     };
+  }
+
+  /**
+   * Write the agent's instruction file(s) into the prepared repository:
+   *   - the conventional root file (CLAUDE.md / AGENTS.md), MERGED with any existing
+   *     content (never clobbered);
+   *   - a clean canonical mirror under `.yuhi/agents/<id>/<file>`.
+   *
+   * Every write is confined to the prepared directory (path-traversal guarded) and
+   * is best-effort: a write failure becomes a warning, never a throw — a failed
+   * instruction file must never corrupt the prepared repo or block a launch.
+   */
+  private async writeInstructionFiles(
+    context: PreparedAgentContext,
+    warnings: string[],
+  ): Promise<AgentInstructionFile[]> {
+    const fileName = instructionFileNameFor(this.id);
+    if (!fileName) return [];
+
+    const root = path.resolve(context.workingDirectory);
+    const section = buildYuhiInstructionSection({
+      agentDisplayName: this.displayName,
+      contextId: context.contextId,
+    });
+    const files: AgentInstructionFile[] = [];
+
+    if (!existsSync(root) || !statSync(root).isDirectory()) {
+      warnings.push(
+        `The prepared workspace directory is not available; skipped writing ${fileName}.`,
+      );
+      return files;
+    }
+
+    // 1) Root instruction file — merge-safe.
+    const rootTarget = resolveInside(root, fileName);
+    if (rootTarget) {
+      try {
+        let existing: string | null = null;
+        if (existsSync(rootTarget)) existing = await readFile(rootTarget, "utf8");
+        const merged = mergeInstructionFile(existing, section);
+        await writeFile(rootTarget, merged, { encoding: "utf8", mode: 0o600 });
+        files.push({ relpath: fileName, contents: merged });
+      } catch {
+        warnings.push(`Could not write ${fileName} into the prepared workspace.`);
+      }
+    } else {
+      warnings.push(`Refused to write ${fileName} outside the prepared workspace.`);
+    }
+
+    // 2) Canonical mirror under .yuhi/agents/<id>/ — always a clean Yuhi section.
+    const mirrorRel = path.posix.join(".yuhi", "agents", this.id, fileName);
+    const mirrorTarget = resolveInside(root, mirrorRel);
+    if (mirrorTarget) {
+      try {
+        await mkdir(path.dirname(mirrorTarget), { recursive: true, mode: 0o700 });
+        const mirrorContents = `${section.trimEnd()}\n`;
+        await writeFile(mirrorTarget, mirrorContents, { encoding: "utf8", mode: 0o600 });
+        files.push({ relpath: mirrorRel, contents: mirrorContents });
+      } catch {
+        /* mirror is a convenience; its absence is not worth a warning */
+      }
+    }
+
+    return files;
   }
 
   async launch(plan: PreparedAgentLaunch, options?: AgentLaunchOptions): Promise<AgentSession> {
@@ -104,6 +195,14 @@ class CliAgentAdapter implements AgentAdapter {
 
     if (options?.spawn === false) {
       return { ...base, status: "prepared" };
+    }
+
+    // The working directory MUST be an absolute path to an existing directory: the
+    // prepared repository. Never spawn into a relative or missing cwd — that is how
+    // a launch would escape the prepared copy. Failure returns a clear result and
+    // does not throw, so nothing about the prepared or source repo is corrupted.
+    if (!path.isAbsolute(plan.workingDirectory) || !existsSync(plan.workingDirectory)) {
+      return { ...base, status: "failed" };
     }
 
     const env = buildChildEnv(plan.envPassthrough as string[]);

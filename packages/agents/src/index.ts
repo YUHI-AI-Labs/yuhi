@@ -9,4 +9,11 @@ export * from "./adapters.js";
 export * from "./adapter.js";
 export * from "./registry.js";
 export * from "./session-manifest.js";
+export {
+  instructionFileNameFor,
+  buildYuhiInstructionSection,
+  mergeInstructionFile,
+  YUHI_SECTION_BEGIN,
+  YUHI_SECTION_END,
+} from "./adapters/instructions.js";
 export { createFakeAgentAdapter, type FakeAgentAdapterOptions } from "./testing.js";
