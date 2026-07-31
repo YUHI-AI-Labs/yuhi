@@ -52,23 +52,6 @@ fast, keep the prepared context small, and always be able to explain why.
 - When a PDF/DOCX/PPTX can't be inspected, the local placeholder now reports an accurate
   original size (bytes/KB, not a misleading `0.0 MB`) and a specific reason.
 
-## [0.3.3]
-
-### Context Compression (opt-in)
-
-- **Structure compression** of the delivered context — the **Context Compression** toggle
-  in VS Code, or `yuhi prepare --compress`. Produces a deterministic, body-omitted,
-  syntactically valid view: imports, exports, declarations, class/interface/type and
-  function/method signatures (with their doc comments) are preserved; implementation
-  bodies — including **block-body arrow functions** — are replaced by `{ /* ... */ }`.
-- Kept **full** by design: expression-body arrows (`x => x * 2`, `() => ({ ... })`,
-  `() => <div/>`), declaration (`.d.ts`) files, and files below the size threshold.
-- Reduction is content-dependent and honest: method- and arrow-heavy files compress a
-  lot (a ~190k-token repo → ~41%, with body-heavy test files ~85%), while small or
-  declaration-only repositories stay near 0%. The original source is never modified, and
-  an unparsable file safely falls back to its full form.
-- Default **OFF**; opt in per run.
-
 ## [0.3.2]
 
 ### Safety Mode
