@@ -4,6 +4,29 @@
 
 <p align="center">Yuhi prepares a smaller, cleaner, safer workspace before your coding agent sees it — then hands you a shareable report of exactly what it did.</p>
 
+<p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
+
+> **0.2.4 development theme — Intelligent Preparation**
+>
+> 0.2.2: Prepare safely. 0.2.3: Work safely with AI agents. 0.2.4:
+> inspect and organize document context locally before handoff.
+
+0.2.4 adds local PDF extraction, OCR fallback, Ollama document summaries,
+summary security verification, and a `.yuhi/context/document-index.md` entry
+point. Extracted document text remains memory-only; generated summaries are
+included only after deterministic rescanning.
+
+Yuhi Recommended prioritizes a usable Prepared Workspace while making
+uncertainty visible. Credential files and private-key material are never copied
+unchanged. Supported CSV/TSV/XLSX tables and credential configuration are
+transformed locally and verified before inclusion. PDF, image, binary, and
+unknown binary formats that Yuhi cannot inspect are included unchanged with an
+**Unverified files included** warning; Claude Code may read those files. Review
+them before using Yuhi with sensitive information.
+>
+> Prepared Workspace → Agent execution → Change review → Apply safely. Agent
+> changes are never applied to the Original Workspace automatically.
+
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-vscode?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>
