@@ -33,3 +33,5 @@ export * from "./workspace-marker.js";
 export * from "./document-artifact.js";
 export * from "./disclosure.js";
 export * from "./disclosure-config.js";
+export * from "./what-ai-can-see.js";
+export * from "./ai-readiness-report.js";
