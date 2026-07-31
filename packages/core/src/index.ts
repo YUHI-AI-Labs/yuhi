@@ -31,3 +31,4 @@ export * from "./doc-companion.js";
 export * from "./stream-text.js";
 export * from "./workspace-marker.js";
 export * from "./document-artifact.js";
+export * from "./disclosure.js";
