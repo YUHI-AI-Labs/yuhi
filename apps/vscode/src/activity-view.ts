@@ -9,6 +9,7 @@ import {
   type PrepareSettings,
   type SafetyModeValue,
 } from "./activity-panel.js";
+import type { AgentPickerData } from "./agent-picker.js";
 
 export const YUHI_ACTIVITY_VIEW_ID = "yuhi.workspace";
 const STATE_KEY = "yuhi.activityPanel.v1";
@@ -72,7 +73,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     this.render(); // restore persisted state after reload
   }
 
-  private onMessage(message: { type?: string; value?: unknown }): void {
+  private onMessage(message: { type?: string; value?: unknown; agentId?: unknown }): void {
     switch (message?.type) {
       case "prepare":
         void vscode.commands.executeCommand("yuhi.prepareAndStartClaude");
@@ -83,6 +84,13 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
             ? "yuhi.openClaudeHere"
             : "yuhi.prepareAndStartClaude",
         );
+        break;
+      // v0.3.4 agent picker — launch the chosen agent into the SAME prepared run. The
+      // extension host resolves the allowlisted adapter; an unknown id can't be launched.
+      case "launchAgent":
+        if (typeof message.agentId === "string") {
+          void vscode.commands.executeCommand("yuhi.launchAgent", message.agentId);
+        }
         break;
       case "details":
         void vscode.commands.executeCommand("yuhi.reviewPrepared");
@@ -253,6 +261,26 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       ...(detail.reductionPercent !== undefined ? { reductionPercent: detail.reductionPercent } : {}),
       ...(detail.filesTransformed !== undefined ? { filesTransformed: detail.filesTransformed } : {}),
     });
+  }
+
+  /**
+   * v0.3.4 — attach (or clear) the agent picker on the current Ready / Yuhi-Mode
+   * surface. Availability is resolved asynchronously by the host (short timeout), so
+   * this merges into whatever Ready/Yuhi-Mode data is already shown without disturbing
+   * any other phase. A no-op when the panel is not on a launchable surface.
+   */
+  applyAgentPicker(picker: AgentPickerData | undefined): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    const next = { ...this.data };
+    if (picker) next.picker = picker;
+    else delete next.picker;
+    this.set(next);
+  }
+
+  /** The agent id currently shown as launching, if any (drives the "Launching…" label). */
+  currentPickerLaunching(): string | undefined {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return undefined;
+    return this.data.picker?.agents.find((a) => a.launching)?.id;
   }
 
   /** Recovery needed — surfaced as an empty/prepare state; the reason is shown via a notification. */

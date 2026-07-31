@@ -109,6 +109,9 @@ importers:
 
   apps/vscode:
     dependencies:
+      '@yuhi/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@yuhi/config':
         specifier: workspace:*
         version: link:../../packages/config

@@ -76,6 +76,21 @@ import {
   type LaunchHost,
   type VisibleLaunchFailureKind,
 } from "./launch.js";
+import { createDefaultRegistry } from "@yuhi/agents";
+import type { AgentCommand } from "@yuhi/shared";
+import type { AgentRunOutcome } from "@yuhi/agents";
+import {
+  detectAgents,
+  buildAgentPickerData,
+  runAgentLaunch,
+  preparedContextFromRun,
+  readLastAgentId,
+  rememberLastAgentId,
+  PICKER_AGENT_IDS,
+  PICKER_AGENT_DISPLAY_NAMES,
+  PICKER_DETECT_TIMEOUT_MS,
+  type PickerAgentId,
+} from "./agent-picker.js";
 
 const OLLAMA_DOWNLOAD = "https://ollama.com/download";
 
@@ -146,6 +161,146 @@ const CLAUDE_OPEN_COMMANDS = [
   "claude-vscode.sidebar.open",
   "claude-vscode.editor.openLast",
 ] as const;
+
+// v0.3.4 — "one prepared repository, multiple agents". The allowlisted adapter
+// registry (Claude Code / Codex). Adapters load lazily on first `get(id)`; importing
+// it here costs nothing until an agent is actually detected or launched. An id outside
+// the allowlist is rejected by the registry and can never be launched.
+const agentRegistry = createDefaultRegistry();
+let agentLaunchRunning = false;
+
+/** POSIX single-quote a token so a terminal command is assembled from safe tokens
+ *  (never an unescaped path/arg). Mirrors the launch-primitive quoting. */
+function shQuoteToken(token: string): string {
+  return `'${token.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * A launch runner that drives the adapter's assembled command (executable + argv
+ * ARRAY) in a labelled VS Code terminal whose cwd IS the prepared repository —
+ * preserving the existing observable launch behavior (working dir = prepared repo,
+ * argv handling). The terminal inherits the user's shell environment; the adapter's
+ * allow-listed `env` is not force-applied to an interactive terminal.
+ */
+function agentTerminalRunner(displayName: string): (command: AgentCommand) => Promise<AgentRunOutcome> {
+  return async (command) => {
+    const term = vscode.window.createTerminal({ name: `Yuhi · ${displayName}`, cwd: command.cwd });
+    const line = [command.file, ...command.args].map(shQuoteToken).join(" ");
+    term.sendText(line, true);
+    term.show();
+    return { exitCode: 0, signal: null };
+  };
+}
+
+/** Is the selected Safety Mode out of date vs the prepared run? (DIRTY gate.) */
+function preparedRunIsDirty(report: PrepareReport): boolean {
+  return !checkSafetyModeFreshness(report.safetyMode, currentSafetyMode()).fresh;
+}
+
+/**
+ * Resolve per-agent availability (short timeout — never hangs) and push the agent
+ * picker onto the current Ready / Yuhi-Mode surface: two launch actions (Claude Code /
+ * Codex), the run's Context ID, the last-used agent as the default, and the DIRTY gate.
+ * Best-effort: any failure just leaves the panel without a picker (single button).
+ */
+async function refreshAgentPicker(report: PrepareReport | undefined, launchingAgentId: string | null = null): Promise<void> {
+  if (!activityProvider || !report?.contextId) return;
+  try {
+    const availabilities = await detectAgents(agentRegistry, [...PICKER_AGENT_IDS], {
+      timeoutMs: PICKER_DETECT_TIMEOUT_MS,
+    });
+    const lastAgentId = extensionContext ? readLastAgentId(extensionContext.globalState) : undefined;
+    activityProvider.applyAgentPicker(
+      buildAgentPickerData({
+        contextId: report.contextId,
+        availabilities,
+        ...(lastAgentId ? { lastAgentId } : {}),
+        dirty: preparedRunIsDirty(report),
+        launchingAgentId,
+      }),
+    );
+  } catch {
+    /* the picker is an enhancement — never let it destabilize the panel */
+  }
+}
+
+/**
+ * Launch the chosen agent into the SAME prepared run — reusing one prepared repository
+ * across agents. Routed entirely through the registry adapter (detect → prepare →
+ * launch); an unknown id can't be launched. Honors the DIRTY gate for BOTH agents,
+ * remembers the last-used agent, and ALWAYS returns the UI to a usable state (a failed
+ * or blocked launch is never left stuck in "Launching…").
+ */
+async function commandLaunchAgent(agentId: string): Promise<void> {
+  if (agentLaunchRunning) return;
+  const report = lastReport;
+  if (!report?.contextId) {
+    void vscode.window.showWarningMessage("Yuhi: prepare a repository before launching an agent.");
+    return;
+  }
+  if (!(PICKER_AGENT_IDS as readonly string[]).includes(agentId)) {
+    void vscode.window.showWarningMessage("Yuhi: that agent is not available.");
+    return;
+  }
+  const id = agentId as PickerAgentId;
+  const displayName = PICKER_AGENT_DISPLAY_NAMES[id];
+  agentLaunchRunning = true;
+  try {
+    const availabilities = await detectAgents(agentRegistry, [...PICKER_AGENT_IDS], {
+      timeoutMs: PICKER_DETECT_TIMEOUT_MS,
+    });
+    const availability = availabilities.find((a) => a.id === id);
+    const result = await runAgentLaunch({
+      registry: agentRegistry,
+      id,
+      context: preparedContextFromRun({
+        contextId: report.contextId,
+        outDir: report.outDir,
+        runId: report.runId,
+      }),
+      dirty: preparedRunIsDirty(report),
+      ...(availability ? { availability } : {}),
+      runner: agentTerminalRunner(displayName),
+      forwardedArgs: [],
+      onLaunchingChange: (launchingId) => {
+        // Reflect launching → picker so the UI shows "Launching…" and, on settle,
+        // returns to a usable state (never stuck).
+        const lastAgentId = extensionContext ? readLastAgentId(extensionContext.globalState) : undefined;
+        activityProvider?.applyAgentPicker(
+          buildAgentPickerData({
+            contextId: report.contextId!,
+            availabilities,
+            ...(lastAgentId ? { lastAgentId } : {}),
+            dirty: preparedRunIsDirty(report),
+            launchingAgentId: launchingId,
+          }),
+        );
+      },
+      rememberLast: (rememberedId) =>
+        extensionContext ? rememberLastAgentId(extensionContext.globalState, rememberedId) : undefined,
+    });
+    if (result.status === "blocked-dirty") {
+      void vscode.window
+        .showWarningMessage(
+          "Yuhi: the selected Safety Mode differs from the prepared run. Re-prepare before launching either agent.",
+          "Review Prepared Context",
+        )
+        .then((choice) => {
+          if (choice === "Review Prepared Context") void commandReview();
+        });
+    } else if (result.status === "unavailable") {
+      void vscode.window.showWarningMessage(`Yuhi: ${result.installHint}`);
+    } else if (result.status === "failed") {
+      void vscode.window.showErrorMessage(
+        `Yuhi: could not launch ${displayName}. The panel returned to a ready state — try again, or launch the other agent.`,
+      );
+    }
+  } finally {
+    agentLaunchRunning = false;
+    // Re-resolve availability + clear any launching flag (last-used may have changed).
+    await refreshAgentPicker(lastReport);
+  }
+}
 
 // ---- helpers ----
 function firstWorkspaceRoot(): string | undefined {
@@ -1103,6 +1258,9 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
     // Outcome: Complete / Complete with warnings / Partial / Failed (failures visible).
     const outcome = classifyOutcome(report);
     setStatus(outcome === "Failed" ? "failed" : "ready-for-review");
+    // v0.3.4 — offer the agent picker (Claude Code / Codex) on the Ready surface,
+    // reusing this one prepared run. Availability is resolved with a short timeout.
+    if (outcome !== "Failed") void refreshAgentPicker(report);
 
     if (outcome === "Failed") {
       void vscode.window
@@ -2648,6 +2806,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndStartClaude, () =>
       runVisibleCommand(() => commandPrepareAndStartClaude(context)),
+    ),
+    vscode.commands.registerCommand("yuhi.launchAgent", (agentId?: unknown) =>
+      commandLaunchAgent(typeof agentId === "string" ? agentId : "").catch(reportLaunchFailure),
     ),
     vscode.commands.registerCommand("yuhi.openClaudeHere", () =>
       runVisibleCommand(commandOpenClaudeHere),

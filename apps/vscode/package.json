@@ -130,6 +130,10 @@
         "command": "yuhi.showRecovery",
         "title": "Yuhi: Open Recovery Options",
         "icon": "$(tools)"
+      },
+      {
+        "command": "yuhi.launchAgent",
+        "title": "Yuhi: Launch Agent (Claude Code / Codex)"
       }
     ],
     "menus": {
@@ -189,6 +193,10 @@
         {
           "command": "yuhi.showRecovery",
           "when": "false"
+        },
+        {
+          "command": "yuhi.launchAgent",
+          "when": "false"
         }
       ],
       "explorer/context": [
@@ -240,6 +248,7 @@
     "inspect:vsix": "node scripts/inspect-vsix.mjs yuhi.vsix"
   },
   "dependencies": {
+    "@yuhi/agents": "workspace:*",
     "@yuhi/core": "workspace:*",
     "@yuhi/local": "workspace:*",
     "@yuhi/shared": "workspace:*",

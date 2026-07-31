@@ -120,6 +120,52 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).toContain("&lt;img");
   });
 
+  it("renders the agent picker (Claude Code / Codex + Context ID) in place of the single button when present", () => {
+    const out = html({
+      phase: "yuhi-mode",
+      filesAvailable: 5,
+      filesExcluded: 0,
+      claudeExtensionAvailable: true,
+      picker: {
+        contextId: "sha256:a7f19288b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8",
+        agents: [
+          { id: "claude", displayName: "Claude Code", available: true, isDefault: true },
+          { id: "codex", displayName: "Codex", available: false, installHint: "Codex CLI was not found. Install Codex and try again." },
+        ],
+      },
+    });
+    expect(out).toContain("Launch with");
+    expect(out).toContain('data-agent="claude"');
+    expect(out).toContain('data-agent="codex"');
+    expect(out).toContain("Context ID");
+    expect(out).toContain("Prepared once. Reusable across agents.");
+    // Not-installed agent is softened with a calm hint.
+    expect(out).toContain("Codex CLI was not found");
+    // The script wires the agent buttons.
+    expect(out).toContain('type: "launchAgent"');
+  });
+
+  it("agent picker replaces the single Start button in the ready phase", () => {
+    const out = html({
+      phase: "ready",
+      filesDiscovered: 3,
+      documentsInspected: 0,
+      summariesRejected: 0,
+      contextIndex: true,
+      agentHandoff: true,
+      picker: {
+        contextId: "sha256:" + "0".repeat(64),
+        agents: [
+          { id: "claude", displayName: "Claude Code", available: true, isDefault: true },
+          { id: "codex", displayName: "Codex", available: true },
+        ],
+      },
+    });
+    expect(out).toContain("Launch with");
+    // The single Start button is not rendered when the picker is present.
+    expect(out).not.toContain('id="startClaude"');
+  });
+
   it("button ids match the ActivityPanelMessage contract", () => {
     // The webview posts { type: id } for these ids; the provider handles exactly these.
     const ready = html({ phase: "ready", filesDiscovered: 1, documentsInspected: 0, summariesRejected: 0, contextIndex: true, agentHandoff: true });

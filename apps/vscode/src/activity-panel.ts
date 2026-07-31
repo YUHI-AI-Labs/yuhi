@@ -12,6 +12,8 @@
  * `renderActivityPanel` is pure and unit-tested; the provider wires it to VS Code.
  */
 
+import { renderAgentPicker, type AgentPickerData } from "./agent-picker.js";
+
 /** Lifecycle of the background document job, shown verbatim while it runs. */
 export type BackgroundLifecycle = "queued" | "inspecting" | "summarizing" | "verifying";
 
@@ -49,6 +51,11 @@ export type ActivityPanelData =
       maskedValues?: number;
       reductionPercent?: number;
       filesTransformed?: number;
+      /**
+       * v0.3.4 agent picker — "one prepared repository, multiple agents". When present,
+       * the picker (Claude Code / Codex + Context ID) replaces the single launch button.
+       */
+      picker?: AgentPickerData;
     }
   | {
       phase: "preparing";
@@ -85,13 +92,16 @@ export type ActivityPanelData =
       agentHandoff: boolean;
       /** Background enrichment still running (Start allowed; badge shows activity). */
       backgroundActive?: boolean;
+      /** v0.3.4 agent picker — replaces the single Start button when present. */
+      picker?: AgentPickerData;
     };
 
 /** Message the webview posts back when a button is activated. */
 export type ActivityPanelMessage =
   | { type: "prepare" }
   | { type: "startClaude" }
-  | { type: "details" };
+  | { type: "details" }
+  | { type: "launchAgent"; agentId: string };
 
 function esc(value: string): string {
   return value.replace(/[&<>"']/g, (c) =>
@@ -216,6 +226,9 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       const impact = stats.length
         ? `<div class="impact"><div class="impact-h">Yuhi protected your data</div><div class="impact-grid">${stats.join("")}</div></div>`
         : "";
+      // v0.3.4 — when the agent picker is present it REPLACES the single launch button:
+      // the same prepared repository is reusable across agents (Claude Code / Codex).
+      const launch = data.picker ? renderAgentPicker(data.picker) : openBtn;
       return {
         badge: "Yuhi Mode",
         badgeClass: "mode",
@@ -224,7 +237,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           checks +
           impact +
           button("details", "Review file decisions") +
-          openBtn,
+          launch,
       };
     }
     case "preparing": {
@@ -313,7 +326,9 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           checks +
           gen +
           button("details", "Open details") +
-          button("startClaude", "Start Claude Code", { primary: true }),
+          (data.picker
+            ? renderAgentPicker(data.picker)
+            : button("startClaude", "Start Claude Code", { primary: true })),
       };
     }
   }
@@ -461,6 +476,55 @@ export function renderActivityPanel(
   }
   .tog { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
   .tog input { accent-color: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); }
+  /* v0.3.4 agent picker — "Prepared once. Reusable across agents." */
+  .agentPicker { margin-top: 12px; }
+  .agentPickerHead {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    color: var(--vscode-descriptionForeground); margin-bottom: 8px;
+  }
+  .agentBtns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .agentChoice { flex: 1 1 120px; min-width: 120px; }
+  .agentBtn {
+    display: block; width: 100%; padding: 6px 10px;
+    font-family: inherit; font-size: 12.5px; text-align: center; cursor: pointer;
+    border-radius: 4px;
+    color: var(--vscode-button-secondaryForeground);
+    background: var(--vscode-button-secondaryBackground);
+    border: 1px solid var(--vscode-button-border, transparent);
+  }
+  .agentBtn:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+  .agentBtn.primary {
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+  }
+  .agentBtn.primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+  .agentBtn:disabled { opacity: .5; cursor: default; }
+  .agentBtn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  .agentHint {
+    margin-top: 4px; font-size: 10.5px; line-height: 1.4;
+    color: var(--vscode-descriptionForeground);
+  }
+  .agentDirty {
+    margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #cc9b00));
+    background: var(--vscode-inputValidation-warningBackground, rgba(204,155,0,.08));
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .agentDirty b { color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #cc9b00)); }
+  .agentDirty span { font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .agentCtx { margin-top: 12px; display: flex; align-items: baseline; gap: 8px; }
+  .agentCtxLabel {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    color: var(--vscode-descriptionForeground);
+  }
+  .agentCtxId {
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+    color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis;
+  }
+  .agentTagline {
+    margin-top: 6px; font-size: 11px; font-style: italic;
+    color: var(--vscode-descriptionForeground);
+  }
   .ver {
     margin-top: 8px; text-align: right; font-size: 10px; letter-spacing: .04em;
     color: var(--vscode-descriptionForeground); opacity: .8;
@@ -479,6 +543,12 @@ export function renderActivityPanel(
       const el = document.getElementById(id);
       if (el && !el.disabled) el.addEventListener("click", () => vscode.postMessage({ type: id }));
     }
+    // v0.3.4 agent picker — each enabled agent button launches into the SAME prepared run.
+    document.querySelectorAll(".agentBtn").forEach((el) => {
+      if (el.disabled) return;
+      el.addEventListener("click", () =>
+        vscode.postMessage({ type: "launchAgent", agentId: el.getAttribute("data-agent") }));
+    });
     // Pre-Prepare settings — persist the same yuhi.* config the prepare path reads.
     const safety = document.getElementById("cfgSafety");
     if (safety) safety.addEventListener("change", () => vscode.postMessage({ type: "setSafetyMode", value: safety.value }));
