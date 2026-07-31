@@ -115,6 +115,8 @@
 
   /* ---------- hero ---------- */
   .hero{padding:88px 0 40px;position:relative;overflow:hidden}
+  .hero-demo{margin-top:38px}
+  .hero-demo img{display:block;width:100%;max-width:920px;border-radius:14px;border:1px solid var(--border);box-shadow:var(--shadow)}
   .hero::before{content:"";position:absolute;inset:-10% -30% auto -30%;height:520px;z-index:-1;
     background:radial-gradient(60% 70% at 22% 0%,color-mix(in srgb,var(--g2) 22%,transparent),transparent 70%);
     filter:blur(20px);opacity:.7;pointer-events:none}
@@ -352,6 +354,8 @@
         <div class="arr">→</div>
         <div class="node"><div class="k" data-i18n="flow_n3k">あなたのエージェント</div><div class="v" data-i18n="flow_n3v">整えられた文脈</div></div>
       </div>
+
+      <div class="hero-demo"><img src="/demo.gif" alt="yuhi status → preview → prepare — Repository Ready in one command" loading="lazy"></div>
     </div>
   </section>
 
