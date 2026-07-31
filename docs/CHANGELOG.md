@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While Yuhi is in `0.x`, minor releases may include breaking changes; these will
 be called out explicitly.
 
+## [0.3.4]
+
+One prepared repository, multiple agents — *Prepare once. Run with Claude or Codex.*
+
+- **Agent adapters (Claude Code + Codex)** — Yuhi's core stays agent-agnostic; each agent is
+  a small adapter that detects the CLI (short timeout, no auto-install), generates its
+  instruction file (`CLAUDE.md` / `AGENTS.md`) additively, and launches it in the prepared
+  repository with a safe argv-array spawn. Unknown agent ids are rejected.
+- **Deterministic Context ID** (`sha256:…`) over source hashes + Safety Mode + compression
+  settings — identical for the same repository state, invariant across agent and time. The
+  Context Manifest is deterministic; the per-run Agent Session Manifest is separate and its
+  public export omits absolute paths and environment.
+- **CLI**: `yuhi launch claude` / `yuhi launch codex` (`--run <id>` to select a prepared
+  run) print a short Ready summary and launch in the prepared repository.
+- **VS Code**: a **Launch with Claude Code / Codex** picker on the review surface — same
+  prepared run reused by either agent, per-agent availability, last-used remembered, and a
+  changed Safety Mode still gates launch.
+
 ## [0.3.3]
 
 Safe, lightweight, explainable context preparation.

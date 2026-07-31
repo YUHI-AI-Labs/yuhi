@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
-> **Current release: 0.3.0** — Repository Ready: a shareable, public-safe report of what the AI can see, plus a read-only review inside VS Code.
+> **Current release: 0.3.4** — **Prepare once. Run with Claude or Codex.** One prepared repository, reusable across agents — plus opt-in Context Compression and a fast, never-stuck preparation.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi?label=npm&color=cb3837&logo=npm&logoColor=white"></a>
@@ -51,6 +51,21 @@ Ready for Claude Code.
 > These are **estimates of the initial prepared content** — how much of your repository is
 > made accessible to the agent — **not** measurements of model token usage or cost. Your
 > original files are never modified.
+
+## Prepare once. Run with Claude or Codex.
+
+One prepared repository is reusable across agents — the same safe copy, the same
+deterministic **Context ID**, no re-scan or re-preparation to switch:
+
+```bash
+yuhi prepare                 # prepare once
+yuhi launch claude           # ...then run Claude Code in the prepared repo
+yuhi launch codex            # ...or Codex — same prepared repository
+```
+
+In VS Code, the review shows **Launch with [ Claude Code ] [ Codex ]** with each agent's
+availability and the run's Context ID. Yuhi stays agent-agnostic: it prepares and secures
+the context; the agent you choose is what talks to the model.
 
 ## See how much of your repository your AI actually needs
 

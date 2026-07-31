@@ -5,6 +5,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.4]
+
+Theme: **one prepared repository, multiple agents** — *Prepare once. Run with Claude or Codex.*
+
+### Launch with Claude Code or Codex
+
+- After a prepare, the review offers **Launch with [ Claude Code ] [ Codex ]** — the same
+  prepared repository, reused by either agent with no re-scan or re-preparation. Each
+  agent's **availability** is detected (and an uninstalled agent shows a calm
+  "not found — install and try again" hint; Yuhi never installs anything for you). The
+  last-used agent is remembered and offered as the default.
+- Every launch goes through an **Agent Adapter** — Yuhi's core stays agent-agnostic. The
+  adapter detects the CLI, generates the agent's instruction file (`CLAUDE.md` for Claude,
+  `AGENTS.md` for Codex) additively without clobbering your own content, and launches it in
+  the prepared repository. A changed Safety Mode still gates launch until you re-prepare.
+
+### Context ID
+
+- Each prepared run now has a deterministic **Context ID** (`sha256:…`) derived from the
+  source content, Safety Mode, and compression settings — identical for the same repository
+  state regardless of which agent you run or when. It's shown in the panel and recorded per
+  session, so you can tell which agent used which prepared context.
+
+### CLI
+
+- `yuhi launch claude` / `yuhi launch codex` (with `--run <id>` to pick a prepared run) —
+  detects the agent, prints a short **Ready for the chosen agent** summary (Context ID,
+  files visible, reduction, secrets exposed), and launches it in the prepared repository.
+
 ## [0.3.3]
 
 Theme: **safe, lightweight, and explainable context preparation** — get into Yuhi Mode
