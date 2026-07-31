@@ -5,6 +5,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.2.9]
+
+### Document protection (PDF / DOCX / DOCM / PPTX / PPTM)
+
+- Original office/PDF documents are **no longer shared with the agent**. Yuhi extracts
+  the text locally, scans and redacts structured identifiers/secrets, and delivers a
+  **sanitized Markdown companion** — the original binary is never placed in the
+  Prepared Workspace and the source file is never modified.
+- A document that cannot be inspected — over the size limit (PDF > 64 MB, Office >
+  128 MB), encrypted, broken, or macro-only — is delivered as a **safe placeholder**
+  that states the original was kept local, never a raw passthrough.
+- Companions disclose source type, page/slide counts, extraction method, redaction
+  count, uninspected images/embedded objects, macros, and an explicit **residual
+  free-text-name risk** — no claim of full anonymization; no source path or filename.
+- The final-artifact gate now also rescans generated companions; a surviving
+  credential causes the companion to be withheld and recorded honestly.
+- Office extraction uses a ZIP-bomb-safe reader (entry/size/ratio caps, path-traversal
+  and symlink rejection); macros are never executed and VBA projects never shared.
+
+### Per-format inspection & reliability
+
+- The single 2 MB inspection gate is removed for text/CSV/TSV: large files are
+  de-identified (prepare-locally + final-gate re-scan), never raw-allowed or merely
+  kept local. Isolated per-format limits (PDF 64 MB; in-memory transform ceiling).
+- Managed workspace cleanup (keep newest 3, > 7 days pruned) with **marker-based
+  safety** — a directory is deleted only when a valid `.yuhi-managed.json` marker
+  confirms Yuhi created it (never by name, never a symlink, never unverifiable).
+
+### Not in this release (tracked for a follow-up)
+
+- XLSX streaming for very large workbooks and the `yuhi clean` CLI are not yet
+  included; large XLSX continue to use the existing bounded handling.
+
 ## [0.2.8]
 
 ### Critical fix
