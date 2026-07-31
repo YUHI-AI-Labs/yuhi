@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import type { PrepareReport } from "./prepare-workspace.js";
+import type { CompressionReport, PrepareReport } from "./prepare-workspace.js";
 import { managedWorkspaceBaseDir } from "./prepare-workspace.js";
 import { buildPreparedMetrics } from "./prepared-metrics.js";
 import { deriveWorkflowState, type YuhiWorkflowState } from "./workflow-state.js";
@@ -89,6 +89,14 @@ export interface SafePreparedRunSummary {
    * renders to terminal / Markdown / JSON / SVG for READMEs, PRs, and posts.
    */
   preparationReport: PreparationReport;
+  /**
+   * v0.3.3 structure-compression summary — present ONLY when the run was prepared with
+   * `compress: true`. Aggregate numbers plus a per-file list of relpaths (already shown
+   * in the review), so this is safe for the CLI / VS Code to render. It is deliberately
+   * SEPARATE from `preparationReport`, which stays aggregate-only with no compression
+   * detail.
+   */
+  compression?: CompressionReport;
 }
 
 export function buildSafePreparedRunSummary(report: PrepareReport): SafePreparedRunSummary {
@@ -149,6 +157,7 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     localModelMaxConcurrency: acceptance?.localModelMaxConcurrency ?? 0,
     localModelConfiguredParallelism: acceptance?.localModelConfiguredParallelism ?? 0,
     preparationReport,
+    ...(report.compression ? { compression: report.compression } : {}),
   };
 }
 

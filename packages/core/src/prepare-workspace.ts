@@ -35,6 +35,9 @@ import {
 import { runDetectors, redactText, PdfDocumentInspector } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
+// Type-only import — erased at build, so it never loads the compression parser. The
+// compression MODULE is loaded lazily (dynamic import) only when `compress: true`.
+import type { BudgetFileInput } from "./compression/index.js";
 import {
   DEFAULT_PREPARE_SAFETY_MODE,
   escalatesUnverified,
@@ -233,6 +236,53 @@ export interface PreparedFileEntry {
   /** Set when a Safety Mode preset (Strict / Maximum Privacy) kept this file local
    *  even though Balanced would have delivered it — an escalation, not a failure. */
   keptLocalBySafetyMode?: SafetyMode;
+  /**
+   * v0.3.3 structure-compression outcome for this delivered file. Only set when the
+   * optional compression pass ran (`compress: true`); otherwise absent and the run is
+   * byte-for-byte identical to a run without compression.
+   *   `full`       — delivered unchanged.
+   *   `compressed` — implementation bodies omitted (delivered file overwritten).
+   *   `excluded`   — dropped from the delivered workspace to fit the token budget.
+   */
+  contextRepresentation?: "full" | "compressed" | "excluded";
+  /** Flat budget/compression reason (user-included/entry-point/compressed/parse-failed/budget/...). */
+  compressionReason?: string;
+  /** Estimated tokens of the delivered file BEFORE compression. */
+  originalTokens?: number;
+  /** Estimated tokens actually delivered (0 when excluded). */
+  preparedTokens?: number;
+}
+
+/** One file's line in the compression summary (aggregate + relpath — public-safe). */
+export interface CompressionFileReport {
+  relpath: string;
+  representation: "full" | "compressed" | "excluded";
+  reason: string;
+  originalTokens: number;
+  preparedTokens: number;
+}
+
+/**
+ * Aggregate outcome of the optional v0.3.3 structure-compression pass, mirroring the
+ * budget selector's summary. Present on `PrepareReport` only when `compress: true`.
+ * All numbers are aggregate; the per-file list carries only relpaths (already shown in
+ * the review), so this whole structure is safe to surface to the CLI / VS Code.
+ */
+export interface CompressionReport {
+  originalTokens: number;
+  preparedTokens: number;
+  reductionPercent: number;
+  fullFiles: number;
+  compressedFiles: number;
+  excludedFiles: number;
+  compressionReductionTokens: number;
+  exclusionReductionTokens: number;
+  targetBudget: number | null;
+  actualTokens: number;
+  status: "within-budget" | "best-effort" | "no-budget";
+  budgetReason?: string;
+  warnings: string[];
+  files: CompressionFileReport[];
 }
 
 /** Classify a transformation-failure reason. Structural failures are eligible for
@@ -348,6 +398,8 @@ export interface PrepareReport {
   sourceModified: number;
   /** The resolved effective Safety Mode this run was prepared with. */
   safetyMode: SafetyMode;
+  /** v0.3.3 structure-compression summary; present ONLY when `compress: true`. */
+  compression?: CompressionReport;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
   tabularAcceptance?: {
     entitiesPseudonymized: number;
@@ -419,6 +471,18 @@ export interface PrepareWorkspaceOptions {
   safetyMode?: SafetyMode;
   /** Deterministic lifecycle seam for cancellation/recovery integration. */
   onCheckpoint?: (checkpoint: PreparationCheckpoint) => void;
+  /**
+   * Opt-in v0.3.3 structure compression. When false (default) NOTHING compression-
+   * related — including the `typescript` parser — is ever loaded, and the prepared
+   * output is byte-for-byte identical to today. When true, delivered source files may
+   * be body-omitted or (under a token budget) excluded from the delivered workspace.
+   * SOURCE FILES ARE NEVER TOUCHED; only files under the managed workspace change.
+   */
+  compress?: boolean;
+  /** Best-effort token budget for the delivered context; null/undefined = no budget. */
+  tokenBudget?: number | null;
+  /** Files at/under this many tokens stay full (too small to be worth compressing). */
+  compressionThresholdTokens?: number;
 }
 
 export type PreparationCheckpoint = "workspace-created";
@@ -1969,6 +2033,136 @@ export async function prepareWorkspace(
     }
   }
 
+  // ===== v0.3.3 STRUCTURE COMPRESSION (opt-in) =====
+  // Runs AFTER the per-file loop, filename de-identification, and the Safety-Mode
+  // escalation, and BEFORE the final integrity gate / context building. This is the
+  // ONLY place the compression module — and thus the `typescript` parser — is loaded,
+  // so a `compress: false` run loads nothing extra and is byte-for-byte identical to a
+  // run without compression. It reads DELIVERED files from `outDir`, decides a
+  // representation via the deterministic token budget, then rewrites (compressed),
+  // removes (excluded), or leaves (full) the DELIVERED copy. SOURCE FILES ARE NEVER
+  // READ OR WRITTEN HERE — only files under `outDir` change.
+  let compressionReport: CompressionReport | undefined;
+  if (options.compress) {
+    const compression = await import("./compression/index.js");
+    const registry = new compression.CompressorRegistry()
+      .register(new compression.TypeScriptCompressor())
+      .register(new compression.JavaScriptCompressor());
+    const compressionThresholdTokens = options.compressionThresholdTokens ?? 2000;
+
+    interface CompressionCandidate {
+      entry: PreparedFileEntry;
+      compressedContent?: string;
+      input: BudgetFileInput;
+    }
+    const candidates: CompressionCandidate[] = [];
+    for (const entry of files) {
+      // Only agent-facing delivered source text: skip omitted files, Yuhi's own
+      // `.yuhi/` internals, and generated document companions/placeholders.
+      if (entry.omitted) continue;
+      if (entry.relpath.startsWith(".yuhi/")) continue;
+      if (entry.document) continue;
+      let content: string;
+      try {
+        content = await readFile(path.join(outDir, ...entry.relpath.split("/")), "utf8");
+      } catch {
+        continue; // unreadable/binary delivered artifact — leave it exactly as delivered
+      }
+      const signals = compression.deriveMustKeepSignals(entry.relpath);
+      const supported = registry.find(entry.relpath, content) !== undefined;
+      // Only files a compressor SUPPORTS are parsed; everything else is measured for the
+      // budget as a plain full file (never compressed, never force-excluded if MustKeep).
+      const result = supported
+        ? await registry.compress({ relpath: entry.relpath, content })
+        : undefined;
+      const fullTokens = result ? result.originalTokens : compression.estimateTokens(content);
+      const parseFailed = result?.warnings.some(
+        (w) => w.code === "parse-failed" || w.code === "compressor-unavailable",
+      );
+      const input: BudgetFileInput = {
+        relpath: entry.relpath,
+        fullTokens,
+        ...(result?.representation === "compressed"
+          ? { compressedTokens: result.compressedTokens }
+          : {}),
+        ...(signals.entryPoint ? { entryPoint: true } : {}),
+        ...(signals.packageManifest ? { packageManifest: true } : {}),
+        ...(signals.configFile ? { configFile: true } : {}),
+        ...(signals.agentInstruction ? { agentInstruction: true } : {}),
+        ...(parseFailed ? { parseFailed: true } : {}),
+      };
+      candidates.push({
+        entry,
+        ...(result?.representation === "compressed" ? { compressedContent: result.content } : {}),
+        input,
+      });
+    }
+
+    const budget = compression.selectRepresentations(
+      candidates.map((c) => c.input),
+      { tokenBudget: options.tokenBudget ?? null, compressionThresholdTokens },
+    );
+    const decisionByPath = new Map(budget.decisions.map((d) => [d.relpath, d]));
+
+    // APPLY the decisions to the DELIVERED workspace only. The compressors and the
+    // budget selector are pure, so identical inputs + options yield identical delivered
+    // bytes and an identical summary.
+    for (const candidate of candidates) {
+      const decision = decisionByPath.get(candidate.input.relpath);
+      if (!decision) continue;
+      const deliveredAbs = path.join(outDir, ...candidate.entry.relpath.split("/"));
+      candidate.entry.contextRepresentation = decision.representation;
+      candidate.entry.compressionReason = decision.reason;
+      candidate.entry.originalTokens = decision.fullTokens;
+      candidate.entry.preparedTokens = decision.finalTokens;
+      if (decision.representation === "compressed" && candidate.compressedContent !== undefined) {
+        await writeMirrored(outDir, candidate.entry.relpath, candidate.compressedContent);
+        // Keep the legacy char/token aggregates truthful for the now-smaller file.
+        afterTokens = Math.max(0, afterTokens - candidate.input.fullTokens + decision.finalTokens);
+        candidate.entry.afterChars = candidate.compressedContent.length;
+      } else if (decision.representation === "excluded") {
+        // Dropped to fit the budget — remove the delivered copy and mark it omitted
+        // (kept local). MustKeep files are never excluded by the selector, so this can
+        // only ever drop a non-essential, compressible source file.
+        await rm(deliveredAbs, { force: true });
+        afterTokens = Math.max(0, afterTokens - candidate.input.fullTokens);
+        candidate.entry.omitted = true;
+        candidate.entry.status = "skipped";
+        candidate.entry.action = "local-only";
+        candidate.entry.transmission = "blocked";
+        candidate.entry.outcome = "excluded-by-policy";
+        candidate.entry.transformed = false;
+        candidate.entry.afterChars = 0;
+        filesExcluded += 1;
+      }
+    }
+
+    compressionReport = {
+      originalTokens: budget.summary.originalTokens,
+      preparedTokens: budget.summary.preparedTokens,
+      reductionPercent: budget.summary.reductionPercent,
+      fullFiles: budget.summary.fullFiles,
+      compressedFiles: budget.summary.compressedFiles,
+      excludedFiles: budget.summary.excludedFiles,
+      compressionReductionTokens: budget.summary.compressionReductionTokens,
+      exclusionReductionTokens: budget.summary.exclusionReductionTokens,
+      targetBudget: budget.summary.targetBudget,
+      actualTokens: budget.summary.actualTokens,
+      status: budget.summary.status,
+      ...(budget.summary.budgetReason !== undefined
+        ? { budgetReason: budget.summary.budgetReason }
+        : {}),
+      warnings: budget.summary.warnings,
+      files: budget.decisions.map((d) => ({
+        relpath: d.relpath,
+        representation: d.representation,
+        reason: d.reason,
+        originalTokens: d.fullTokens,
+        preparedTokens: d.finalTokens,
+      })),
+    };
+  }
+
   // ===== MANDATORY FINAL-ARTIFACT SECURITY GATE =====
   // Re-open EVERY delivered CSV/TXT/XLSX from disk — AFTER every write, rename and
   // fallback — and scan the ACTUAL bytes for raw identifier values taken from the
@@ -2408,6 +2602,7 @@ export async function prepareWorkspace(
     // The RESOLVED effective Safety Mode this run was prepared with (not the raw input).
     // Consumed by freshness checks: selecting a different mode makes the run stale.
     safetyMode,
+    ...(compressionReport ? { compression: compressionReport } : {}),
     files: files.map((f) => {
       // Decisions are keyed by the ORIGINAL path; a pseudonymized entry must look up
       // its decision by originalRelpath, not the Claude-facing name.
@@ -2431,6 +2626,10 @@ export async function prepareWorkspace(
         ...(f.transformations !== undefined ? { transformations: f.transformations } : {}),
         ...(f.maskedValues !== undefined ? { maskedValues: f.maskedValues } : {}),
         ...(f.transformed !== undefined ? { transformed: f.transformed } : {}),
+        ...(f.contextRepresentation ? { contextRepresentation: f.contextRepresentation } : {}),
+        ...(f.compressionReason ? { compressionReason: f.compressionReason } : {}),
+        ...(f.originalTokens !== undefined ? { originalTokens: f.originalTokens } : {}),
+        ...(f.preparedTokens !== undefined ? { preparedTokens: f.preparedTokens } : {}),
         ...(f.document ? { document: f.document } : {}),
         ...(decision !== undefined
           ? (() => {
@@ -2597,6 +2796,7 @@ export async function prepareWorkspace(
     decisions: plan.evaluation.decisions,
     sourceModified: originalSourceFilesModified,
     safetyMode,
+    ...(compressionReport ? { compression: compressionReport } : {}),
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,
