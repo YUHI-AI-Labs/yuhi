@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
   oversizePassThroughReason,
-  PDF_INSPECTION_LIMIT_BYTES,
   MAX_INMEMORY_TRANSFORM_BYTES,
   prepareWorkspace,
 } from "./prepare-workspace.js";
+import { PDF_INSPECTION_LIMIT_BYTES } from "./document-artifact.js";
 
 const MB = 1024 * 1024;
 

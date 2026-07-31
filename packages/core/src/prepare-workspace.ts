@@ -2,6 +2,7 @@ import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, 
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { isSafelyYuhiManaged, writeWorkspaceMarker } from "./workspace-marker.js";
+import { buildDocumentArtifact, PDF_INSPECTION_LIMIT_BYTES, OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES, type DocumentSourceType } from "./document-artifact.js";
 import { availableParallelism, totalmem } from "node:os";
 import { homedir, platform } from "node:os";
 import path from "node:path";
@@ -31,7 +32,7 @@ import {
   type DocumentInspector,
   type StudentAliasContext,
 } from "@yuhi/shared";
-import { runDetectors, redactText } from "@yuhi/scanner";
+import { runDetectors, redactText, PdfDocumentInspector } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
 import { runLocalPreparation } from "./route-executor.js";
@@ -44,8 +45,6 @@ const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "s
  * There is deliberately NO single all-format 2 MB gate: text and spreadsheets are
  * de-identified regardless of size.
  */
-/** PDFs are inspected/OCR'd/summarized up to this size; larger ones pass through. */
-export const PDF_INSPECTION_LIMIT_BYTES = 64 * 1024 * 1024;
 /**
  * Ceiling for loading a NON-PDF file fully into memory to inspect/transform. Text and
  * XLSX are de-identified up to this size (no longer skipped at 2 MB); beyond it a file
@@ -54,6 +53,21 @@ export const PDF_INSPECTION_LIMIT_BYTES = 64 * 1024 * 1024;
  * follow-up; the limit is detected and reported, never silently mislabeled.)
  */
 export const MAX_INMEMORY_TRANSFORM_BYTES = 128 * 1024 * 1024;
+
+/**
+ * Document formats whose ORIGINAL binary must never be delivered to the agent — a
+ * sanitized Markdown companion (or a safe placeholder) is delivered instead. Detected
+ * by extension so ZIP-based Office files (classified "binary") are still caught.
+ */
+function documentSourceType(relpath: string): DocumentSourceType | undefined {
+  const ext = relpath.slice(relpath.lastIndexOf(".")).toLowerCase();
+  if (ext === ".pdf") return "pdf";
+  if (ext === ".docx") return "docx";
+  if (ext === ".docm") return "docm";
+  if (ext === ".pptx") return "pptx";
+  if (ext === ".pptm") return "pptm";
+  return undefined;
+}
 
 /** Human MB rounding for messages. */
 function mbLabel(bytes: number): string {
@@ -136,6 +150,36 @@ export interface PreparedFileEntry {
   maskedValues?: number;
   /** True only when an included Prepared Workspace file differs byte-for-byte from source. */
   transformed?: boolean;
+  /**
+   * Document-processing record when this entry is a sanitized companion / placeholder
+   * for a PDF/DOCX/PPTX original that was NOT shared with the agent. `relpath` is the
+   * delivered companion; `originalRelpath` is the source document (manifest-only).
+   */
+  document?: {
+    sourceType: DocumentSourceType;
+    sourceSize: number;
+    extractionMethod: string;
+    extractionStatus: "extracted" | "unsupported" | "failed" | "skipped-oversize";
+    deliveredArtifactType:
+      | "sanitized-pdf-companion"
+      | "sanitized-docx-companion"
+      | "sanitized-pptx-companion"
+      | "safe-placeholder"
+      | "none";
+    /** ALWAYS false for PDF/DOCX/DOCM/PPTX/PPTM — the original never reaches the agent. */
+    originalSharedWithAgent: boolean;
+    redactionCount: number;
+    residualNameRisk: boolean;
+    macroDetected: boolean;
+    embeddedObjectCount: number;
+    imageCount: number;
+    hiddenContentDetected: boolean;
+    extractedParagraphCount: number;
+    extractedTableCount: number;
+    extractedSlideCount: number;
+    extractedNotesCount: number;
+    finalArtifactScanStatus?: "clean" | "identifier-warning" | "credential-removed";
+  };
   /**
    * Result of the mandatory FINAL-ARTIFACT rescan: the delivered file was reopened
    * from disk and its actual bytes scanned. `true` = no source identifier survived;
@@ -967,6 +1011,28 @@ export async function prepareWorkspace(
     return { status: "created", summaryRelpath };
   };
 
+  // Local PDF text extractor for building sanitized companions in the fast phase.
+  // Falls back to a placeholder when pdftotext/OCR are unavailable or produce no text.
+  const pdfInspector = options.documentInspector ?? new PdfDocumentInspector();
+  const extractPdfText = async (
+    absPath: string,
+  ): Promise<{ text: string; method: "pdf-text" | "ocr" | "none"; pageCount?: number }> => {
+    let text = "";
+    try {
+      const result = await pdfInspector.inspect({ relpath: path.basename(absPath), absPath }, (t) => {
+        text = t;
+      });
+      return {
+        text,
+        method: result.extractionMethod,
+        ...(result.pageCount !== undefined ? { pageCount: result.pageCount } : {}),
+      };
+    } catch {
+      return { text: "", method: "none" };
+    }
+  };
+  let documentsWithoutOriginal = 0;
+
   let decisionsProcessed = 0;
   for (const decision of plan.evaluation.decisions) {
     if (signal?.aborted) throw new DOMException("prepareWorkspace aborted", "AbortError");
@@ -988,6 +1054,83 @@ export async function prepareWorkspace(
         omitted: true,
       });
       decisionsProcessed += 1;
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+      continue;
+    }
+
+    // ===== DOCUMENT COMPANION ROUTING (PDF / DOCX / DOCM / PPTX / PPTM) =====
+    // The ORIGINAL document binary is NEVER placed in the Prepared Workspace. Yuhi
+    // extracts the text locally, sanitizes it, and delivers a Markdown companion (or a
+    // safe placeholder when extraction is impossible / oversized / macro-only). The
+    // original stays in the source workspace, untouched. Runs AFTER the explicit
+    // block/credential/local-only handling above (those `continue` earlier), so a
+    // hard-blocked document never reaches here — size never overrides a security block.
+    const docType = info ? documentSourceType(relpath) : undefined;
+    if (info && docType && !info.flags.isSymlink) {
+      const artifact = await buildDocumentArtifact({
+        sourceType: docType,
+        absPath: info.absPath,
+        sizeBytes: info.size,
+        readBuffer: () => readFile(info.absPath),
+        extractPdfText,
+      });
+      const companionRelpath = `${relpath}.md`; // identifier tokens de-identified by the rename pass
+      await writeMirrored(outDir, companionRelpath, artifact.markdown);
+      provenance.push({ relpath: companionRelpath, source: relpath, action: "prepare-locally" });
+      documentsWithoutOriginal += 1;
+      if (artifact.kind === "companion") sensitiveMasked += artifact.redactionCount > 0 ? 1 : 0;
+      else unsupportedOrUnverifiedFiles += 1;
+      const deliveredArtifactType =
+        artifact.kind === "companion"
+          ? (`sanitized-${docType === "docm" ? "docx" : docType === "pptm" ? "pptx" : docType}-companion` as const)
+          : ("safe-placeholder" as const);
+      const before = tokenEstimate(String(info.size));
+      const after = tokenEstimate(artifact.markdown);
+      beforeTokens += before.tokens;
+      afterTokens += after.tokens;
+      approx = approx || after.approx;
+      files.push({
+        relpath: companionRelpath,
+        originalRelpath: relpath,
+        action: "prepare-locally",
+        status: "ok",
+        outcome: artifact.kind === "companion" ? "included-transformed" : "included-unverified",
+        transmission: "approved",
+        beforeChars: info.size,
+        afterChars: artifact.markdown.length,
+        transformed: artifact.kind === "companion",
+        transformations: artifact.kind === "companion" ? ["summarized"] : [],
+        maskedValues: artifact.redactionCount,
+        document: {
+          sourceType: docType,
+          sourceSize: info.size,
+          extractionMethod: artifact.extractionMethod,
+          extractionStatus: artifact.extractionStatus,
+          deliveredArtifactType,
+          originalSharedWithAgent: false,
+          redactionCount: artifact.redactionCount,
+          residualNameRisk: artifact.residualNameRisk,
+          macroDetected: artifact.macroDetected,
+          embeddedObjectCount: artifact.embeddedObjectCount,
+          imageCount: artifact.imageCount,
+          hiddenContentDetected: artifact.hiddenContentDetected,
+          extractedParagraphCount: artifact.extractedParagraphCount,
+          extractedTableCount: artifact.extractedTableCount,
+          extractedSlideCount: artifact.extractedSlideCount,
+          extractedNotesCount: artifact.extractedNotesCount,
+        },
+        ...(artifact.warnings.length ? { error: artifact.warnings.join(" ") } : {}),
+        ...(artifact.kind === "placeholder"
+          ? { limitation: "transformation-unavailable" as const }
+          : {}),
+      });
+      progress(
+        `Document ${relpath}: delivered ${artifact.kind === "companion" ? "sanitized companion" : "safe placeholder"}; original kept local.`,
+      );
+      decisionsProcessed += 1;
+      if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
+        progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
+      }
       detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
       continue;
     }
@@ -1822,6 +1965,52 @@ export async function prepareWorkspace(
     }
   }
 
+  // ===== FINAL GATE for GENERATED DOCUMENT ARTIFACTS (companions / placeholders) =====
+  // Re-open each delivered document companion/placeholder from disk and scan the actual
+  // bytes for surviving CREDENTIALS. If one is found the artifact is replaced with a
+  // safe stub (never delivering the secret) and recorded honestly. Personal identifiers
+  // are already redacted by the companion builder and disclosed as residual risk.
+  for (const entry of files) {
+    if (entry.omitted || !entry.document) continue;
+    const deliveredAbs = path.join(outDir, ...entry.relpath.split("/"));
+    try {
+      const text = await readFile(deliveredAbs, "utf8");
+      const credential = runDetectors(text, {
+        entropyThreshold: plan.context.config.scan.entropy_threshold,
+        keywords: plan.context.config.scan.keywords,
+        relpath: entry.relpath,
+      }).some(
+        (finding) =>
+          (finding.severity === "high" || finding.severity === "critical") &&
+          findingCategory(finding.detector) === "credential",
+      );
+      if (credential) {
+        const stub = [
+          "# Document companion withheld",
+          "",
+          "Yuhi generated a companion for this document but its final scan detected a",
+          "credential-like value, so the companion was NOT shared with the agent.",
+          "",
+          `- Source type: ${entry.document.sourceType}`,
+          "- Original file shared with agent: no",
+          "- Companion shared with agent: no (credential detected)",
+          "",
+        ].join("\n");
+        await writeMirrored(outDir, entry.relpath, stub);
+        entry.document.finalArtifactScanStatus = "credential-removed";
+        entry.document.deliveredArtifactType = "safe-placeholder";
+        entry.outcome = "included-unverified";
+        entry.transformed = false;
+        entry.error = "A credential survived into the generated companion; it was withheld.";
+      } else {
+        entry.document.finalArtifactScanStatus =
+          entry.document.residualNameRisk ? "identifier-warning" : "clean";
+      }
+    } catch {
+      entry.document.finalArtifactScanStatus = "identifier-warning";
+    }
+  }
+
   extractedDocuments.clear();
   detail("context", "Generating local context", documentIndex.length, documentIndex.length);
   if (documentIndex.length === 0) {
@@ -2118,6 +2307,7 @@ export async function prepareWorkspace(
         ...(f.transformations !== undefined ? { transformations: f.transformations } : {}),
         ...(f.maskedValues !== undefined ? { maskedValues: f.maskedValues } : {}),
         ...(f.transformed !== undefined ? { transformed: f.transformed } : {}),
+        ...(f.document ? { document: f.document } : {}),
         ...(decision !== undefined
           ? (() => {
               const findingCategoryCounts: Record<string, number> = {};
