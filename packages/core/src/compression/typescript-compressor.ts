@@ -3,8 +3,10 @@
  *
  * Produces a deterministic, body-omitted, syntactically-recognizable view of a
  * source file: imports, exports, declarations, and signatures are kept (with their
- * leading doc comments); function / method / constructor / accessor bodies are
- * replaced by `{ /* ... *\/ }`. Everything is derived from the syntax tree only.
+ * leading doc comments); function / method / constructor / accessor / block-body
+ * arrow-function bodies are replaced by `{ /* ... *\/ }`. Expression-body arrows
+ * (`x => x * 2`, `() => ({ ... })`, `() => <div/>`) are kept FULL so config and JSX
+ * structure survive. Everything is derived from the syntax tree only.
  *
  * Guarantees:
  *   - Deterministic: same input -> byte-identical output (source order, no clocks).
@@ -382,6 +384,15 @@ function bodyToOmit(rt: TsModule, node: ts.Node): ts.Block | undefined {
     rt.isSetAccessorDeclaration(node)
   ) {
     return node.body && rt.isBlock(node.body) ? node.body : undefined;
+  }
+  // Arrow functions carry an implementation only when the body is a `{ ... }` block.
+  // Expression-body arrows (`x => x * 2`, `() => ({ ... })`, `() => <div/>`) have no
+  // block to omit — returning undefined keeps them (and any config/JSX they return) FULL.
+  // Because `collectBodySpans` does not descend once a body is collapsed, collapsing an
+  // outer arrow's block naturally suppresses inner arrows; and when the outer arrow has an
+  // expression body (not collapsed) we still descend and collapse an inner block-body arrow.
+  if (rt.isArrowFunction(node)) {
+    return rt.isBlock(node.body) ? node.body : undefined;
   }
   return undefined;
 }

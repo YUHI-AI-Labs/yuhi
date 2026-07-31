@@ -374,3 +374,215 @@ describe("determinism", () => {
     expect(JSON.stringify(a.symbols)).toBe(JSON.stringify(b.symbols));
   });
 });
+
+describe("arrow-function block-body compression", () => {
+  // A block body large enough that omitting it beats the compression header cost.
+  const bigBody = [
+    "  const ARROW_BODY_MARKER_ONE = input + input;",
+    "  const ARROW_BODY_MARKER_TWO = ARROW_BODY_MARKER_ONE * 3;",
+    "  const ARROW_BODY_MARKER_THREE = ARROW_BODY_MARKER_TWO - ARROW_BODY_MARKER_ONE;",
+    "  return ARROW_BODY_MARKER_THREE + ARROW_BODY_MARKER_ONE + ARROW_BODY_MARKER_TWO;",
+  ].join("\n");
+
+  it("1. compresses a top-level block-body arrow", async () => {
+    const src = `const fn = (input: number) => {\n${bigBody}\n};\n`;
+    const result = await compressTs("fn.ts", src);
+    expect(result.representation).toBe("compressed");
+    expect(result.content).toContain("const fn = (input: number) =>");
+    expect(result.content).toContain("{ /* ... */ }");
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+    expect(result.compressedTokens).toBeLessThan(result.originalTokens);
+  });
+
+  it("2. compresses an exported async block-body arrow", async () => {
+    const src =
+      `export const load = async (input: number): Promise<number> => {\n${bigBody}\n};\n`;
+    const result = await compressTs("load.ts", src);
+    expect(result.representation).toBe("compressed");
+    expect(result.content).toContain(
+      "export const load = async (input: number): Promise<number> =>",
+    );
+    expect(result.content).toContain("{ /* ... */ }");
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+  });
+
+  it("3. preserves typed params and return type in the kept signature", async () => {
+    const src =
+      `export const compute = (a: string, b: number): Record<string, number> => {\n${bigBody}\n};\n`;
+    const result = await compressTs("compute.ts", src);
+    expect(result.content).toContain(
+      "export const compute = (a: string, b: number): Record<string, number> =>",
+    );
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+  });
+
+  it("4. preserves a generic arrow signature", async () => {
+    const src =
+      `export const identity = <T, U extends T>(value: T, other: U): [T, U] => {\n${bigBody}\n};\n`;
+    const result = await compressTs("identity.ts", src);
+    expect(result.content).toContain(
+      "export const identity = <T, U extends T>(value: T, other: U): [T, U] =>",
+    );
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+  });
+
+  it("5. collapses only the outermost body for a nested block-body arrow", async () => {
+    const src = [
+      "export const outer = (input: number) => {",
+      "  const inner = (x: number) => {",
+      "    const NESTED_INNER_MARKER = x + x;",
+      "    return NESTED_INNER_MARKER;",
+      "  };",
+      "  return inner(input) + input + input + input;",
+      "};",
+    ].join("\n");
+    const result = await compressTs("nested.ts", src);
+    expect(result.content).toContain("export const outer = (input: number) =>");
+    // The outer body (and everything nested in it) is replaced by exactly one placeholder.
+    expect(result.content.match(/\{ \/\* \.\.\. \*\/ \}/g)?.length).toBe(1);
+    expect(result.content).not.toContain("const inner");
+    expect(result.content).not.toContain("NESTED_INNER_MARKER");
+  });
+
+  it("5b. collapses only the inner block when the outer arrow has an expression body", async () => {
+    const src = [
+      "export const factory = () => async (input: number) => {",
+      "  const FACTORY_INNER_MARKER = input + input;",
+      "  const FACTORY_INNER_TWO = FACTORY_INNER_MARKER * 2;",
+      "  return FACTORY_INNER_MARKER + FACTORY_INNER_TWO + input;",
+      "};",
+    ].join("\n");
+    const result = await compressTs("factory.ts", src);
+    // Outer expression body retained verbatim up to the inner arrow signature.
+    expect(result.content).toContain("export const factory = () => async (input: number) =>");
+    expect(result.content.match(/\{ \/\* \.\.\. \*\/ \}/g)?.length).toBe(1);
+    expect(result.content).not.toContain("FACTORY_INNER_MARKER");
+  });
+
+  it("6. keeps an expression-body arrow verbatim", async () => {
+    const src = "export const double = (x: number) => x * 2;\n";
+    const result = await compressTs("double.ts", src);
+    // Nothing to compress here; either kept full or unchanged expression body present.
+    expect(result.content).toContain("export const double = (x: number) => x * 2;");
+    expect(result.content).not.toContain("{ /* ... */ }");
+  });
+
+  it("7. keeps an object-literal-return arrow verbatim", async () => {
+    const src = "export const config = () => ({ retries: 3, timeout: 1000, backoff: true });\n";
+    const result = await compressTs("config.ts", src);
+    expect(result.content).toContain(
+      "export const config = () => ({ retries: 3, timeout: 1000, backoff: true });",
+    );
+    expect(result.content).not.toContain("{ /* ... */ }");
+  });
+
+  it("8. keeps a JSX-return arrow verbatim", async () => {
+    const src = "export const Component = () => <div className='hello'>Hello World</div>;\n";
+    const result = await ts.compress({ relpath: "Component.tsx", content: src });
+    expect(result.content).toContain(
+      "export const Component = () => <div className='hello'>Hello World</div>;",
+    );
+    expect(result.content).not.toContain("{ /* ... */ }");
+  });
+
+  it("9. compresses a block-body arrow inside a conditional", async () => {
+    const src = [
+      "export const pick = (cond: boolean) =>",
+      "  cond",
+      "    ? async () => {",
+      "        const COND_LEFT_MARKER = 1 + 1;",
+      "        return COND_LEFT_MARKER + COND_LEFT_MARKER;",
+      "      }",
+      "    : async () => {",
+      "        const COND_RIGHT_MARKER = 2 + 2;",
+      "        return COND_RIGHT_MARKER + COND_RIGHT_MARKER;",
+      "      };",
+    ].join("\n");
+    const result = await compressTs("pick.ts", src);
+    // Outer arrow has an expression (conditional) body, so both inner block arrows collapse.
+    expect(result.content.match(/\{ \/\* \.\.\. \*\/ \}/g)?.length).toBe(2);
+    expect(result.content).not.toContain("COND_LEFT_MARKER");
+    expect(result.content).not.toContain("COND_RIGHT_MARKER");
+    expect(result.content).toContain("? async () => { /* ... */ }");
+    expect(result.content).toContain(": async () => { /* ... */ }");
+  });
+
+  it("10. compresses an arrow assigned to an object property", async () => {
+    const src = [
+      "export const handlers = {",
+      "  onClick: (input: number) => {",
+      `${bigBody}`,
+      "  },",
+      "};",
+    ].join("\n");
+    const result = await compressTs("handlers.ts", src);
+    expect(result.content).toContain("onClick: (input: number) =>");
+    expect(result.content).toContain("{ /* ... */ }");
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+  });
+
+  it("11. compresses a class-field arrow", async () => {
+    const src = [
+      "export class Service {",
+      "  handler = (input: number) => {",
+      `${bigBody}`,
+      "  };",
+      "}",
+    ].join("\n");
+    const result = await compressTs("service.ts", src);
+    expect(result.content).toContain("handler = (input: number) =>");
+    expect(result.content).toContain("{ /* ... */ }");
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+  });
+
+  it("12. does not extract or alter pseudo-arrows inside strings/comments", async () => {
+    const src = [
+      "// const ghost = (x) => { return GHOST_COMMENT_BODY; };",
+      "export const template = `",
+      "  const ghostInString = (y) => { return GHOST_STRING_BODY; };",
+      "`;",
+      `export const real = (input: number) => {\n${bigBody}\n};`,
+    ].join("\n");
+    const result = await compressTs("ghost-arrow.ts", src);
+    // The real arrow is compressed.
+    expect(result.content).not.toContain("ARROW_BODY_MARKER");
+    // The string/comment pseudo-arrows are preserved verbatim, not collapsed.
+    expect(result.content).toContain("const ghostInString = (y) => { return GHOST_STRING_BODY; };");
+    expect(result.content).toContain("const ghost = (x) => { return GHOST_COMMENT_BODY; };");
+  });
+
+  it("13. keeps the whole file FULL on a syntax error", async () => {
+    const src = "export const broken = (input => { return ;";
+    const result = await compressTs("broken-arrow.ts", src);
+    expect(result.representation).toBe("full");
+    expect(result.content).toBe(src);
+    expect(result.warnings.map((w) => w.code)).toContain("parse-failed");
+  });
+
+  it("14. produces byte-identical output for the same input twice (determinism)", async () => {
+    const src = `export const fn = (input: number) => {\n${bigBody}\n};\n`;
+    const a = await compressTs("det-arrow.ts", src);
+    const b = await compressTs("det-arrow.ts", src);
+    expect(a.content).toBe(b.content);
+    expect(a.compressedTokens).toBe(b.compressedTokens);
+  });
+
+  it("15. registry keeps FULL when the compressed result is not smaller", async () => {
+    // A tiny block body: replacing it plus adding the header does not reduce tokens.
+    const src = "const t = (x: number) => { return x; };\n";
+    const { CompressorRegistry } = await import("./registry.js");
+    const registry = new CompressorRegistry().register(new TypeScriptCompressor());
+    const result = await registry.compress({ relpath: "tiny.ts", content: src });
+    expect(result.representation).toBe("full");
+    expect(result.content).toBe(src);
+  });
+
+  it("16. does not mutate the input content (pure text-in-text-out)", async () => {
+    const original = `export const fn = (input: number) => {\n${bigBody}\n};\n`;
+    const input = { relpath: "pure.ts", content: original };
+    const before = input.content;
+    await ts.compress(input);
+    expect(input.content).toBe(before);
+    expect(before).toBe(original);
+  });
+});
