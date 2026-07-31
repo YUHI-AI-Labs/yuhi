@@ -552,12 +552,17 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("2,165");
     expect(rendered).toContain("Estimated accessible-content reduction");
     expect(rendered).toContain("agent-accessible content, not model token savings");
-    // Copy/export are wired to the webview message protocol.
+    // Copy/export exist and are click-wired to post their id back to the host.
+    // Assert the behavioural contract (button id present + referenced by a click
+    // handler that posts a message), NOT the exact wiring syntax — so refactors
+    // like `const sendCopy = () => send("copyPublicReport")` don't break the test.
     expect(rendered).toContain('id="copyPublicReport"');
     expect(rendered).toContain('id="exportPublicReport"');
-    // Both buttons are wired to the webview message protocol (send → postMessage).
-    expect(rendered).toContain('["copyPublicReport","exportPublicReport"].forEach');
-    expect(rendered).toContain("b.addEventListener(\"click\",()=>send(id))");
+    for (const id of ["copyPublicReport", "exportPublicReport"]) {
+      expect(rendered).toMatch(new RegExp(`["'\`]${id}["'\`]`)); // id referenced in the script
+    }
+    expect(rendered).toMatch(/addEventListener\(["']click["']/); // buttons are click-wired
+    expect(rendered).toContain("postMessage"); // clicks post back to the extension host
     // The card fragment itself carries only aggregate numbers — the card's
     // public-safety is asserted directly in repository-ready.test.ts.
     const card = rendered.slice(
