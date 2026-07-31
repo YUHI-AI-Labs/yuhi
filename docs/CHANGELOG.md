@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While Yuhi is in `0.x`, minor releases may include breaking changes; these will
 be called out explicitly.
 
+## [0.3.3]
+
+Safe, lightweight, explainable context preparation.
+
+- **Context Compression (opt-in)** for TS/JS: keep imports/exports/signatures/decorators/
+  doc-comments, drop implementation bodies — including **arrow-function block bodies**
+  (`const fn = () => { … }`), while keeping expression-body arrows that return objects/JSX.
+  Unsupported languages and any parse failure fall back to the full file; the original
+  source is never modified. Every file's outcome carries a stable, machine-readable reason.
+- **Faster, never-stuck preparation**: the local summarization model is off the launch
+  path, so Yuhi Mode opens quickly even on large repos or with a slow/absent local model.
+  Files needing local summarization to be de-identified are kept local (not shared).
+  Per-file timeout, cancellation, and a circuit breaker prevent one slow file from
+  stalling the run.
+- **VS Code**: choose Safety Mode / Context Compression / Token Budget before the first
+  prepare; a version badge shows the installed build. Kept-local document placeholders
+  report an accurate size and a specific reason.
+
 ## [0.3.0] — released
 
 Repository Ready: a shareable, **public-safe** Repository Report (terminal / Markdown / JSON /
