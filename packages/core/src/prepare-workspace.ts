@@ -1,25 +1,34 @@
-import { lstat, mkdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 import {
   processorId,
   createStudentAliasContext,
+  decodeTextBuffer,
   classifyStudentRecordTable,
   parseDelimitedTable,
+  splitTablePreamble,
   tabularDirectIdentifierValues,
+  inspectXlsxRecords,
+  pseudonymizeXlsxRecords,
+  xlsxContainsAnyValue,
+  xlsxCellText,
   tokenEstimate,
   reductionReport,
   type Action,
   type LocalModelProvider,
+  type ParsedDelimitedTable,
   type ReductionMode,
   type ReductionReport,
   type ProcessorSpec,
   type TransmissionState,
   type FileDecision,
   type FileInfo,
+  type DocumentInspector,
+  type StudentAliasContext,
 } from "@yuhi/shared";
 import { runDetectors } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
@@ -29,10 +38,42 @@ import { runLocalPreparation } from "./route-executor.js";
 /** The pipeline every summarize target is run through (local model → mask → gate). */
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
 
+/**
+ * Only files at or below this size are inspected/transformed. Above it (the same
+ * 2 MB bound the scanner uses), a file is stream-copied verbatim and delivered with
+ * a warning — never scanned, OCR'd, or transformed — so one large file (a big PDF,
+ * export, or log) can never hang or OOM the run. A deliberate speed/reliability
+ * trade-off: large files reach Claude Code as-is, flagged "review before sharing".
+ */
+const MAX_INSPECTED_FILE_BYTES = 2 * 1024 * 1024;
+
+function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext {
+  return {
+    identifierToEntity: new Map(context.identifierToEntity),
+    entityIdentifiers: new Map(
+      [...context.entityIdentifiers].map(([entity, identifiers]) => [
+        entity,
+        new Map(identifiers),
+      ]),
+    ),
+    nextEntity: context.nextEntity,
+    attributeTokens: new Map(context.attributeTokens),
+  };
+}
+
 /** One prepared (or skipped) file, as recorded in the manifest and the report. */
 export interface PreparedFileEntry {
-  /** Repo-relative POSIX path (mirrored in the prepared output tree). */
+  /**
+   * Repo-relative POSIX path as presented in the prepared output tree. When the
+   * original path contained a direct identifier, this is the PSEUDONYMIZED path
+   * (what Claude sees); the original is kept only in `originalRelpath` below.
+   */
   relpath: string;
+  /**
+   * The original repo-relative path when `relpath` was pseudonymized to strip an
+   * identifier from the filename. Manifest-only mapping — never surfaced to Claude.
+   */
+  originalRelpath?: string;
   /** The policy action that routed this file. */
   action: Action;
   /** Preparation outcome; "skipped" for verbatim/omitted files that weren't run. */
@@ -40,6 +81,7 @@ export interface PreparedFileEntry {
   outcome?:
     | "included-unchanged"
     | "included-transformed"
+    | "included-unverified"
     | "excluded-by-user"
     | "excluded-by-policy"
     | "local-only-unverified"
@@ -61,6 +103,13 @@ export interface PreparedFileEntry {
   maskedValues?: number;
   /** True only when an included Prepared Workspace file differs byte-for-byte from source. */
   transformed?: boolean;
+  /**
+   * Result of the mandatory FINAL-ARTIFACT rescan: the delivered file was reopened
+   * from disk and its actual bytes scanned. `true` = no source identifier survived;
+   * `false` = identifiers (or credentials) were found in the delivered file, so it
+   * must never be reported as de-identified/verified. `undefined` = not applicable.
+   */
+  finalRescanVerified?: boolean;
   /** Privacy-safe aggregate finding categories persisted in manifest schema v2. */
   findingCategoryCounts?: Record<string, number>;
   /** Privacy-safe aggregate finding severities persisted in manifest schema v2. */
@@ -76,12 +125,115 @@ export interface PreparedFileEntry {
     transformerAvailable: boolean;
     postTransformVerifierAvailable: boolean;
     contentVerified: boolean;
+    documentStatus?: "inspected" | "unavailable" | "failed";
+    extractionMethod?: "pdf-text" | "ocr" | "none";
+    pageCount?: number;
+    warnings?: string[];
+    summaryStatus?: "created" | "rejected" | "unavailable";
+    summaryRelpath?: string;
   };
   limitation?:
     | "inspection-unavailable"
     | "inspection-incomplete"
     | "transformation-unavailable"
     | "verification-failed";
+  /** Why a transform failed — set on degraded-included AND kept-local files. Never
+   *  silently "safety": an unknown internal error is categorized `unknown`, not a
+   *  safety decision, and its exact reason is preserved in `error`. */
+  failureCategory?:
+    | "structural"
+    | "conflicting-identifiers"
+    | "reidentification-risk"
+    | "unresolved-secret"
+    | "unknown";
+}
+
+/** Classify a transformation-failure reason. Structural failures are eligible for
+ *  degraded inclusion; the rest are concrete safety reasons or an explicit unknown. */
+export function classifyTransformFailure(
+  reason: string,
+): "structural" | "conflicting-identifiers" | "reidentification-risk" | "unknown" {
+  if (
+    reason.startsWith("Malformed delimited table:") ||
+    reason.startsWith("Workbook contains no supported identifiable table") ||
+    reason.startsWith("Unsupported")
+  ) {
+    return "structural";
+  }
+  if (
+    reason.includes("Conflicting direct identifier") ||
+    reason.includes("could not preserve entity uniqueness")
+  ) {
+    return "conflicting-identifiers";
+  }
+  if (
+    reason.includes("changed a non-identifier value") ||
+    reason.includes("failed privacy verification") ||
+    reason.includes("failed Yuhi privacy rescan")
+  ) {
+    return "reidentification-risk";
+  }
+  return "unknown";
+}
+
+/**
+ * Parse a delimited table, transparently recovering the table region when strict
+ * parsing fails only because of a leading metadata preamble. Mirrors the shared
+ * transform's preamble handling so verification/metrics see the same rows.
+ */
+function parseTabularRegion(text: string): ParsedDelimitedTable {
+  try {
+    return parseDelimitedTable(text);
+  } catch (error) {
+    if (error instanceof Error && /inconsistent column count/.test(error.message)) {
+      const stripped = splitTablePreamble(text);
+      if (stripped) return stripped.table;
+    }
+    throw error;
+  }
+}
+
+/** Handoff section listing every file NOT copied into the workspace, with its reason. */
+function describeUnavailableFiles(files: PreparedFileEntry[]): string[] {
+  const kept = files.filter((f) => f.omitted);
+  if (kept.length === 0) return [];
+  return [
+    "## Files unavailable to the agent",
+    "",
+    "These files were intentionally NOT copied into this Prepared Workspace. Do not try",
+    "to retrieve them from the original workspace or any external path — report the",
+    "required source as unavailable when needed.",
+    "",
+    ...kept.map((f) => {
+      const reason =
+        f.error ??
+        (f.action === "block"
+          ? "excluded by policy"
+          : ["local-only", "inject", "ask", "metadata-only"].includes(f.action)
+            ? "kept local by policy"
+            : "not included");
+      return `- \`${f.relpath}\` — kept local (${f.failureCategory ?? f.outcome ?? "policy"}): ${reason}`;
+    }),
+    "",
+  ];
+}
+
+/** Handoff section listing files that ARE available but could not be fully verified. */
+function describeUnverifiedFiles(files: PreparedFileEntry[]): string[] {
+  const unverified = files.filter((f) => f.outcome === "included-unverified" && !f.omitted);
+  if (unverified.length === 0) return [];
+  return [
+    "## Files included but not fully verified",
+    "",
+    "These files ARE available in the workspace, but Yuhi could not fully transform or",
+    "verify them. Review before sharing sensitive information.",
+    "",
+    ...unverified.map(
+      (f) =>
+        `- \`${f.relpath}\` — included with warning${f.failureCategory ? ` (${f.failureCategory})` : ""}${f.error ? `: ${f.error}` : ""}`,
+    ),
+    "",
+  ];
 }
 
 /** Maps each prepared output file back to its source path. */
@@ -121,12 +273,37 @@ export interface PrepareReport {
     unsupportedOrUnverifiedFiles?: number;
     restrictedUnresolvedFiles?: number;
     hasLimitations?: boolean;
+    pdfInspected?: number;
+    ocrProcessed?: number;
+    unverifiedDocuments?: number;
+    documentSummariesCreated?: number;
+    documentSummariesRejected?: number;
+    documentContextBeforeTokens?: number;
+    documentContextAfterTokens?: number;
+    textDocumentsInspected?: number;
+    agentHandoffCreated?: boolean;
+    localModelProvider?: string;
+    localModelName?: string;
+    localModelRequests?: number;
+    localModelSucceeded?: number;
+    localModelFailed?: number;
+    localModelInputChars?: number;
+    localModelOutputChars?: number;
+    localModelElapsedMs?: number;
+    localModelMaxConcurrency?: number;
+    localModelConfiguredParallelism?: number;
   };
 }
 
 export interface PrepareWorkspaceOptions {
   /** Local model provider used for the summarize-local step. */
   provider?: LocalModelProvider;
+  /** Lazily creates a provider only when a summarize-local step is reached. */
+  providerFactory?: () => LocalModelProvider;
+  /** Optional local document inspector override (primarily for embedding/tests). */
+  documentInspector?: DocumentInspector;
+  /** Include PDFs as pending and perform optional document intelligence after launch. */
+  deferDocumentInspection?: boolean;
   /** Loaded config (currently informational; budget.reduction_mode is a mode fallback). */
   config?: YuhiConfig;
   /** Reduction aggressiveness; falls back to config.budget.reduction_mode, else "balanced". */
@@ -135,6 +312,10 @@ export interface PrepareWorkspaceOptions {
   signal?: AbortSignal;
   /** Optional UI progress callback (safe-to-show messages only). */
   onProgress?: (msg: string) => void;
+  /** Structured, count-based progress for UI surfaces. Never contains file paths. */
+  onProgressDetail?: (event: PreparationProgressEvent) => void;
+  /** Override adaptive local-model request concurrency. */
+  localModelParallelism?: number;
   /** Optional caller-supplied ISO timestamp for a deterministic manifest.createdAt. */
   createdAt?: string;
   /** Agent id to route for (defaults to config default). */
@@ -150,6 +331,32 @@ export interface PrepareWorkspaceOptions {
 }
 
 export type PreparationCheckpoint = "workspace-created";
+
+export type PreparationProgressPhase =
+  | "discover"
+  | "scan"
+  | "prepare"
+  | "context"
+  | "verify";
+
+export interface PreparationProgressEvent {
+  phase: PreparationProgressPhase;
+  label: string;
+  current?: number;
+  total?: number;
+  elapsedSeconds: number;
+}
+
+/** Conservative local-model concurrency. A typical 16 GB Windows PC uses 2. */
+export function recommendedLocalModelParallelism(
+  memoryBytes = totalmem(),
+  logicalCpus = availableParallelism(),
+): number {
+  const gib = memoryBytes / (1024 ** 3);
+  if (gib < 14 || logicalCpus < 4) return 1;
+  if (gib < 28 || logicalCpus < 8) return 2;
+  return 3;
+}
 
 export type PrepareWorkspaceOutcome =
   | { kind: "success"; report: PrepareReport; launchAllowed: boolean }
@@ -185,6 +392,44 @@ function normalizedSourcePath(relpath: string): string {
     throw new Error(SOURCE_INTEGRITY_ERROR);
   }
   return normalized;
+}
+
+/**
+ * A path token is a direct identifier if it looks like a keyed ID (letter prefix
+ * + digits, e.g. `A000000`, `EMP12345`) or contains an email. Pure-digit tokens
+ * (dates like `20260715`, times like `110046`, counts) are intentionally NOT
+ * treated as identifiers, so useful non-identifying context in the name survives.
+ */
+function isIdentifierToken(token: string): boolean {
+  if (token.includes("@")) return true;
+  return /^[A-Za-z]{1,6}\d{3,}[A-Za-z0-9]*$/.test(token);
+}
+
+/**
+ * Replace direct-identifier tokens in each segment of a repo-relative path with a
+ * stable, non-reversible pseudonym (`ID-<hash>`), keeping directory structure,
+ * separators, dates, and the file extension intact. Deterministic within a
+ * workspace (same salt + token → same pseudonym), so a joinable identifier that
+ * appears in several filenames maps consistently. The reverse mapping is never
+ * derivable from the output — it lives only in the manifest.
+ */
+function pseudonymizeIdentifierPath(relpath: string, salt: string): string {
+  const token = (value: string): string =>
+    "ID-" + createHash("sha256").update(`${salt}:filename:${value}`).digest("hex").slice(0, 8);
+  const rewriteSegment = (segment: string): string =>
+    segment
+      // Split on separators but KEEP them, so the name reads the same minus the ID.
+      .split(/([-_.\s]+)/)
+      .map((part) => (isIdentifierToken(part) ? token(part) : part))
+      .join("");
+  const ext = path.posix.extname(relpath);
+  const withoutExt = ext ? relpath.slice(0, -ext.length) : relpath;
+  return (
+    withoutExt
+      .split("/")
+      .map((segment) => rewriteSegment(segment))
+      .join("/") + ext
+  );
 }
 
 function containedBy(root: string, candidate: string): boolean {
@@ -225,6 +470,30 @@ async function streamHashForIntegrity(absPath: string, signal?: AbortSignal): Pr
   });
 }
 
+/**
+ * OS-generated files that the operating system rewrites on its own schedule
+ * (Finder touches `.DS_Store` whenever a folder is viewed). They are never
+ * meaningful source content, and a preparation run can easily outlive one of
+ * their mutations — so they MUST be excluded from the source-integrity assertion,
+ * otherwise a benign `.DS_Store` change fails the entire preparation. This never
+ * relaxes integrity for real content; only OS junk is exempted.
+ */
+function isVolatileSourcePath(relpath: string): boolean {
+  const segments = relpath.split("/");
+  const base = segments[segments.length - 1] ?? "";
+  if (base === ".DS_Store" || base === "Thumbs.db" || base === "ehthumbs.db") return true;
+  if (base === "desktop.ini" || base === ".localized") return true;
+  if (base.startsWith("._")) return true; // AppleDouble resource forks
+  return segments.some(
+    (segment) =>
+      segment === ".Spotlight-V100" ||
+      segment === ".Trashes" ||
+      segment === ".fseventsd" ||
+      segment === ".TemporaryItems" ||
+      segment === "__MACOSX",
+  );
+}
+
 async function captureSourceIntegrity(
   root: string,
   files: FileInfo[],
@@ -244,6 +513,10 @@ async function captureSourceIntegrity(
         throw new DOMException("prepareWorkspace aborted", "AbortError");
       }
       const relpath = normalizedSourcePath(info.relpath);
+      // Skip OS-generated volatile files so their background churn (e.g. Finder
+      // rewriting `.DS_Store` mid-run) can never fail the whole preparation. Both
+      // the "before" and "after" passes skip identically, so the sets stay aligned.
+      if (isVolatileSourcePath(relpath)) return;
       if (snapshot.has(relpath)) throw new Error(SOURCE_INTEGRITY_ERROR);
       const absPath = path.resolve(root, ...relpath.split("/"));
       if (!containedBy(path.resolve(root), absPath) || path.resolve(info.absPath) !== absPath) {
@@ -298,17 +571,34 @@ async function captureSourceIntegrity(
   }
 }
 
+/**
+ * Fail-closed source-integrity assertion: any change to a NON-volatile source file
+ * between the before/after snapshots aborts the run (TOCTOU / symlink-swap / type
+ * confusion defense — see the "fail-closed source integrity" tests). Volatile
+ * OS-generated files (`.DS_Store`, …) are already excluded at capture time, so their
+ * background churn cannot reach this assertion.
+ */
+/** List the source paths that changed between the before/after snapshots (added,
+ *  removed, or content/identity change). Non-throwing — used both to fail closed and
+ *  to report WHICH files changed for diagnosis. */
+function listChangedIntegrity(
+  before: Map<string, SourceIntegrityEntry>,
+  after: Map<string, SourceIntegrityEntry>,
+): string[] {
+  const changed = new Set<string>();
+  for (const [relpath, expected] of before) {
+    const actual = after.get(relpath);
+    if (!actual || JSON.stringify(actual) !== JSON.stringify(expected)) changed.add(relpath);
+  }
+  for (const relpath of after.keys()) if (!before.has(relpath)) changed.add(relpath);
+  return [...changed];
+}
+
 function assertSameIntegrity(
   before: Map<string, SourceIntegrityEntry>,
   after: Map<string, SourceIntegrityEntry>,
 ): void {
-  if (before.size !== after.size) throw new Error(SOURCE_INTEGRITY_ERROR);
-  for (const [relpath, expected] of before) {
-    const actual = after.get(relpath);
-    if (!actual || JSON.stringify(actual) !== JSON.stringify(expected)) {
-      throw new Error(SOURCE_INTEGRITY_ERROR);
-    }
-  }
+  if (listChangedIntegrity(before, after).length > 0) throw new Error(SOURCE_INTEGRITY_ERROR);
 }
 
 function findingCategory(detector: string): string {
@@ -365,22 +655,86 @@ export async function prepareWorkspace(
   dir: string,
   options: PrepareWorkspaceOptions = {},
 ): Promise<PrepareReport> {
-  const { provider, config, mode, signal, onProgress, createdAt, agent } = options;
+  const { provider, providerFactory, config, mode, signal, onProgress, onProgressDetail, createdAt, agent } = options;
 
   const startedAt = Date.now();
   const progress = (stage: string): void => {
     const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
     onProgress?.(`${stage} · ${elapsedSeconds}s`);
   };
+  const detail = (
+    phase: PreparationProgressPhase,
+    label: string,
+    current?: number,
+    total?: number,
+  ): void => {
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    onProgressDetail?.({
+      phase,
+      label,
+      ...(current !== undefined ? { current } : {}),
+      ...(total !== undefined ? { total } : {}),
+      elapsedSeconds,
+    });
+  };
   progress("Discovering files");
+  detail("discover", "Discovering files");
+  const extractedDocuments = new Map<string, string>();
   const plan = await computePlan(dir, {
     ...(agent !== undefined ? { agent } : {}),
     interactive: false,
+    onDocumentText: (relpath, text) => extractedDocuments.set(relpath, text),
+    ...(options.documentInspector ? { documentInspector: options.documentInspector } : {}),
+    ...(options.deferDocumentInspection ? { deferDocumentInspection: true } : {}),
   });
   const root = plan.context.root;
   const salt = plan.context.policyHash;
   const effectiveMode: ReductionMode =
     mode ?? config?.budget?.reduction_mode ?? plan.context.config.budget?.reduction_mode ?? "balanced";
+  const localModelParallelism = Math.max(
+    1,
+    Math.floor(options.localModelParallelism ?? recommendedLocalModelParallelism()),
+  );
+  detail("discover", "Files discovered", plan.scan.files.length, plan.scan.files.length);
+  let localModelRequests = 0;
+  let localModelSucceeded = 0;
+  let localModelFailed = 0;
+  let localModelInputChars = 0;
+  let localModelOutputChars = 0;
+  let localModelElapsedMs = 0;
+  let localModelActiveRequests = 0;
+  let localModelMaxConcurrency = 0;
+  let baseProvider = provider;
+  let measuredProvider: LocalModelProvider | undefined;
+  const getMeasuredProvider = (): LocalModelProvider | undefined => {
+    baseProvider ??= providerFactory?.();
+    if (!baseProvider) return undefined;
+    if (measuredProvider) return measuredProvider;
+    const selectedProvider = baseProvider;
+    measuredProvider = {
+        ...selectedProvider,
+        async generate(prompt, generateOptions) {
+          localModelRequests += 1;
+          localModelInputChars += prompt.length;
+          localModelActiveRequests += 1;
+          localModelMaxConcurrency = Math.max(localModelMaxConcurrency, localModelActiveRequests);
+          const requestStarted = Date.now();
+          try {
+            const output = await selectedProvider.generate(prompt, generateOptions);
+            localModelSucceeded += 1;
+            localModelOutputChars += output.length;
+            return output;
+          } catch (error) {
+            localModelFailed += 1;
+            throw error;
+          } finally {
+            localModelElapsedMs += Date.now() - requestStarted;
+            localModelActiveRequests -= 1;
+          }
+        },
+      };
+    return measuredProvider;
+  };
 
   const runId = randomUUID();
   const managedBase = path.resolve(options.managedWorkspaceBase ?? managedWorkspaceBaseDir());
@@ -389,6 +743,7 @@ export async function prepareWorkspace(
   options.onCheckpoint?.("workspace-created");
   try {
   const infoByPath = new Map<string, FileInfo>(plan.scan.files.map((f) => [f.relpath, f]));
+  detail("scan", "Scanning sensitive information", 0, plan.scan.files.length);
   const sourceIntegrityBefore = await captureSourceIntegrity(root, plan.scan.files, {
     ...(signal !== undefined ? { signal } : {}),
     phase: "before",
@@ -397,12 +752,15 @@ export async function prepareWorkspace(
           onProgress: (message) => {
             const count = message.match(/before (\d+\/\d+)/)?.[1];
             progress(`Scanning sensitive information${count ? ` · ${count} files` : ""}`);
+            const matched = message.match(/before (\d+)\/(\d+)/);
+            if (matched) detail("scan", "Scanning sensitive information", Number(matched[1]), Number(matched[2]));
           },
         }
       : {}),
   });
   progress(`Scanning sensitive information · ${plan.scan.files.length} files`);
   progress(`Preparing safe copies · 0/${plan.evaluation.decisions.length} files`);
+  detail("prepare", "Preparing safe copies", 0, plan.evaluation.decisions.length);
 
   const files: PreparedFileEntry[] = [];
   const provenance: ProvenanceEntry[] = [];
@@ -412,7 +770,7 @@ export async function prepareWorkspace(
   let filesSummarized = 0;
   let filesExcluded = 0;
   let sensitiveMasked = 0;
-  const studentAliases = createStudentAliasContext();
+  let studentAliases = createStudentAliasContext();
   const explicitExclusions = new Set(options.excludeRelpaths ?? []);
   let identifierColumnsTransformed = 0;
   let analyticalColumnsPreserved = 0;
@@ -420,12 +778,100 @@ export async function prepareWorkspace(
   let malformedTables = 0;
   let unverifiedTransformations = 0;
   let unsupportedOrUnverifiedFiles = 0;
+  let filenamesPseudonymized = 0;
+  let finalIdentifierLeaks = 0;
+  let finalCredentialKeptLocal = 0;
   let restrictedUnresolvedFiles = 0;
+  let documentSummariesCreated = 0;
+  let documentSummariesRejected = 0;
+  let documentContextBeforeTokens = 0;
+  let documentContextAfterTokens = 0;
+  let textDocumentsInspected = 0;
+  const documentIndex: {
+    relpath: string;
+    summaryRelpath?: string;
+    method: "pdf-text" | "ocr" | "text";
+    pages?: number;
+    status: "created" | "rejected" | "unavailable" | "pending";
+  }[] = [];
+
+  const prepareContextSummary = async (
+    relpath: string,
+    extractedText: string | undefined,
+    method: "pdf-text" | "ocr" | "text",
+    pages?: number,
+  ): Promise<{ status: "created" | "rejected" | "unavailable"; summaryRelpath?: string } | undefined> => {
+    if (!extractedText) return undefined;
+
+    documentContextBeforeTokens += tokenEstimate(extractedText).tokens;
+    const metadata = {
+      relpath,
+      method,
+      ...(pages !== undefined ? { pages } : {}),
+    };
+    progress(`Generating local document context · ${documentIndex.length + 1}`);
+    const summaryProvider = getMeasuredProvider();
+    if (!summaryProvider) {
+      progress("Generating local context: skipped (no local model configured)");
+      documentIndex.push({ ...metadata, status: "unavailable" });
+      return { status: "unavailable" };
+    }
+
+    let prepared: Awaited<ReturnType<typeof runLocalPreparation>>;
+    try {
+      prepared = await runLocalPreparation(
+        extractedText,
+        ["summarize-local", "safety-check"],
+        {
+          provider: summaryProvider,
+          mode: effectiveMode,
+          localModelParallelism,
+          ...(signal !== undefined ? { signal } : {}),
+        },
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      documentSummariesRejected += 1;
+      documentIndex.push({ ...metadata, status: "rejected" });
+      return;
+    }
+    const stem = path.basename(relpath, path.extname(relpath))
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "document";
+    const suffix = createHash("sha256").update(relpath).digest("hex").slice(0, 8);
+    const summaryRelpath = `.yuhi/context/${stem}.${suffix}.summary.md`;
+    const markdown =
+      `# Document Summary\n\n${prepared.output.trim()}\n\n---\n\n` +
+      `Generated locally by Yuhi. The extracted source text was not stored.\n`;
+    const findings = runDetectors(markdown, {
+      entropyThreshold: plan.context.config.scan.entropy_threshold,
+      keywords: plan.context.config.scan.keywords,
+      relpath: summaryRelpath,
+    });
+    const personalDataPattern =
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|(?:\+\d{1,3}[- ]?)?(?:\(\d{2,4}\)[- ]?)?\d{2,4}[- ]\d{2,4}[- ]\d{3,4}|(?:氏名|full\s*name|address|住所)\s*[:：]/i;
+    const rejected =
+      prepared.status !== "ok" ||
+      prepared.transmission !== "approved" ||
+      findings.length > 0 ||
+      personalDataPattern.test(markdown);
+    if (rejected) {
+      documentSummariesRejected += 1;
+      documentIndex.push({ ...metadata, status: "rejected" });
+      return { status: "rejected" };
+    }
+    await writeMirrored(outDir, summaryRelpath, markdown);
+    documentSummariesCreated += 1;
+    documentContextAfterTokens += tokenEstimate(markdown).tokens;
+    documentIndex.push({ ...metadata, summaryRelpath, status: "created" });
+    return { status: "created", summaryRelpath };
+  };
 
   let decisionsProcessed = 0;
   for (const decision of plan.evaluation.decisions) {
     if (signal?.aborted) throw new DOMException("prepareWorkspace aborted", "AbortError");
 
+   try {
     const info = infoByPath.get(decision.relpath);
     const relpath = decision.relpath;
 
@@ -442,6 +888,48 @@ export async function prepareWorkspace(
         omitted: true,
       });
       decisionsProcessed += 1;
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+      continue;
+    }
+
+    // LARGE FILE (> 2 MB): pass through as-is WITH A WARNING — never inspected, OCR'd,
+    // or transformed. Only small files are checked. This bounds the work so one big
+    // file (a large PDF/export/log) can never hang or OOM the run, and — unlike the
+    // keep-local path below — the file is still DELIVERED (the user chose pass-through
+    // for large files). Explicit policy `block` and symlinks are handled below.
+    if (
+      info &&
+      !info.flags.isSymlink &&
+      decision.action !== "block" &&
+      info.size > MAX_INSPECTED_FILE_BYTES
+    ) {
+      await copyMirrored(outDir, relpath, info.absPath);
+      provenance.push({ relpath, source: relpath, action: "allow" });
+      unsupportedOrUnverifiedFiles += 1;
+      const approxTokens = Math.ceil(info.size / 4);
+      beforeTokens += approxTokens;
+      afterTokens += approxTokens;
+      approx = true;
+      const mb = info.size / 1_000_000;
+      files.push({
+        relpath,
+        action: "allow",
+        status: "ok",
+        outcome: "included-unverified",
+        transmission: "approved",
+        beforeChars: info.size,
+        afterChars: info.size,
+        transformed: false,
+        omitted: false,
+        limitation: "transformation-unavailable",
+        failureCategory: "structural",
+        error: `File is ${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB — over the 2 MB inspection limit; passed through as-is with a warning (not scanned or transformed). Review before sharing.`,
+      });
+      decisionsProcessed += 1;
+      if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
+        progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
+      }
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
       continue;
     }
 
@@ -509,21 +997,201 @@ export async function prepareWorkspace(
       continue;
     }
 
-    const content = await readFile(info.absPath, "utf8");
+    if (
+      info.inspection.fileType === "xlsx" &&
+      decision.action === "prepare-locally"
+    ) {
+      progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
+      const sourceBytes = await readFile(info.absPath);
+      const fileAliases = cloneStudentAliases(studentAliases);
+      try {
+        const transformed = await pseudonymizeXlsxRecords(sourceBytes, fileAliases);
+        const verified = await inspectXlsxRecords(transformed.output);
+        const rawPresent = await xlsxContainsAnyValue(
+          transformed.output,
+          new Set(transformed.rawIdentifiers),
+        );
+        // Best-effort, never all-or-nothing: the workbook PARSED, so its identifier
+        // columns are pseudonymized in `transformed.output`. ALWAYS deliver that —
+        // never fall back to the 100% raw original just because a stray non-identifier
+        // cell still echoes a value or a sheet count differs. The mandatory final
+        // gate reopens this exact file and has the last word on whether it may be
+        // reported de-identified; anything it still finds is surfaced honestly there.
+        const fullyClean =
+          !rawPresent &&
+          verified.directIdentifierColumns > 0 &&
+          verified.sensitiveSheets === transformed.sensitiveSheets;
+        await writeMirrored(outDir, relpath, transformed.output);
+        studentAliases = fileAliases;
+        provenance.push({ relpath, source: relpath, action: decision.action });
+        const before = tokenEstimate(sourceBytes.toString("base64"));
+        const after = tokenEstimate(transformed.output.toString("base64"));
+        beforeTokens += before.tokens;
+        afterTokens += after.tokens;
+        approx = true;
+        identifierColumnsTransformed += transformed.directIdentifierColumns;
+        analyticalColumnsPreserved += transformed.analyticalColumnsPreserved;
+        transformedSensitiveTables += transformed.sensitiveSheets;
+        sensitiveMasked += transformed.valuesReplaced > 0 ? 1 : 0;
+        if (!fullyClean) unsupportedOrUnverifiedFiles += 1;
+        files.push({
+          relpath,
+          action: decision.action,
+          status: "ok",
+          outcome: fullyClean ? "included-transformed" : "included-unverified",
+          transmission: "approved",
+          beforeChars: sourceBytes.length,
+          afterChars: transformed.output.length,
+          transformations: ["pseudonymized", "masked"],
+          maskedValues: transformed.valuesReplaced,
+          transformed: true,
+          ...(fullyClean
+            ? {}
+            : {
+                limitation: "transformation-unavailable" as const,
+                failureCategory: "reidentification-risk" as const,
+                error:
+                  "Workbook pseudonymized best-effort; a value could not be fully separated — see the final privacy rescan.",
+              }),
+        });
+      } catch (error) {
+        // Preserve the EXACT reason (never a generic message) and classify it.
+        const reason =
+          error instanceof Error && error.message
+            ? error.message
+            : "Workbook could not be transformed.";
+        const category = classifyTransformFailure(reason);
+        // The workbook could not be safely transformed. Excel is always delivered:
+        // include the ORIGINAL (structure preserved) with a clear unverified warning and
+        // the exact reason + category, rather than dropping it. (A workbook cannot be
+        // re-scanned for secrets once parsing failed; the unverified warning is the
+        // signal to review before sharing.)
+        await writeMirrored(outDir, relpath, sourceBytes);
+        provenance.push({ relpath, source: relpath, action: decision.action });
+        const tokens = tokenEstimate(sourceBytes.toString("base64"));
+        beforeTokens += tokens.tokens;
+        afterTokens += tokens.tokens;
+        approx = true;
+        unsupportedOrUnverifiedFiles += 1;
+        files.push({
+          relpath,
+          action: "allow",
+          status: "ok",
+          outcome: "included-unverified",
+          transmission: "approved",
+          beforeChars: sourceBytes.length,
+          afterChars: sourceBytes.length,
+          transformations: [],
+          transformed: false,
+          omitted: false,
+          error: reason,
+          limitation: "transformation-unavailable",
+          failureCategory: category,
+        });
+      }
+      decisionsProcessed += 1;
+      continue;
+    }
+
+    if (
+      decision.action === "allow" &&
+      (info.inspection.fileType === "pdf" ||
+        (!info.inspection.contentVerified && info.inspection.fileType === "binary"))
+    ) {
+      const sourceBytes = await readFile(info.absPath);
+      await writeMirrored(outDir, relpath, sourceBytes);
+      provenance.push({ relpath, source: relpath, action: decision.action });
+      if (!info.inspection.contentVerified) unsupportedOrUnverifiedFiles += 1;
+      const tokens = tokenEstimate(sourceBytes.toString("base64"));
+      beforeTokens += tokens.tokens;
+      afterTokens += tokens.tokens;
+      approx = true;
+      const extractedText = extractedDocuments.get(relpath);
+      extractedDocuments.delete(relpath);
+      const summary =
+        info.inspection.fileType === "pdf" &&
+        info.documentInspection?.status === "inspected" &&
+        info.documentInspection.extractionMethod !== "none"
+          ? await prepareContextSummary(
+              relpath,
+              extractedText,
+              info.documentInspection.extractionMethod,
+              info.documentInspection.pageCount,
+            )
+          : undefined;
+      if (options.deferDocumentInspection && info.inspection.fileType === "pdf") {
+        documentIndex.push({ relpath, method: "pdf-text", status: "pending" });
+      }
+      files.push({
+        relpath,
+        action: decision.action,
+        status: "ok",
+        outcome: info.inspection.contentVerified ? "included-unchanged" : "included-unverified",
+        transmission: "approved",
+        beforeChars: sourceBytes.length,
+        afterChars: sourceBytes.length,
+        transformed: false,
+        inspection: {
+          fileType: info.inspection.fileType,
+          inspectionAttempted: info.inspection.inspectionAttempted,
+          inspectionSucceeded: info.inspection.inspectionSucceeded,
+          parserAvailable: info.inspection.parserAvailable,
+          scannerAvailable: info.inspection.scannerAvailable,
+          transformerAvailable: false,
+          postTransformVerifierAvailable: info.inspection.verifierAvailable,
+          contentVerified: info.inspection.contentVerified,
+          ...(info.documentInspection
+            ? {
+                documentStatus: info.documentInspection.status,
+                extractionMethod: info.documentInspection.extractionMethod,
+                ...(info.documentInspection.pageCount !== undefined
+                  ? { pageCount: info.documentInspection.pageCount }
+                  : {}),
+                warnings: info.documentInspection.warnings,
+                ...(summary ? { summaryStatus: summary.status } : {}),
+                ...(summary?.summaryRelpath
+                  ? { summaryRelpath: summary.summaryRelpath }
+                  : {}),
+              }
+            : {}),
+        },
+        ...(!info.inspection.contentVerified ? { limitation: "inspection-unavailable" as const } : {}),
+      });
+      decisionsProcessed += 1;
+      continue;
+    }
+
+    // Detect Shift-JIS/CP932 (common for Japanese CSV/Excel exports) so identifier
+    // columns are recognized and de-identified instead of passing through as
+    // mojibake that still reveals real names to a correctly-decoding reader.
+    const content = decodeTextBuffer(await readFile(info.absPath));
 
     if (isSummarizeTarget(decision) || isRedactTarget(decision)) {
       progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
-      const pipeline =
+      const rawPipeline =
         decision.processors && decision.processors.length > 0
           ? decision.processors
           : isRedactTarget(decision)
             ? (["pseudonymize", "safety-check"] satisfies ProcessorSpec[])
             : PREPARE_PIPELINE;
+      // Phase 1 (the fast blocking phase that gates Yuhi Mode) MUST NOT invoke the
+      // local model. Ollama summarization is optional Phase-3 enrichment, so drop
+      // summarize-local here; de-identification (pseudonymize/safety-check) still
+      // runs. The document summary is produced later in the background, if enabled.
+      const pipeline = options.deferDocumentInspection
+        ? rawPipeline.filter((processor) => processorId(processor) !== "summarize-local")
+        : rawPipeline;
+      const needsLocalModel = pipeline.some(
+        (processor) => processorId(processor) === "summarize-local",
+      );
+      const pipelineProvider = needsLocalModel ? getMeasuredProvider() : undefined;
+      const fileAliases = cloneStudentAliases(studentAliases);
       const prep = await runLocalPreparation(content, pipeline, {
-        ...(provider !== undefined ? { provider } : {}),
+        ...(pipelineProvider !== undefined ? { provider: pipelineProvider } : {}),
         salt,
         mode: effectiveMode,
-        studentAliases,
+        localModelParallelism,
+        studentAliases: fileAliases,
         ...(signal !== undefined ? { signal } : {}),
       });
 
@@ -539,14 +1207,22 @@ export async function prepareWorkspace(
       };
 
       if (prep.status === "ok" && prep.transmission === "approved") {
-        let transformedSafe = true;
-        try {
-          const inputTable = parseDelimitedTable(content);
-          const outputTable = parseDelimitedTable(prep.output);
-          const pseudonymizedTable = prep.audits.some(
-            (audit) => audit.processorId === "pseudonymize-student-records",
-          );
-          if (pseudonymizedTable) {
+        // INSTRUMENTED VERIFICATION: run each stage independently and record the
+        // first failure, so it is always visible WHERE a file leaves the happy path.
+        // `leak` failures mean a raw identifier survived (a real safety problem);
+        // everything else is a "could-not-fully-verify" mismatch, not a leak.
+        const pseudonymizedTable = prep.audits.some(
+          (audit) => audit.processorId === "pseudonymize-student-records",
+        );
+        const stages: Array<{ stage: string; pass: boolean; leak: boolean }> = [];
+        // Table verification only applies when a TABULAR pseudonymizer ran. A
+        // summarized/text output is prose, not a table — parsing it as one is
+        // expected to fail and must NOT count as a verification failure.
+        if (pseudonymizedTable) {
+          try {
+            const inputTable = parseTabularRegion(content);
+            const outputTable = parseTabularRegion(prep.output);
+            stages.push({ stage: "parse", pass: true, leak: false });
             const inputClassification = classifyStudentRecordTable(inputTable.rows);
             const directIndexes = new Set(inputClassification.directIdentifierIndexes);
             const rawIdentifiers = new Set(tabularDirectIdentifierValues(content));
@@ -558,47 +1234,53 @@ export async function prepareWorkspace(
             const nonNumericIdentifiers = [...rawIdentifiers].filter(
               (value) => !/^[+-]?(?:\d+|\d*\.\d+)$/.test(value),
             );
-            transformedSafe =
-              transformedSafe &&
-              outputTable.rows.length === inputTable.rows.length &&
-              outputTable.rows.every((row) => row.length === inputTable.rows[0]!.length) &&
+            stages.push({ stage: "column-detection", pass: directIndexes.size > 0, leak: false });
+            stages.push({ stage: "row-count", pass: outputTable.rows.length === inputTable.rows.length, leak: false });
+            stages.push({ stage: "column-width", pass: outputTable.rows.every((row) => row.length === inputTable.rows[0]!.length), leak: false });
+            stages.push({ stage: "no-raw-identifier-in-output", pass:
               outputDirectValues.every((value) => !rawIdentifiers.has(value)) &&
-              nonNumericIdentifiers.every((value) =>
-                !outputTable.rows.some((row) => row.some((cell) => cell.includes(value)))
-              ) &&
+              nonNumericIdentifiers.every((value) => !outputTable.rows.some((row) => row.some((cell) => cell.includes(value)))),
+              leak: true });
+            stages.push({ stage: "non-identifier-unchanged", pass:
               inputTable.rows.slice(1).every((row, rowIndex) =>
                 row.every((value, columnIndex) =>
-                  directIndexes.has(columnIndex) ||
-                  outputTable.rows[rowIndex + 1]![columnIndex] === value
-                )
-              );
+                  directIndexes.has(columnIndex) || outputTable.rows[rowIndex + 1]![columnIndex] === value)),
+              leak: false });
+            stages.push({ stage: "output-has-identifier-columns", pass: classifyStudentRecordTable(outputTable.rows).directIdentifierColumns > 0, leak: false });
+          } catch {
+            stages.push({ stage: "parse", pass: false, leak: false });
           }
-          const outputClassification = classifyStudentRecordTable(outputTable.rows);
-          if (pseudonymizedTable) {
-            transformedSafe =
-              transformedSafe &&
-              outputClassification.directIdentifierColumns > 0;
-          }
-        } catch {
-          const tabularTransformation = prep.audits.some(
-            (audit) =>
-              audit.processorId === "pseudonymize-student-records" ||
-              audit.processorId === "aggregate-student-records",
-          );
-          if (tabularTransformation) transformedSafe = false;
         }
         const transformedFindings = runDetectors(prep.output, {
           entropyThreshold: plan.context.config.scan.entropy_threshold,
           keywords: plan.context.config.scan.keywords,
           relpath,
         });
-        const unresolvedTransformedFindings = transformedFindings.filter(
+        stages.push({
+          stage: "privacy-rescan",
+          pass: transformedFindings.every(
+            (finding) => finding.detector.startsWith("tabular-") ||
+              (finding.severity !== "high" && finding.severity !== "critical"),
+          ),
+          leak: true,
+        });
+        const firstFail = stages.find((s) => !s.pass);
+        // A surviving CREDENTIAL/secret is the one thing that must never be delivered,
+        // even best-effort — raw unsafe material is kept on this computer (per policy).
+        // Everything else (residual quasi-identifiers, structural mismatch) is a
+        // re-identification risk, not a live secret, and is delivered with a warning.
+        const survivingCredential = transformedFindings.some(
           (finding) =>
             !finding.detector.startsWith("tabular-") &&
-            (finding.severity === "high" || finding.severity === "critical"),
+            (finding.severity === "high" || finding.severity === "critical") &&
+            findingCategory(finding.detector) === "credential",
         );
-        transformedSafe = transformedSafe && unresolvedTransformedFindings.length === 0;
-        if (!transformedSafe) {
+        // Always visible: log every stage PASS/FAIL for this file.
+        progress(
+          `Verify ${relpath}: ${stages.map((s) => `${s.stage}=${s.pass ? "PASS" : "FAIL"}`).join(" ")}` +
+            (survivingCredential ? " [credential-kept-local]" : ""),
+        );
+        if (firstFail && survivingCredential) {
           entry.status = "error";
           entry.action = "local-only";
           entry.transmission = "blocked";
@@ -606,13 +1288,42 @@ export async function prepareWorkspace(
           entry.error = "Transformed output failed Yuhi privacy rescan.";
           entry.outcome = "local-only-transformation-failed";
           entry.limitation = "verification-failed";
+          entry.failureCategory = "unresolved-secret";
           unverifiedTransformations += 1;
           filesExcluded += 1;
           files.push(entry);
           decisionsProcessed += 1;
           continue;
         }
+        if (firstFail) {
+          // RELAXED outcome (never keep-local, never give up the whole file): deliver
+          // the best-effort TRANSFORMED output — already de-identified as far as it
+          // got — with an honest warning + the exact stage that failed. Only an
+          // unresolved credential (handled above) is ever kept local.
+          await writeMirrored(outDir, relpath, prep.output);
+          studentAliases = fileAliases;
+          provenance.push({ relpath, source: relpath, action: decision.action });
+          const tok = tokenEstimate(prep.output);
+          beforeTokens += tokenEstimate(content).tokens;
+          afterTokens += tok.tokens;
+          approx = approx || tok.approx;
+          entry.status = "ok";
+          entry.action = "allow";
+          entry.transmission = "approved";
+          entry.omitted = false;
+          entry.transformed = true;
+          entry.outcome = "included-unverified";
+          entry.limitation = "transformation-unavailable";
+          entry.failureCategory = firstFail.leak ? "reidentification-risk" : "structural";
+          entry.error = `Transformed, but verification did not fully pass (first failure: ${firstFail.stage}). Delivered best-effort with a warning.`;
+          unverifiedTransformations += 1;
+          unsupportedOrUnverifiedFiles += 1;
+          files.push(entry);
+          decisionsProcessed += 1;
+          continue;
+        }
         await writeMirrored(outDir, relpath, prep.output);
+        studentAliases = fileAliases;
         provenance.push({ relpath, source: relpath, action: decision.action });
         const before = tokenEstimate(content);
         const after = tokenEstimate(prep.output);
@@ -621,11 +1332,8 @@ export async function prepareWorkspace(
         approx = approx || before.approx || after.approx;
         const summarized = prep.audits.some((audit) => audit.processorId === "summarize-local");
         const aggregated = prep.audits.some((audit) => audit.processorId === "aggregate-student-records");
-        const pseudonymizedTable = prep.audits.some(
-          (audit) => audit.processorId === "pseudonymize-student-records",
-        );
         if (pseudonymizedTable) {
-          const table = parseDelimitedTable(content);
+          const table = parseTabularRegion(content);
           const classification = classifyStudentRecordTable(table.rows);
           identifierColumnsTransformed += classification.directIdentifierColumns;
           analyticalColumnsPreserved +=
@@ -633,32 +1341,149 @@ export async function prepareWorkspace(
           transformedSensitiveTables += 1;
         }
         if (summarized) filesSummarized += 1;
-        const masked = prep.audits
-          .filter((a) => a.processorId === "pseudonymize" || a.processorId === "pseudonymize-student-records")
+        const pseudonymized = prep.audits
+          .filter((a) =>
+            a.processorId === "pseudonymize" ||
+            a.processorId === "pseudonymize-student-records"
+          )
           .reduce((n, a) => n + a.itemsChanged, 0);
+        const sanitized = prep.audits
+          .filter((a) =>
+            a.processorId === "sanitize-environment" ||
+            a.processorId === "sanitize-credentials"
+          )
+          .reduce((n, a) => n + a.itemsChanged, 0);
+        const masked = pseudonymized + sanitized;
         entry.transformations = [
           ...(summarized ? (["summarized"] as const) : []),
           ...(aggregated ? (["aggregated"] as const) : []),
-          ...(masked > 0 ? (["pseudonymized", "masked"] as const) : []),
+          ...(pseudonymized > 0 ? (["pseudonymized"] as const) : []),
+          ...(masked > 0 ? (["masked"] as const) : []),
         ];
         entry.maskedValues = masked;
         entry.transformed = prep.output !== content;
         if (masked > 0) sensitiveMasked += 1;
       } else {
-        // Blocked or errored → never written to the prepared tree.
-        entry.status = "error";
-        entry.action = "local-only";
-        entry.transmission = "blocked";
-        entry.error ??= "Safe local transformation could not be verified.";
-        entry.outcome = entry.error.startsWith("Malformed delimited table:")
-          ? "malformed"
-          : "local-only-transformation-failed";
-        if (entry.error.startsWith("Malformed delimited table:")) malformedTables += 1;
+        // Structured/local transformation could not be verified. Do NOT silently drop
+        // the file (degraded inclusion): if the original carries no unresolved secret
+        // or credential, include it verbatim with a clear "transformation unavailable"
+        // warning so Claude still receives the data. Only keep it LOCAL when a real
+        // secret/credential blocks safe inclusion.
+        const failureReason = entry.error ?? "Safe local transformation could not be verified.";
+        const category = classifyTransformFailure(failureReason);
+        if (failureReason.startsWith("Malformed delimited table:")) malformedTables += 1;
         else unverifiedTransformations += 1;
-        entry.omitted = true;
-        filesExcluded += 1;
+        const originalFindings = runDetectors(content, {
+          entropyThreshold: plan.context.config.scan.entropy_threshold,
+          keywords: plan.context.config.scan.keywords,
+          relpath,
+        });
+        const blockingSecret = originalFindings.some(
+          (finding) =>
+            (finding.severity === "high" || finding.severity === "critical") &&
+            findingCategory(finding.detector) === "credential",
+        );
+        // PROMISE: recognized tabular/text (csv/tsv/txt/xlsx) is ALWAYS delivered —
+        // transformed if we can, otherwise the ORIGINAL is included with an explicit
+        // "not de-identified — review before sharing" warning. It is never silently
+        // excluded. The ONLY thing kept local is an unresolved SECRET/credential,
+        // which must never leave the machine.
+        if (!blockingSecret) {
+          // Include the original verbatim, clearly marked unverified with the reason
+          // and the concrete failure category (so the UI can explain WHY it wasn't
+          // transformed: structural / conflicting-identifiers / reidentification-risk).
+          await writeMirrored(outDir, relpath, content);
+          provenance.push({ relpath, source: relpath, action: decision.action });
+          const tok = tokenEstimate(content);
+          beforeTokens += tok.tokens;
+          afterTokens += tok.tokens;
+          approx = approx || tok.approx;
+          entry.status = "ok";
+          entry.action = "allow";
+          entry.transmission = "approved";
+          entry.omitted = false;
+          entry.transformed = false;
+          entry.outcome = "included-unverified";
+          entry.limitation = "transformation-unavailable";
+          entry.failureCategory = category;
+          entry.error = failureReason;
+          unsupportedOrUnverifiedFiles += 1;
+        } else {
+          // Unresolved credential/secret: the one case we keep local (never sent).
+          entry.status = "error";
+          entry.action = "local-only";
+          entry.transmission = "blocked";
+          entry.error = failureReason;
+          entry.outcome = "local-only-transformation-failed";
+          entry.limitation = "verification-failed";
+          entry.failureCategory = "unresolved-secret";
+          entry.omitted = true;
+          filesExcluded += 1;
+        }
       }
       files.push(entry);
+      decisionsProcessed += 1;
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+      if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
+        progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
+      }
+      continue;
+    }
+
+    // Safety net (file-level, NEVER a launch blocker): a file routed to verbatim
+    // send that still carries ANY unresolved high/critical finding is excluded by
+    // recommendation (kept on this computer) instead of being sent raw. This
+    // guarantees no included file holds an unresolved high-risk finding, so a
+    // file-level risk can never force a workspace-level launch block. Launch
+    // continues with the remaining safe files; the user may include these later.
+    const highRiskFinding = decision.findings.find(
+      (finding) => finding.severity === "high" || finding.severity === "critical",
+    );
+    if (highRiskFinding) {
+      const isCredential = findingCategory(highRiskFinding.detector) === "credential";
+      const tok = tokenEstimate(content);
+      beforeTokens += tok.tokens;
+      approx = approx || tok.approx;
+      if (isCredential) {
+        // The ONE thing kept local: an unresolved credential/secret must never be sent.
+        files.push({
+          relpath,
+          action: "local-only",
+          status: "error",
+          outcome: "local-only-transformation-failed",
+          transmission: "blocked",
+          beforeChars: content.length,
+          afterChars: 0,
+          transformed: false,
+          omitted: true,
+          limitation: "verification-failed",
+          failureCategory: "unresolved-secret",
+          error: "Unresolved credential detected; kept on this computer for your protection.",
+        });
+        filesExcluded += 1;
+      } else {
+        // ALWAYS-PASS promise: a non-credential high-risk file (that reached the
+        // verbatim route without a safe transform) is DELIVERED as the original with
+        // an explicit warning — marked included-unverified so it never blocks launch.
+        await writeMirrored(outDir, relpath, content);
+        provenance.push({ relpath, source: relpath, action: decision.action });
+        afterTokens += tok.tokens;
+        files.push({
+          relpath,
+          action: "allow",
+          status: "ok",
+          outcome: "included-unverified",
+          transmission: "approved",
+          beforeChars: content.length,
+          afterChars: content.length,
+          transformed: false,
+          omitted: false,
+          limitation: "transformation-unavailable",
+          failureCategory: "reidentification-risk",
+          error: "High-risk content could not be de-identified; included with a warning.",
+        });
+        unsupportedOrUnverifiedFiles += 1;
+      }
       decisionsProcessed += 1;
       if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
         progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
@@ -667,7 +1492,36 @@ export async function prepareWorkspace(
     }
 
     // `allow` (and any remaining sendable route): copy verbatim.
+    // INSTRUMENTATION: if a tabular text file reaches the raw passthrough, report the
+    // classifier's verdict so a "normal CSV delivered raw" is never silent. When the
+    // classifier DOES see direct-identifier columns here, routing and detection
+    // disagree — the log names the exact columns so the gap is diagnosable, not guessed.
+    if (/\.(?:csv|tsv)$/i.test(relpath)) {
+      try {
+        const table = parseTabularRegion(content);
+        const classification = classifyStudentRecordTable(table.rows);
+        if (classification.directIdentifierColumns > 0) {
+          progress(
+            `Route ${relpath}: passed RAW but classifier found ${classification.directIdentifierColumns} identifier column(s) — routing/detection disagree.`,
+          );
+        } else {
+          progress(`Route ${relpath}: passed raw · no direct-identifier columns detected.`);
+        }
+      } catch {
+        progress(`Route ${relpath}: passed raw · not parseable as a table.`);
+      }
+    }
     await writeMirrored(outDir, relpath, content);
+    // Small text files are already concise; summarize only document-sized inputs.
+    if (
+      !options.deferDocumentInspection &&
+      decision.action === "allow" &&
+      /\.(?:md|txt)$/i.test(relpath) &&
+      content.length >= 2_000
+    ) {
+      textDocumentsInspected += 1;
+      await prepareContextSummary(relpath, content, "text");
+    }
     provenance.push({ relpath, source: relpath, action: decision.action });
     const tok = tokenEstimate(content);
     beforeTokens += tok.tokens;
@@ -687,6 +1541,240 @@ export async function prepareWorkspace(
     if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
       progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
     }
+   } catch (error) {
+      // PER-FILE ISOLATION (never stop): one file that cannot be read or processed
+      // — it vanished, was moved, is locked, or is corrupt — must never fail the
+      // whole preparation. Skip it with a non-sensitive note and keep going. In a
+      // large, active workspace some files inevitably change mid-run.
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      progress(`Skipped ${decision.relpath}: could not be read or processed during preparation.`);
+      filesExcluded += 1;
+      files.push({
+        relpath: decision.relpath,
+        action: "local-only",
+        status: "error",
+        outcome: "local-only-unsupported",
+        transmission: "blocked",
+        beforeChars: 0,
+        afterChars: 0,
+        omitted: true,
+        error:
+          "File could not be read or processed during preparation (it may have changed or been removed); skipped.",
+      });
+      decisionsProcessed += 1;
+    }
+  }
+
+  // PROBLEM 1 — filename de-identification: a path like `20260715-110046-A000000.csv`
+  // leaks a direct identifier before Claude even opens the file. Rewrite delivered
+  // paths so identifier tokens become stable pseudonyms; the reverse mapping is kept
+  // ONLY in the manifest (originalRelpath + provenance.source), never in a name Claude
+  // sees. Runs before context/index/manifest generation so those reference the safe
+  // names. `.yuhi/` internal files are left untouched.
+  {
+    const claimed = new Set(files.map((file) => file.relpath));
+    const renamed = new Map<string, string>();
+    for (const entry of files) {
+      if (entry.omitted || entry.relpath.startsWith(".yuhi/")) continue;
+      const proposed = pseudonymizeIdentifierPath(entry.relpath, salt);
+      if (proposed === entry.relpath) continue;
+      // Resolve any collision with an existing/claimed name deterministically.
+      let candidate = proposed;
+      if (claimed.has(candidate)) {
+        const ext = path.posix.extname(proposed);
+        const stem = ext ? proposed.slice(0, -ext.length) : proposed;
+        let n = 2;
+        while (claimed.has(candidate)) candidate = `${stem}-${n++}${ext}`;
+      }
+      try {
+        await renameMirrored(outDir, entry.relpath, candidate);
+      } catch {
+        // If the on-disk rename fails, keep the original name rather than losing the
+        // file — de-identifying the name is best-effort, never a launch blocker.
+        continue;
+      }
+      claimed.delete(entry.relpath);
+      claimed.add(candidate);
+      renamed.set(entry.relpath, candidate);
+      entry.originalRelpath = entry.relpath;
+      entry.relpath = candidate;
+      filenamesPseudonymized += 1;
+    }
+    for (const record of provenance) {
+      const mapped = renamed.get(record.relpath);
+      if (mapped) record.relpath = mapped; // source stays = original (the mapping record)
+    }
+  }
+
+  // ===== MANDATORY FINAL-ARTIFACT SECURITY GATE =====
+  // Re-open EVERY delivered CSV/TXT/XLSX from disk — AFTER every write, rename and
+  // fallback — and scan the ACTUAL bytes for raw identifier values taken from the
+  // SOURCE, plus surviving credentials. No earlier detector result, in-memory
+  // buffer, or transform flag is trusted here. This gate is the single source of
+  // truth for the safety report: a file may be reported de-identified ONLY if its
+  // final bytes on disk contain no source identifier.
+  progress("Final privacy gate: rescanning delivered files");
+  for (const entry of files) {
+    if (entry.omitted) continue;
+    if (!/\.(?:csv|tsv|txt|xlsx)$/i.test(entry.relpath)) continue;
+    // Large files were passed through as-is (never inspected) — do not reopen them to
+    // rescan here, which would re-introduce the very hang the pass-through avoids.
+    if (entry.beforeChars > MAX_INSPECTED_FILE_BYTES) {
+      entry.finalRescanVerified = false;
+      continue;
+    }
+    try {
+    const sourceRel = entry.originalRelpath ?? entry.relpath;
+    const sourceAbs = path.join(root, ...sourceRel.split("/"));
+    const deliveredAbs = path.join(outDir, ...entry.relpath.split("/"));
+    let sourceValues: string[] = [];
+    let deliveredText = "";
+    try {
+      if (/\.xlsx$/i.test(entry.relpath)) {
+        const srcBuf = await readFile(sourceAbs);
+        try {
+          sourceValues = (await pseudonymizeXlsxRecords(srcBuf, createStudentAliasContext()))
+            .rawIdentifiers;
+        } catch {
+          sourceValues = [];
+        }
+        deliveredText = await xlsxCellText(await readFile(deliveredAbs));
+      } else {
+        sourceValues = tabularDirectIdentifierValues(await readFile(sourceAbs, "utf8"));
+        deliveredText = await readFile(deliveredAbs, "utf8");
+      }
+    } catch {
+      // Could not reopen/parse the delivered artifact to verify it → cannot claim
+      // safety. Mark unverified honestly rather than silently passing.
+      entry.finalRescanVerified = false;
+      if (entry.outcome === "included-transformed") entry.outcome = "included-unverified";
+      continue;
+    }
+    // Distinguish distinctive identifiers from ambiguous numbers to avoid false
+    // positives: a quiz score of "100" is not a leak just because a student id is
+    // also "100". Non-numeric values (names, alphanumeric IDs, emails) are flagged
+    // wherever they appear; purely-numeric values only when they survive in an
+    // actual identifier COLUMN of the delivered table (never an analytical cell).
+    const numericRe = /^[+-]?\d+(?:\.\d+)?$/;
+    const candidates = sourceValues.filter((value) => value.length >= 2);
+    const surviving = candidates.filter((value) => !numericRe.test(value) && deliveredText.includes(value));
+    const numericValues = candidates.filter((value) => numericRe.test(value));
+    if (numericValues.length > 0 && !/\.xlsx$/i.test(entry.relpath)) {
+      try {
+        const table = parseTabularRegion(deliveredText);
+        const idIdx = classifyStudentRecordTable(table.rows).directIdentifierIndexes;
+        const idCells = new Set(
+          table.rows.slice(1).flatMap((row) => idIdx.map((i) => (row[i] ?? "").trim())),
+        );
+        for (const value of numericValues) if (idCells.has(value)) surviving.push(value);
+      } catch {
+        /* unparseable delivered table → rely on the non-numeric check above */
+      }
+    }
+    const credentialFindings = runDetectors(deliveredText, {
+      entropyThreshold: plan.context.config.scan.entropy_threshold,
+      keywords: plan.context.config.scan.keywords,
+      relpath: entry.relpath,
+    }).filter(
+      (finding) =>
+        (finding.severity === "high" || finding.severity === "critical") &&
+        findingCategory(finding.detector) === "credential",
+    );
+    progress(
+      `Final rescan ${entry.relpath}: ${
+        surviving.length ? `SURVIVING ${surviving.length} identifier(s)` : "clean"
+      }${credentialFindings.length ? " +credential" : ""}`,
+    );
+    if (credentialFindings.length > 0) {
+      // A credential survived into the delivered file → keep local. Remove it from
+      // the workspace so Claude never receives raw secret material.
+      await rm(deliveredAbs, { force: true });
+      entry.omitted = true;
+      entry.status = "error";
+      entry.action = "local-only";
+      entry.transmission = "blocked";
+      entry.outcome = "local-only-transformation-failed";
+      entry.failureCategory = "unresolved-secret";
+      entry.error = "A credential survived into the final artifact; kept on this computer for your protection.";
+      entry.transformed = false;
+      entry.finalRescanVerified = false;
+      finalCredentialKeptLocal += 1;
+      filesExcluded += 1;
+    } else if (surviving.length > 0) {
+      // Personal identifiers survived (e.g. an XLSX whose transform fell back to the
+      // raw original). Per policy the file is still DELIVERED with a warning, but it
+      // must NEVER be reported as transformed/verified/handled.
+      entry.outcome = "included-unverified";
+      entry.failureCategory = "reidentification-risk";
+      entry.transformed = false;
+      entry.finalRescanVerified = false;
+      entry.error =
+        `Final artifact still contains ${surviving.length} source identifier value(s); ` +
+        "delivered with a warning — NOT de-identified.";
+      finalIdentifierLeaks += 1;
+    } else {
+      entry.finalRescanVerified = true;
+    }
+    } catch {
+      // The final gate must never fail the whole run: if verifying one delivered
+      // file throws (unreadable, unparseable, removed mid-run), mark it unverified
+      // and move on rather than aborting a completed preparation.
+      entry.finalRescanVerified = false;
+    }
+  }
+
+  extractedDocuments.clear();
+  detail("context", "Generating local context", documentIndex.length, documentIndex.length);
+  if (documentIndex.length === 0) {
+    progress("Generating local context: skipped (no documents requiring summary)");
+  }
+  {
+    // Always write the document index so an agent told to read it never finds it
+    // missing. When no documents required summarization, say so honestly (rather
+    // than omitting the file), and note that background preparation may add more.
+    const documentEntries =
+      documentIndex.length > 0
+        ? documentIndex.flatMap((document) => [
+            `### ${document.relpath}`,
+            "",
+            `- Inspection: ${
+              document.method === "ocr"
+                ? "OCR"
+                : document.method === "text"
+                  ? "Text document"
+                  : "PDF text extraction"
+            }`,
+            ...(document.pages !== undefined ? [`- Pages: ${document.pages}`] : []),
+            `- Summary: ${
+              document.status === "created"
+                ? "Created"
+                : document.status === "rejected"
+                  ? "Rejected by security verification"
+                  : document.status === "pending"
+                    ? "Pending background inspection"
+                    : "Local model unavailable"
+            }`,
+            ...(document.summaryRelpath ? [`- Context file: ${document.summaryRelpath}`] : []),
+            "",
+          ])
+        : [
+            "_No documents required local summarization in this run._",
+            "",
+            "Prepared project files are available directly in this Prepared Workspace.",
+            "If a document summary you expected is missing, it may still be in",
+            "background preparation — re-read this index when Yuhi reports an update.",
+            "",
+          ];
+    const index = [
+      "# Yuhi Document Context",
+      "",
+      "Generated locally by Yuhi. Extracted document text is not stored.",
+      "",
+      "## Documents",
+      "",
+      ...documentEntries,
+    ].join("\n");
+    await writeMirrored(outDir, ".yuhi/context/document-index.md", index);
   }
 
   const beforeChars = files.reduce((n, f) => (f.omitted ? n : n + f.beforeChars), 0);
@@ -703,12 +1791,22 @@ export async function prepareWorkspace(
   });
 
   progress(`Verifying prepared output · 0/${files.length} files`);
+  detail("verify", "Verifying prepared output", 0, files.length);
   await options.beforeIntegrityVerification?.();
   let sourceIntegrityAfter: Map<string, SourceIntegrityEntry>;
   try {
     const afterPlan = await computePlan(dir, {
       ...(agent !== undefined ? { agent } : {}),
       interactive: false,
+      documentInspector: {
+        canInspect: () => false,
+        inspect: async () => ({
+          status: "unavailable",
+          extractedTextAvailable: false,
+          extractionMethod: "none",
+          warnings: ["integrity-pass-does-not-inspect-documents"],
+        }),
+      },
     });
     sourceIntegrityAfter = await captureSourceIntegrity(root, afterPlan.scan.files, {
       ...(signal !== undefined ? { signal } : {}),
@@ -718,6 +1816,8 @@ export async function prepareWorkspace(
             onProgress: (message) => {
               const count = message.match(/after (\d+\/\d+)/)?.[1];
               progress(`Verifying prepared output${count ? ` · ${count} files` : ""}`);
+              const matched = message.match(/after (\d+)\/(\d+)/);
+              if (matched) detail("verify", "Verifying prepared output", Number(matched[1]), Number(matched[2]));
             },
           }
         : {}),
@@ -726,18 +1826,124 @@ export async function prepareWorkspace(
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new Error(SOURCE_INTEGRITY_ERROR);
   }
-  assertSameIntegrity(sourceIntegrityBefore, sourceIntegrityAfter);
+  const changedSources = listChangedIntegrity(sourceIntegrityBefore, sourceIntegrityAfter);
+  if (changedSources.length > 0) {
+    // Name the culprits (local diagnostic) so a repeated integrity failure is not a
+    // mystery — e.g. an editor autosave or a sync client touching a source file.
+    progress(
+      `Source workspace changed during preparation (${changedSources.length}): ` +
+        changedSources.slice(0, 8).join(", "),
+    );
+    throw new Error(SOURCE_INTEGRITY_ERROR);
+  }
   const originalSourceFilesModified = 0;
   progress(`Verifying prepared output · ${files.length}/${files.length} files`);
+  detail("verify", "Prepared output verified", files.length, files.length);
   const unresolvedHighRiskFindings = plan.evaluation.decisions.reduce((total, decision) => {
     const file = files.find((candidate) => candidate.relpath === decision.relpath);
-    if (!file || file.status !== "ok" || file.omitted || file.action !== "allow") return total;
+    // `included-unverified` (degraded inclusion, uninspected binaries) is already a
+    // surfaced "review before sharing" warning and is launch-able; unresolved SECRETS
+    // are kept local by the degraded-inclusion gate, so such files do not block launch.
+    if (
+      !file ||
+      file.status !== "ok" ||
+      file.omitted ||
+      file.action !== "allow" ||
+      file.outcome === "included-unverified"
+    )
+      return total;
     return total + decision.findings.filter(
       (finding) => finding.severity === "high" || finding.severity === "critical",
     ).length;
   }, 0);
-  const launchAllowed =
-    files.every((file) => file.status !== "error") && unresolvedHighRiskFindings === 0;
+  // SINGLE launch decision (one source of truth): the Prepared Workspace is usable
+  // when every INCLUDED file was written and approved (i.e. no copy failure). File-
+  // level warnings — included-unverified, high-risk finding, mapping conflict,
+  // unsupported structure — are informational ONLY and must never block launch or
+  // trigger recovery.
+  const launchAllowed = files
+    .filter((file) => !file.omitted)
+    .every((file) => file.status === "ok" && file.transmission === "approved");
+  const unresolvedCredential = plan.evaluation.decisions.some((decision) => {
+    const file = files.find((candidate) => candidate.relpath === decision.relpath);
+    return (
+      file?.status === "ok" &&
+      !file.omitted &&
+      file.action === "allow" &&
+      decision.findings.some(
+        (finding) =>
+          (finding.severity === "high" || finding.severity === "critical") &&
+          findingCategory(finding.detector) === "credential",
+      )
+    );
+  });
+  const blockedReason = unresolvedCredential
+    ? "credential_not_resolved"
+    : malformedTables > 0
+      ? "table_not_parseable"
+      : unverifiedTransformations > 0
+        ? "transformation_not_verified"
+        : restrictedUnresolvedFiles > 0
+          ? "restricted_data_not_resolved"
+          : unresolvedHighRiskFindings > 0
+            ? "high_risk_finding_not_resolved"
+            : "prepared_output_not_verified";
+
+  const availableProjectFiles = files.filter(
+    (file) => file.status === "ok" && !file.omitted,
+  ).length;
+  const transformedProjectFiles = files.filter(
+    (file) => file.status === "ok" && !file.omitted && file.transformed,
+  ).length;
+  const localOnlyProjectFiles = files.filter((file) => file.omitted).length;
+  const agentHandoff = [
+    "# Yuhi Agent Handoff",
+    "",
+    "This handoff was generated locally by Yuhi for the AI agent working in this Prepared Workspace.",
+    "",
+    "## Start here",
+    "",
+    "1. Read `.yuhi/context/document-index.md` first — Yuhi's index of prepared document context (always present).",
+    "2. Yuhi may continue background document preparation while you work; re-read the index when Yuhi reports an update.",
+    "3. Use linked verified summaries as the document map when available.",
+    "4. Work only with files available in this Prepared Workspace.",
+    "5. If information is missing, tell the user what is missing. Do not search outside the workspace.",
+    "",
+    "## Preparation status",
+    "",
+    `- Launch status: ${launchAllowed ? "Ready" : "Not ready"}`,
+    `- Project files available: ${availableProjectFiles}`,
+    `- Files transformed locally: ${transformedProjectFiles}`,
+    `- Documents inspected: ${documentIndex.length}`,
+    `- Context summaries created: ${documentSummariesCreated}`,
+    `- Files not included: ${localOnlyProjectFiles}`,
+    "- Original workspace files modified during preparation: 0",
+    "",
+    ...describeUnavailableFiles(files),
+    ...describeUnverifiedFiles(files),
+    "## Safety boundary",
+    "",
+    "- Extracted document text was not persisted.",
+    "- Generated summaries were rescanned before inclusion.",
+    "- Raw credential files and unresolved secret material are not provided as project context.",
+    "- Do not assume missing files are safe to retrieve from another location.",
+    "",
+    "## Completing the task",
+    "",
+    "Make changes only inside this Prepared Workspace.",
+    "Yuhi does not apply agent changes to the Original Workspace automatically.",
+    "When finished, tell the user to run `Yuhi: Review Agent Changes` before applying anything.",
+    "",
+  ].join("\n");
+  const handoffFindings = runDetectors(agentHandoff, {
+    entropyThreshold: plan.context.config.scan.entropy_threshold,
+    keywords: plan.context.config.scan.keywords,
+    relpath: ".yuhi/context/AGENT_HANDOFF.md",
+  });
+  if (handoffFindings.length > 0) {
+    throw new Error("Generated agent handoff failed Yuhi security verification.");
+  }
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", agentHandoff);
 
   const manifest = {
     schemaVersion: 2,
@@ -745,12 +1951,18 @@ export async function prepareWorkspace(
     runId,
     reductionMode: effectiveMode,
     files: files.map((f) => {
-      const decision = plan.evaluation.decisions.find((d) => d.relpath === f.relpath);
+      // Decisions are keyed by the ORIGINAL path; a pseudonymized entry must look up
+      // its decision by originalRelpath, not the Claude-facing name.
+      const lookupPath = f.originalRelpath ?? f.relpath;
+      const decision = plan.evaluation.decisions.find((d) => d.relpath === lookupPath);
       return {
         relpath: f.relpath,
+        ...(f.originalRelpath ? { originalRelpath: f.originalRelpath } : {}),
         action: f.action,
         status: f.status,
         outcome: f.outcome,
+        ...(f.failureCategory ? { failureCategory: f.failureCategory } : {}),
+        ...(f.error ? { reason: f.error } : {}),
         transmission: f.transmission,
         beforeChars: f.beforeChars,
         afterChars: f.afterChars,
@@ -788,8 +2000,17 @@ export async function prepareWorkspace(
       };
     }),
     reduction: report,
+    filenamesPseudonymized,
+    finalRescan: {
+      identifierLeaks: finalIdentifierLeaks,
+      credentialKeptLocal: finalCredentialKeptLocal,
+      verified: files.filter((f) => f.finalRescanVerified === true).length,
+    },
     provenance,
     sourceModified: originalSourceFilesModified,
+    status: launchAllowed ? "ready" : "blocked",
+    launchAllowed,
+    ...(!launchAllowed ? { blockedReason } : {}),
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,
@@ -803,7 +2024,105 @@ export async function prepareWorkspace(
       claudeCodeStarted: false,
       unsupportedOrUnverifiedFiles,
       restrictedUnresolvedFiles,
-      hasLimitations: unsupportedOrUnverifiedFiles > 0,
+      hasLimitations:
+        unsupportedOrUnverifiedFiles > 0 ||
+        unverifiedTransformations > 0 ||
+        plan.evaluation.decisions.some(
+          (decision) => decision.ruleName === "document:personal-information-warning",
+        ),
+      pdfInspected: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection?.status === "inspected" &&
+          file.documentInspection.extractionMethod === "pdf-text",
+      ).length,
+      ocrProcessed: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection?.status === "inspected" &&
+          file.documentInspection.extractionMethod === "ocr",
+      ).length,
+      unverifiedDocuments: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection !== undefined &&
+          file.documentInspection.status !== "inspected",
+      ).length,
+      documentSummariesCreated,
+      documentSummariesRejected,
+      documentContextBeforeTokens,
+      documentContextAfterTokens,
+      textDocumentsInspected,
+      agentHandoffCreated: true,
+      ...(baseProvider
+        ? {
+            localModelProvider: baseProvider.id,
+            localModelName: baseProvider.defaultModel,
+            localModelRequests,
+            localModelSucceeded,
+            localModelFailed,
+            localModelInputChars,
+            localModelOutputChars,
+            localModelElapsedMs,
+            localModelMaxConcurrency,
+            localModelConfiguredParallelism: localModelParallelism,
+          }
+        : {}),
+    },
+    warnings: {
+      unverifiedFilesIncluded: files.filter(
+        (file) => file.outcome === "included-unverified" && !file.omitted,
+      ).length,
+    },
+    security: {
+      transformedFiles: files.filter(
+        (file) => file.status === "ok" && !file.omitted && file.transformed,
+      ).length,
+      credentialsRemoved: files.some((file) => {
+        const decision = plan.evaluation.decisions.find(
+          (candidate) => candidate.relpath === file.relpath,
+        );
+        return (
+          file.status === "ok" &&
+          !file.omitted &&
+          (decision?.ruleName === "yuhi:environment-sanitized-copy" ||
+            decision?.ruleName === "yuhi:credential-sanitized-copy")
+        );
+      }),
+    },
+    documentInspection: {
+      pdfInspected: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection?.status === "inspected" &&
+          file.documentInspection.extractionMethod === "pdf-text",
+      ).length,
+      ocrProcessed: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection?.status === "inspected" &&
+          file.documentInspection.extractionMethod === "ocr",
+      ).length,
+      unverifiedDocuments: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection !== undefined &&
+          file.documentInspection.status !== "inspected",
+      ).length,
+      summariesCreated: documentSummariesCreated,
+      summariesRejected: documentSummariesRejected,
+      estimatedContextBeforeTokens: documentContextBeforeTokens,
+      estimatedContextAfterTokens: documentContextAfterTokens,
+      textDocumentsInspected,
+      agentHandoffCreated: true,
+      ...(baseProvider
+        ? {
+            localModelProvider: baseProvider.id,
+            localModelName: baseProvider.defaultModel,
+            localModelRequests,
+            localModelSucceeded,
+            localModelFailed,
+            localModelInputChars,
+            localModelOutputChars,
+            localModelElapsedMs,
+            localModelMaxConcurrency,
+            localModelConfiguredParallelism: localModelParallelism,
+          }
+        : {}),
     },
   };
   await writeFile(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
@@ -831,7 +2150,47 @@ export async function prepareWorkspace(
       claudeCodeStarted: false,
       unsupportedOrUnverifiedFiles,
       restrictedUnresolvedFiles,
-      hasLimitations: unsupportedOrUnverifiedFiles > 0,
+      hasLimitations:
+        unsupportedOrUnverifiedFiles > 0 ||
+        unverifiedTransformations > 0 ||
+        plan.evaluation.decisions.some(
+          (decision) => decision.ruleName === "document:personal-information-warning",
+        ),
+      pdfInspected: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection?.status === "inspected" &&
+          file.documentInspection.extractionMethod === "pdf-text",
+      ).length,
+      ocrProcessed: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection?.status === "inspected" &&
+          file.documentInspection.extractionMethod === "ocr",
+      ).length,
+      unverifiedDocuments: plan.scan.files.filter(
+        (file) =>
+          file.documentInspection !== undefined &&
+          file.documentInspection.status !== "inspected",
+      ).length,
+      documentSummariesCreated,
+      documentSummariesRejected,
+      documentContextBeforeTokens,
+      documentContextAfterTokens,
+      textDocumentsInspected,
+      agentHandoffCreated: true,
+      ...(baseProvider
+        ? {
+            localModelProvider: baseProvider.id,
+            localModelName: baseProvider.defaultModel,
+            localModelRequests,
+            localModelSucceeded,
+            localModelFailed,
+            localModelInputChars,
+            localModelOutputChars,
+            localModelElapsedMs,
+            localModelMaxConcurrency,
+            localModelConfiguredParallelism: localModelParallelism,
+          }
+        : {}),
     },
   };
   } catch (error) {
@@ -864,8 +2223,23 @@ export async function prepareWorkspaceOutcome(
 }
 
 /** Write `content` under `outDir`, mirroring a repo-relative POSIX relpath. */
-async function writeMirrored(outDir: string, relpath: string, content: string): Promise<void> {
+async function writeMirrored(outDir: string, relpath: string, content: string | Buffer): Promise<void> {
   const abs = path.join(outDir, ...relpath.split("/"));
   await mkdir(path.dirname(abs), { recursive: true });
-  await writeFile(abs, content, "utf8");
+  if (typeof content === "string") await writeFile(abs, content, "utf8");
+  else await writeFile(abs, content);
+}
+
+async function copyMirrored(outDir: string, relpath: string, absPath: string): Promise<void> {
+  const abs = path.join(outDir, ...relpath.split("/"));
+  await mkdir(path.dirname(abs), { recursive: true });
+  // OS-level copy — streams on the filesystem, never buffering the file in JS memory.
+  await copyFile(absPath, abs);
+}
+
+async function renameMirrored(outDir: string, fromRel: string, toRel: string): Promise<void> {
+  const fromAbs = path.join(outDir, ...fromRel.split("/"));
+  const toAbs = path.join(outDir, ...toRel.split("/"));
+  await mkdir(path.dirname(toAbs), { recursive: true });
+  await rename(fromAbs, toAbs);
 }

@@ -5,3 +5,4 @@ export * from "./detectors.js";
 export * from "./git.js";
 export * from "./redact.js";
 export * from "./scan.js";
+export * from "./document-inspector.js";

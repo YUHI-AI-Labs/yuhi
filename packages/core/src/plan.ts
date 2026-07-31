@@ -1,4 +1,4 @@
-import type { PolicyEvaluation, ScanResult } from "@yuhi/shared";
+import type { DocumentInspector, PolicyEvaluation, ScanResult } from "@yuhi/shared";
 import { scanRepo, isGitRepo } from "@yuhi/scanner";
 import { resolvePolicy } from "@yuhi/policy";
 import { loadContext, type YuhiContext } from "./context.js";
@@ -6,6 +6,10 @@ import { loadContext, type YuhiContext } from "./context.js";
 export interface PlanOptions {
   agent?: string;
   interactive: boolean;
+  documentInspector?: DocumentInspector;
+  deferDocumentInspection?: boolean;
+  /** In-memory only; extracted document text must never enter persisted metadata. */
+  onDocumentText?: (relpath: string, text: string) => void;
 }
 
 export interface Plan {
@@ -41,11 +45,14 @@ export async function computePlan(dir: string, options: PlanOptions): Promise<Pl
   const context = await loadContext(dir);
   const { config, root } = context;
 
-  const scan = scanRepo(root, {
+  const scan = await scanRepo(root, {
     largeFileBytes: config.workspace.large_file_bytes,
     entropyThreshold: config.scan.entropy_threshold,
     keywords: config.scan.keywords,
     explicitIncludeDirs: explicitIncludeDirs(config.rules),
+    ...(options.documentInspector ? { documentInspector: options.documentInspector } : {}),
+    ...(options.deferDocumentInspection ? { deferDocumentInspection: true } : {}),
+    ...(options.onDocumentText ? { onDocumentText: options.onDocumentText } : {}),
   });
 
   const evaluation = resolvePolicy(
@@ -58,6 +65,7 @@ export async function computePlan(dir: string, options: PlanOptions): Promise<Pl
       relpath: f.relpath,
       findings: f.findings,
       inspection: f.inspection,
+      ...(f.documentInspection ? { documentInspection: f.documentInspection } : {}),
     })),
   );
 

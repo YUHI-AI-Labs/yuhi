@@ -16,10 +16,12 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { LocalModelProvider } from "@yuhi/shared";
+import ExcelJS from "exceljs";
+import type { DocumentInspector, LocalModelProvider } from "@yuhi/shared";
 import {
   prepareWorkspace,
   prepareWorkspaceOutcome,
+  recommendedLocalModelParallelism,
   SOURCE_INTEGRITY_ERROR,
 } from "./prepare-workspace.js";
 import {
@@ -47,6 +49,37 @@ function put(rel: string, content: string) {
   writeFileSync(abs, content);
 }
 
+describe("preparation performance defaults", () => {
+  it("uses conservative adaptive local-processing parallelism", () => {
+    const gib = 1024 ** 3;
+    expect(recommendedLocalModelParallelism(8 * gib, 8)).toBe(1);
+    expect(recommendedLocalModelParallelism(16 * gib, 8)).toBe(2);
+    expect(recommendedLocalModelParallelism(32 * gib, 8)).toBe(3);
+    expect(recommendedLocalModelParallelism(16 * gib, 2)).toBe(1);
+  });
+
+  it("reports every real preparation phase with metadata-safe counts", async () => {
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    put("README.md", "# Synthetic project\n");
+    const events: Array<{
+      phase: string;
+      current?: number;
+      total?: number;
+    }> = [];
+    await prepareWorkspace(dir, {
+      provider: fakeProvider(),
+      onProgressDetail: (event) => events.push(event),
+    });
+    expect(new Set(events.map(({ phase }) => phase))).toEqual(
+      new Set(["discover", "scan", "prepare", "context", "verify"]),
+    );
+    expect(
+      events.some(({ current, total }) => current !== undefined && current > 0 && current === total),
+    ).toBe(true);
+    expect(events.every((event) => !("relpath" in event))).toBe(true);
+  });
+});
+
 /** Fake LOCAL provider — no network. Returns a summary that mentions one identifier
  *  so the pseudonymize step has something to mask before the safety-check passes. */
 function fakeProvider(): LocalModelProvider {
@@ -66,6 +99,22 @@ function fakeProvider(): LocalModelProvider {
   };
 }
 
+function pdfInspector(text: string, method: "pdf-text" | "ocr" = "pdf-text"): DocumentInspector {
+  return {
+    canInspect: (file) => file.relpath.endsWith(".pdf"),
+    async inspect(_file, consume) {
+      consume(text);
+      return {
+        status: "inspected",
+        extractedTextAvailable: true,
+        extractionMethod: method,
+        pageCount: 2,
+        warnings: [],
+      };
+    },
+  };
+}
+
 const CSV =
   "name,student_id,score\n" + "Tanaka Aoi,S-10241,42\n" + "Sato Ren,S-10242,88\n";
 const APP = "export const answer = 42;\n";
@@ -81,7 +130,203 @@ const YAML =
   "    action: block\n";
 
 describe("prepareWorkspace", () => {
-  it("keeps an unsupported PDF local with an explicit limitation", async () => {
+  it("includes a PDF as pending without waiting for optional document inspection", async () => {
+    writeFileSync(path.join(dir, "pending.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    let inspectionCalls = 0;
+    const report = await prepareWorkspace(dir, {
+      deferDocumentInspection: true,
+      documentInspector: {
+        canInspect: () => true,
+        async inspect() {
+          inspectionCalls += 1;
+          throw new Error("must run only in background");
+        },
+      },
+    });
+    expect(inspectionCalls).toBe(0);
+    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(true);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(
+      readFileSync(path.join(report.outDir, ".yuhi/context/document-index.md"), "utf8"),
+    ).toContain("Pending background inspection");
+  });
+
+  it("always writes document-index.md even when no documents require summarization", async () => {
+    put("app.ts", "export const x = 1;\n");
+    put("util.ts", "export const y = 2;\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    expect(report.tabularAcceptance?.documentSummariesCreated).toBe(0);
+    // The index must exist so an agent instructed to read it never finds it missing.
+    const index = readFileSync(path.join(report.outDir, ".yuhi/context/document-index.md"), "utf8");
+    expect(index).toContain("# Yuhi Document Context");
+    expect(index).toContain("No documents required local summarization");
+    // The handoff must point at the now always-present index.
+    const handoff = readFileSync(path.join(report.outDir, ".yuhi/context/AGENT_HANDOFF.md"), "utf8");
+    expect(handoff).toContain(".yuhi/context/document-index.md");
+  });
+
+  it("keeps a tabular file with blank/total rows in the workspace instead of dropping it", async () => {
+    // Real CSV/XLSX routinely have rows with no identifier (totals, blanks). Such a
+    // row must not fail the whole file — it must be pseudonymized where possible and
+    // still delivered to the Prepared Workspace.
+    put(
+      "totals.csv",
+      "name,employee_id,score\nAlice Tanaka,E-1,90\nBob Sato,E-2,80\n,,170\n",
+    );
+    put(
+      "yuhi.yaml",
+      'version: "1"\nrules:\n  - name: prep\n    match: { paths: ["*.csv"] }\n    action: prepare-locally\n    processors: [pseudonymize, safety-check]\n',
+    );
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    const entry = report.files.find((f) => f.relpath === "totals.csv");
+    expect(entry).toMatchObject({ status: "ok", outcome: "included-transformed" });
+    expect(entry?.omitted).not.toBe(true);
+    expect(existsSync(path.join(report.outDir, "totals.csv"))).toBe(true);
+    const out = readFileSync(path.join(report.outDir, "totals.csv"), "utf8");
+    expect(out).not.toContain("Alice Tanaka"); // identifier rows pseudonymized
+    expect(out).toContain(",,170"); // identifier-less summary row preserved verbatim
+  });
+
+  it("does not run optional text summarization in the instant preparation phase", async () => {
+    put("guide.md", "Synthetic architecture guidance.\n".repeat(200));
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    let providerFactoryCalls = 0;
+    const report = await prepareWorkspace(dir, {
+      deferDocumentInspection: true,
+      providerFactory: () => {
+        providerFactoryCalls += 1;
+        return fakeProvider();
+      },
+    });
+    expect(providerFactoryCalls).toBe(0);
+    expect(report.tabularAcceptance?.localModelRequests).toBeUndefined();
+    expect(readFileSync(path.join(report.outDir, "guide.md"), "utf8")).toBe(
+      readFileSync(path.join(dir, "guide.md"), "utf8"),
+    );
+  });
+
+  it("creates a locally generated, rescanned document context without persisting extracted text", async () => {
+    const rawExtracted = "A synthetic blue orchard describes architecture and deployment details.";
+    writeFileSync(path.join(dir, "architecture.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const provider = fakeProvider();
+    provider.generate = async () =>
+      "The document describes API architecture, authentication, and deployment.";
+
+    let providerFactoryCalls = 0;
+    const report = await prepareWorkspace(dir, {
+      providerFactory: () => {
+        providerFactoryCalls += 1;
+        return provider;
+      },
+      documentInspector: pdfInspector(rawExtracted),
+    });
+
+    const index = readFileSync(
+      path.join(report.outDir, ".yuhi/context/document-index.md"),
+      "utf8",
+    );
+    const summary = readFileNames(path.join(report.outDir, ".yuhi/context"))
+      .find((file) => file.endsWith(".summary.md"));
+    expect(summary).toBeDefined();
+    expect(index).toContain("Summary: Created");
+    expect(readFileSync(summary!, "utf8")).toContain("Generated locally by Yuhi");
+    expect(report.tabularAcceptance).toMatchObject({
+      documentSummariesCreated: 1,
+      documentSummariesRejected: 0,
+      localModelProvider: "fake",
+      localModelName: "m",
+      localModelRequests: 1,
+      localModelSucceeded: 1,
+      localModelFailed: 0,
+    });
+    const manifest = readFileSync(path.join(report.outDir, "manifest.json"), "utf8");
+    expect(manifest).not.toContain(rawExtracted);
+    expect(index).not.toContain(rawExtracted);
+    const handoff = readFileSync(
+      path.join(report.outDir, ".yuhi/context/AGENT_HANDOFF.md"),
+      "utf8",
+    );
+    expect(handoff).toContain("Yuhi Agent Handoff");
+    expect(handoff).toContain("Yuhi: Review Agent Changes");
+    expect(handoff).not.toContain(rawExtracted);
+    expect(report.tabularAcceptance?.agentHandoffCreated).toBe(true);
+    expect(providerFactoryCalls).toBe(1);
+  });
+
+  it("continues safely when a PDF needs a summary but the local model is unavailable", async () => {
+    writeFileSync(path.join(dir, "offline.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    let providerFactoryCalls = 0;
+    const provider = fakeProvider();
+    provider.generate = async () => {
+      throw new Error("synthetic local model unavailable");
+    };
+
+    const report = await prepareWorkspace(dir, {
+      providerFactory: () => {
+        providerFactoryCalls += 1;
+        return provider;
+      },
+      documentInspector: pdfInspector("Synthetic public document content."),
+    });
+
+    expect(providerFactoryCalls).toBe(1);
+    expect(report.tabularAcceptance).toMatchObject({
+      documentSummariesCreated: 0,
+      documentSummariesRejected: 1,
+      launchAllowed: true,
+      localModelRequests: 1,
+      localModelFailed: 1,
+    });
+    expect(existsSync(path.join(report.outDir, "offline.pdf"))).toBe(true);
+  });
+
+  it("rejects a document summary that leaks a synthetic secret without blocking the PDF", async () => {
+    writeFileSync(path.join(dir, "safe.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const provider = fakeProvider();
+    provider.generate = async () => "OPENAI_API_KEY=sk-synthetic-summary-leak-123456789";
+
+    const report = await prepareWorkspace(dir, {
+      provider,
+      documentInspector: pdfInspector("Synthetic public document content."),
+    });
+
+    expect(report.tabularAcceptance).toMatchObject({
+      documentSummariesCreated: 0,
+      documentSummariesRejected: 1,
+      launchAllowed: true,
+    });
+    expect(existsSync(path.join(report.outDir, "safe.pdf"))).toBe(true);
+    expect(
+      readFileNames(path.join(report.outDir, ".yuhi/context"))
+        .some((file) => file.endsWith(".summary.md")),
+    ).toBe(false);
+    expect(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"))
+      .not.toContain("sk-synthetic-summary");
+  });
+
+  it("creates verified context for a document-sized Markdown file", async () => {
+    put("guide.md", `${"Architecture guidance and deployment decisions.\n".repeat(80)}`);
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const provider = fakeProvider();
+    provider.generate = async () => "Architecture guidance with deployment decisions.";
+
+    const report = await prepareWorkspace(dir, { provider });
+
+    expect(report.tabularAcceptance).toMatchObject({
+      textDocumentsInspected: 1,
+      documentSummariesCreated: 1,
+    });
+    expect(
+      readFileSync(path.join(report.outDir, ".yuhi/context/document-index.md"), "utf8"),
+    ).toContain("Inspection: Text document");
+  });
+
+  it("includes an unsupported PDF unchanged with an explicit warning", async () => {
     writeFileSync(path.join(dir, "synthetic.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
@@ -89,10 +334,11 @@ describe("prepareWorkspace", () => {
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
     const entry = report.files.find((item) => item.relpath === "synthetic.pdf");
     expect(entry).toMatchObject({
-      action: "local-only",
-      status: "skipped",
-      outcome: "local-only-unsupported",
-      omitted: true,
+      action: "allow",
+      status: "ok",
+      outcome: "included-unverified",
+      transmission: "approved",
+      transformed: false,
       limitation: "inspection-unavailable",
       inspection: {
         fileType: "pdf",
@@ -103,7 +349,8 @@ describe("prepareWorkspace", () => {
         contentVerified: false,
       },
     });
-    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(false);
+    expect(readFileSync(path.join(report.outDir, "synthetic.pdf")))
+      .toEqual(readFileSync(path.join(dir, "synthetic.pdf")));
     expect(report.tabularAcceptance).toMatchObject({
       unsupportedOrUnverifiedFiles: 1,
       restrictedUnresolvedFiles: 0,
@@ -113,13 +360,43 @@ describe("prepareWorkspace", () => {
     expect(buildPreparedFileDecisions(report).find((item) => item.relativePath === "synthetic.pdf"))
       .toMatchObject({
         sensitivityLevel: "Unknown",
-        agentReceives: "No",
+        agentReceives: "Unchanged",
         inspectionStatus: "Not available",
         limitationShown: true,
       });
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.warnings).toEqual({ unverifiedFilesIncluded: 1 });
+    expect(manifest.documentInspection).toMatchObject({
+      pdfInspected: 0,
+      ocrProcessed: 0,
+      unverifiedDocuments: 1,
+    });
+    expect(JSON.stringify(manifest)).not.toContain("synthetic\\n");
   });
 
-  it("makes an unsupported high-risk XLSX Partial and blocks launch", async () => {
+  it("includes an uninspectable binary but never copies a private key", async () => {
+    writeFileSync(path.join(dir, "model.bin"), Buffer.from([0x00, 0xff, 0x12, 0x34]));
+    writeFileSync(path.join(dir, "private.key"), Buffer.from([0x00, 0xff, 0x55, 0xaa]));
+    put("safe.md", "Synthetic safe content.\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    expect(readFileSync(path.join(report.outDir, "model.bin")))
+      .toEqual(readFileSync(path.join(dir, "model.bin")));
+    expect(report.files.find((item) => item.relpath === "model.bin")).toMatchObject({
+      outcome: "included-unverified",
+      transmission: "approved",
+    });
+    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).not.toBe(true);
+    expect(existsSync(path.join(report.outDir, "private.key"))).toBe(false);
+    expect(report.files.find((item) => item.relpath === "private.key")).toMatchObject({
+      action: "local-only",
+      omitted: true,
+    });
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("keeps a malformed XLSX local and allows safe prepared files without raw fallback", async () => {
     writeFileSync(
       path.join(dir, "synthetic.xlsx"),
       Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff]),
@@ -142,7 +419,7 @@ describe("prepareWorkspace", () => {
       restrictedUnresolvedFiles: 1,
       unverifiedTransformations: 1,
       rawFallbackUsed: false,
-      launchAllowed: false,
+      launchAllowed: true,
     });
     expect(buildPreparedFileDecisions(report).find((item) => item.relativePath === "synthetic.xlsx"))
       .toMatchObject({
@@ -150,6 +427,46 @@ describe("prepareWorkspace", () => {
         agentReceives: "No",
         outcome: "local-only-unverified",
       });
+  });
+
+  it("pseudonymizes a valid XLSX and preserves analytical cells and formulas", async () => {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Synthetic Author";
+    const sheet = workbook.addWorksheet("評価");
+    sheet.addRow(["フルネーム", "学生証番号", "点数", "評定", "計算"]);
+    sheet.addRow(["Synthetic Student", "100001", 90, "A"]);
+    sheet.getCell("E2").value = { formula: "C2+10", result: 100 };
+    writeFileSync(
+      path.join(dir, "synthetic-grades.xlsx"),
+      Buffer.from(await workbook.xlsx.writeBuffer()),
+    );
+    put("safe.md", "Synthetic safe content.\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    const entry = report.files.find((item) => item.relpath === "synthetic-grades.xlsx");
+    expect(entry).toMatchObject({
+      status: "ok",
+      outcome: "included-transformed",
+      transformed: true,
+      transmission: "approved",
+    });
+    const prepared = readFileSync(path.join(report.outDir, "synthetic-grades.xlsx"));
+    const output = new ExcelJS.Workbook();
+    await output.xlsx.load(prepared as never);
+    const outputSheet = output.getWorksheet("評価")!;
+    expect(outputSheet.getCell("A2").text).toBe("Student 001");
+    expect(outputSheet.getCell("B2").text).toBe("CARD-001");
+    expect(outputSheet.getCell("C2").value).toBe(90);
+    expect(outputSheet.getCell("D2").value).toBe("A");
+    expect(outputSheet.getCell("E2").value).toMatchObject({ formula: "C2+10", result: 100 });
+    expect(output.creator).toBe("Yuhi");
+    expect(report.tabularAcceptance).toMatchObject({
+      identifierColumnsTransformed: 2,
+      analyticalColumnsPreserved: 3,
+      launchAllowed: true,
+      rawFallbackUsed: false,
+    });
   });
 
   it("automatically pseudonymizes detected structured personal data before inclusion", async () => {
@@ -197,6 +514,129 @@ describe("prepareWorkspace", () => {
     expect(readFileSync(path.join(report.outDir, "README.md"), "utf8")).toBe("Synthetic fixture.\n");
   });
 
+  it("creates and rescans a sanitized .env copy while preserving configuration", async () => {
+    const rawKey = ["sk", "synthetic", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    const original =
+      `OPENAI_API_KEY=${rawKey}\n` +
+      "DATABASE_URL=postgres://user:pass@host/db\n" +
+      "OPENAI_MODEL=gpt-5\nPORT=3000\nDEBUG=true\n";
+    put(".env", original);
+    put(
+      "yuhi.yaml",
+      'version: "1"\nrules:\n' +
+      "  - name: block-environment-files\n" +
+      "    match:\n      paths: ['**/.env', '**/.env.*']\n" +
+      "    action: block\n",
+    );
+
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    const entry = report.files.find((item) => item.relpath === ".env");
+    expect(entry).toMatchObject({
+      status: "ok",
+      transformed: true,
+      transmission: "approved",
+    });
+    expect(entry?.omitted).not.toBe(true);
+    const prepared = readFileSync(path.join(report.outDir, ".env"), "utf8");
+    expect(prepared).toContain("OPENAI_API_KEY=${OPENAI_API_KEY}");
+    expect(prepared).toContain("DATABASE_URL=${DATABASE_URL}");
+    expect(prepared).toContain("OPENAI_MODEL=gpt-5");
+    expect(prepared).toContain("PORT=3000");
+    expect(prepared).toContain("DEBUG=true");
+    expect(prepared).not.toContain(rawKey);
+    expect(prepared).not.toContain("user:pass");
+    expect(readFileSync(path.join(dir, ".env"), "utf8")).toBe(original);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.status).toBe("ready");
+    expect(manifest.launchAllowed).toBe(true);
+    expect(manifest.security.credentialsRemoved).toBe(true);
+    expect(manifest.security.transformedFiles).toBeGreaterThanOrEqual(1);
+    expect(manifest.warnings).toEqual({ unverifiedFilesIncluded: 0 });
+  });
+
+  it("does not contact the local model for a deterministic environment-only run", async () => {
+    const original = "OPENAI_API_KEY=sk-synthetic-not-real\nDEBUG=true\n";
+    put(".env", original);
+    put(
+      "yuhi.yaml",
+      'version: "1"\nrules:\n' +
+      "  - name: sanitize-environment\n" +
+      "    match:\n      paths: ['**/.env', '**/.env.*']\n" +
+      "    action: prepare-locally\n" +
+      "    processors: [sanitize-environment, safety-check]\n",
+    );
+    let providerFactoryCalls = 0;
+    const provider: LocalModelProvider = {
+      id: "must-not-run",
+      endpoint: "http://127.0.0.1:1",
+      defaultModel: "not-used",
+      health: async () => { throw new Error("health must not be called"); },
+      listModels: async () => [],
+      generate: async () => {
+        throw new Error("generate must not be called");
+      },
+    };
+
+    const messages: string[] = [];
+    const report = await prepareWorkspace(dir, {
+      providerFactory: () => {
+        providerFactoryCalls += 1;
+        return provider;
+      },
+      onProgress: (message) => messages.push(message),
+    });
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(providerFactoryCalls).toBe(0);
+    expect(messages.some((message) =>
+      message.includes("Generating local context: skipped (no documents requiring summary)")
+    )).toBe(true);
+    expect(readFileSync(path.join(report.outDir, ".env"), "utf8")).toContain(
+      "OPENAI_API_KEY=${OPENAI_API_KEY}",
+    );
+    expect(readFileSync(path.join(dir, ".env"), "utf8")).toBe(original);
+  });
+
+  it("creates verified placeholder copies for structured credential files", async () => {
+    const rawToken = ["synthetic", "credential", "token"].join("-");
+    const credentials = JSON.stringify({
+      api_token: rawToken,
+      password: "synthetic-password",
+      model: "gpt-5",
+    });
+    const secrets = `database_url: postgres://user:pass@host/db\nport: 3000\n`;
+    put("credentials.json", credentials);
+    put("secrets.yaml", secrets);
+    put(
+      "yuhi.yaml",
+      'version: "1"\nrules:\n' +
+      "  - name: sanitize-credential-files\n" +
+      "    match:\n      paths: ['**/credentials.json', '**/secrets.yaml']\n" +
+      "    action: prepare-locally\n" +
+      "    processors: [sanitize-credentials, safety-check]\n",
+    );
+
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    for (const relpath of ["credentials.json", "secrets.yaml"]) {
+      expect(report.files.find((item) => item.relpath === relpath)).toMatchObject({
+        status: "ok",
+        transformed: true,
+        transmission: "approved",
+      });
+    }
+    const preparedJson = readFileSync(path.join(report.outDir, "credentials.json"), "utf8");
+    const preparedYaml = readFileSync(path.join(report.outDir, "secrets.yaml"), "utf8");
+    expect(preparedJson).toContain("${API_TOKEN}");
+    expect(preparedJson).toContain('"model": "gpt-5"');
+    expect(preparedYaml).toContain("${DATABASE_URL}");
+    expect(preparedYaml).toContain("port: 3000");
+    expect(preparedJson + preparedYaml).not.toContain(rawToken);
+    expect(preparedJson + preparedYaml).not.toContain("user:pass");
+    expect(readFileSync(path.join(dir, "credentials.json"), "utf8")).toBe(credentials);
+    expect(readFileSync(path.join(dir, "secrets.yaml"), "utf8")).toBe(secrets);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
   it("does not reject an analytical number merely because it equals a source ID", async () => {
     const raw =
       "full name,student id,student card number,quiz score,grade\n" +
@@ -214,7 +654,7 @@ describe("prepareWorkspace", () => {
     expect(rows).toContain("Student 002,SID-002,CARD-002,100,B");
   });
 
-  it("pseudonymizes suffixed Japanese ID headers and blocks headerless companion data", async () => {
+  it("pseudonymizes suffixed Japanese ID headers and delivers headerless companion data with a warning", async () => {
     const csv =
       "\uFEFF学生証番号6桁,評点\n" +
       Array.from({ length: 20 }, (_, index) => `${String(300000 + index)},${index % 101}`).join("\n") +
@@ -234,29 +674,298 @@ describe("prepareWorkspace", () => {
     expect(csvEntry?.omitted).not.toBe(true);
     expect(readFileSync(path.join(report.outDir, "synthetic-check.csv"), "utf8"))
       .toContain("CARD-001");
-    expect(txtEntry).toMatchObject({ status: "error", action: "local-only", omitted: true });
-    expect(existsSync(path.join(report.outDir, "synthetic-companion.txt"))).toBe(false);
+    // Companion data cannot be safely pseudonymized, but with no secret it is still
+    // delivered (never silently dropped) — as the original, marked unverified.
+    expect(txtEntry?.omitted).not.toBe(true);
+    expect(txtEntry?.status).toBe("ok");
+    expect(existsSync(path.join(report.outDir, "synthetic-companion.txt"))).toBe(true);
   });
 
-  it("fails closed when a detected sensitive table cannot be transformed safely", async () => {
+  it("ALWAYS delivers a sensitive tabular file that can't be transformed (passed with a warning, never excluded)", async () => {
+    // PROMISE: csv/tsv/txt/xlsx are always passed. A sensitive table that cannot be
+    // verifiably de-identified is included as the original WITH a clear warning +
+    // failure category — never kept local. Only credentials are kept local.
     const raw = 'full name,student id,grade\n"unterminated,S-1,A';
     put("malformed.csv", raw);
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
 
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
     const entry = report.files.find((item) => item.relpath === "malformed.csv");
-    expect(entry?.status).toBe("error");
-    expect(entry?.action).toBe("local-only");
-    expect(entry?.omitted).toBe(true);
-    expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(false);
-    expect(report.errors).toHaveLength(1);
-    expect(report.tabularAcceptance).toMatchObject({
-      malformedTables: 1,
-      rawFallbackUsed: false,
-      launchAllowed: false,
-      claudeCodeStarted: false,
+    expect(entry).toMatchObject({
+      status: "ok",
+      omitted: false,
+      outcome: "included-unverified",
     });
-    expect(readFileSync(path.join(dir, "malformed.csv"), "utf8")).toBe(raw);
+    expect(entry?.failureCategory).toBeTruthy(); // honest reason preserved
+    expect(entry?.error).toBeTruthy();
+    // The file IS delivered to the workspace (the promise), with the original bytes.
+    expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(true);
+    expect(readFileSync(path.join(report.outDir, "malformed.csv"), "utf8")).toBe(raw);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("degraded-includes a NON-sensitive malformed CSV (no identifiers) verbatim", async () => {
+    // No identifier columns => no safety finding => still delivered with a warning
+    // (proves the keep-local gate does not over-block ordinary malformed data).
+    const raw = "measurement,reading,note\n1.2,3.4\n5.6,7.8,9.0,extra\n";
+    put("ragged.csv", raw);
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    const entry = report.files.find((f) => f.relpath === "ragged.csv");
+    // No safety finding => never routed to the keep-local gate; delivered verbatim.
+    expect(entry?.status).toBe("ok");
+    expect(entry?.omitted).toBeFalsy();
+    expect(existsSync(path.join(report.outDir, "ragged.csv"))).toBe(true);
+    expect(readFileSync(path.join(report.outDir, "ragged.csv"), "utf8")).toBe(raw);
+  });
+
+  it("launch policy: a conflicting table is transformed best-effort and delivered, never blocks launch", async () => {
+    // Ten safe files + one table with a genuine identifier conflict (card reused).
+    for (let i = 0; i < 10; i += 1) put(`safe/file${i}.md`, `# Synthetic doc ${i}\ncontent\n`);
+    put(
+      "conflict.csv",
+      "full name,student id,student card number,score\n" +
+        "Synthetic One,S-1,C-1,80\nSynthetic Two,S-2,C-1,90\n",
+    );
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    // Best-effort transform: the table IS delivered and de-identified (no throw),
+    // with no raw identifiers surviving.
+    const risky = report.files.find((f) => f.relpath === "conflict.csv");
+    expect(risky?.omitted).toBeFalsy();
+    expect(existsSync(path.join(report.outDir, "conflict.csv"))).toBe(true);
+    const out = readFileSync(path.join(report.outDir, "conflict.csv"), "utf8");
+    for (const rawId of ["Synthetic One", "Synthetic Two", "S-1", "S-2", "C-1"]) {
+      expect(out).not.toContain(rawId);
+    }
+    // Workspace-level: launch allowed; all files (10 safe + the table) available.
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(report.files.filter((f) => !f.omitted).length).toBeGreaterThanOrEqual(11);
+  });
+
+  it("launch policy: a credential in a would-be-sent file is EXCLUDED, and launch still proceeds", async () => {
+    // A file that would be sent verbatim but still carries a live credential must be
+    // excluded by recommendation (kept local) — NOT sent raw, and NOT a launch block.
+    put("notes.txt", "deploy key\n" + "AKIA" + "IOSFODNN7EXAMPLE\n");
+    put("readme.md", "# Synthetic\nsafe content\n");
+    // A rule that explicitly ALLOWS the file (would send it verbatim) despite the
+    // credential — this is the case that used to trip a workspace-level launch block.
+    put(
+      "yuhi.yaml",
+      'version: "1"\nrules:\n  - name: allow-notes\n    match: { paths: ["notes.txt"] }\n    action: allow\n',
+    );
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    const secretFile = report.files.find((f) => f.relpath === "notes.txt");
+    // File-level: excluded, kept local, never written to the workspace.
+    expect(secretFile?.omitted).toBe(true);
+    expect(secretFile?.failureCategory).toBe("unresolved-secret");
+    expect(existsSync(path.join(report.outDir, "notes.txt"))).toBe(false);
+    // The credential value must never reach the Prepared Workspace.
+    expect(existsSync(path.join(report.outDir, "readme.md"))).toBe(true);
+    expect(readFileSync(path.join(report.outDir, "readme.md"), "utf8")).not.toContain("AKIA");
+    // Workspace-level: launch is STILL allowed with the remaining safe file.
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("launch policy: many safe files + one credential file → safe files available, launch succeeds", async () => {
+    for (let i = 0; i < 10; i += 1) put(`safe/doc${i}.md`, `# Synthetic ${i}\ncontent\n`);
+    put("config.txt", "token\n" + "AKIA" + "IOSFODNN7EXAMPLE\n");
+    put(
+      "yuhi.yaml",
+      'version: "1"\nrules:\n  - name: allow-config\n    match: { paths: ["config.txt"] }\n    action: allow\n',
+    );
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    expect(report.files.find((f) => f.relpath === "config.txt")?.omitted).toBe(true);
+    expect(existsSync(path.join(report.outDir, "config.txt"))).toBe(false);
+    expect(report.files.filter((f) => !f.omitted).length).toBeGreaterThanOrEqual(10);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("launch policy: even when every project file is excluded, a minimal workspace still opens", async () => {
+    put("secret.env", "API_KEY=" + "AKIA" + "IOSFODNN7EXAMPLE\n");
+    put("yuhi.yaml", 'version: "1"\nrules:\n  - name: block-all\n    match: { paths: ["**/*"] }\n    action: block\n');
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    // No usable project files, but a valid (metadata-only) Prepared Workspace exists,
+    // so launch is still allowed — exclusion is never a workspace-level failure.
+    expect(report.files.every((f) => f.omitted)).toBe(true);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(existsSync(path.join(report.outDir, ".yuhi"))).toBe(true);
+  });
+
+  it("transforms a sensitive CSV that has a leading metadata preamble (real export shape)", async () => {
+    // Title + export-date + blank line before the header — the shape that used to
+    // route the file to raw passthrough. It must now transform end-to-end.
+    const raw =
+      "健康診断結果一覧\n出力日,2026-07-22\n\n" +
+      "受診者番号,受診者氏名,BMI\n" +
+      "A000000-0723,サンプル 太郎,22.1\n" +
+      "A005007-0724,サンプル 花子,20.4\n";
+    put("health.csv", raw);
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    const entry = report.files.find((f) => f.relpath === "health.csv");
+    expect(entry?.status).toBe("ok");
+    expect(entry?.outcome).toBe("included-transformed");
+    const dest = path.join(report.outDir, "health.csv");
+    expect(existsSync(dest)).toBe(true);
+    const out = readFileSync(dest, "utf8");
+    // Preamble preserved; identifiers gone; analytical values kept.
+    expect(out).toContain("健康診断結果一覧");
+    expect(out).toContain("22.1");
+    for (const rawId of ["A000000-0723", "A005007-0724", "サンプル 太郎", "サンプル 花子"]) {
+      expect(out).not.toContain(rawId);
+    }
+  });
+
+  it("keeps a malformed table LOCAL when it carries an unresolved credential", async () => {
+    // Structural failure (short row) BUT an AWS key is present → the secret gate must
+    // keep it local, never degrade-include it, and record an explicit reason.
+    put("leaky.csv", 'name,id,token\nAlice,A1,"' + "AKIA" + 'IOSFODNN7EXAMPLE"\nBob,A2\n');
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
+    const entry = report.files.find((f) => f.relpath === "leaky.csv");
+    expect(entry?.omitted).toBe(true);
+    expect(entry?.error).toBeTruthy(); // never omitted without a reason
+    expect(existsSync(path.join(report.outDir, "leaky.csv"))).toBe(false);
+  });
+
+  it("does not let a failed table transformation contaminate later alias state", async () => {
+    put(
+      "a-conflict.csv",
+      "full name,student id,student card number,score\n" +
+      "Synthetic One,S-1,C-1,80\nSynthetic Two,S-2,C-1,90\n",
+    );
+    put(
+      "b-valid.csv",
+      "full name,student id,student card number,score\n" +
+      "Synthetic Three,S-3,C-3,70\nSynthetic Four,S-4,C-4,95\n",
+    );
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+
+    const report = await prepareWorkspace(dir);
+    // Both tables are delivered and de-identified (best effort, no throw). The
+    // conflicting row in a-conflict is isolated under a fresh entity and its
+    // mappings are NOT committed, so the valid file's distinct students still get
+    // their own clean pseudonyms — no cross-contamination.
+    expect(report.files.find((file) => file.relpath === "a-conflict.csv")?.omitted).toBeFalsy();
+    expect(report.files.find((file) => file.relpath === "b-valid.csv")).toMatchObject({
+      status: "ok",
+      transformed: true,
+    });
+    const aConflict = readFileSync(path.join(report.outDir, "a-conflict.csv"), "utf8");
+    const bValid = readFileSync(path.join(report.outDir, "b-valid.csv"), "utf8");
+    for (const raw of ["Synthetic One", "Synthetic Two", "S-1", "S-2", "C-1"]) {
+      expect(aConflict).not.toContain(raw);
+    }
+    for (const raw of ["Synthetic Three", "Synthetic Four", "S-3", "S-4", "C-3", "C-4"]) {
+      expect(bValid).not.toContain(raw);
+    }
+    // b-valid's two distinct students get two distinct pseudonyms (not collapsed).
+    const bRows = bValid.trim().split("\n").slice(1);
+    expect(bRows[0]!.split(",")[1]).not.toEqual(bRows[1]!.split(",")[1]);
+    // Analytical (score) columns preserved.
+    expect(bValid).toContain(",70");
+    expect(bValid).toContain(",95");
+  });
+
+  it("pseudonymizes direct identifiers in filenames; mapping lives only in the manifest", async () => {
+    // A filename like 20260715-110046-A000000.csv leaks the ID before Claude opens
+    // the file. The delivered name must drop the identifier (keeping date/time
+    // context), and the reverse mapping must exist only in the manifest.
+    mkdirSync(path.join(dir, "health"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "health", "20260715-110046-A000000.csv"),
+      "受診者番号,受診者氏名,BMI\nA000000,Synthetic One,22.1\n",
+    );
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir);
+    const entry = report.files.find((f) => f.originalRelpath?.includes("A000000"));
+    expect(entry).toBeDefined();
+    // Claude-facing name has NO identifier, but keeps the non-identifying date/time.
+    expect(entry!.relpath).toMatch(/health\/20260715-110046-ID-[0-9a-f]{8}\.csv$/);
+    expect(entry!.relpath).not.toContain("A000000");
+    // The file is on disk under the pseudonymized name, not the original.
+    expect(existsSync(path.join(report.outDir, entry!.relpath))).toBe(true);
+    expect(existsSync(path.join(report.outDir, "health", "20260715-110046-A000000.csv"))).toBe(false);
+    // The reverse mapping is available for the operator via the manifest only.
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.filenamesPseudonymized).toBeGreaterThanOrEqual(1);
+    const manifestEntry = manifest.files.find((f: { originalRelpath?: string }) =>
+      f.originalRelpath?.includes("A000000"),
+    );
+    expect(manifestEntry.relpath).toBe(entry!.relpath);
+  });
+
+  it("a volatile .DS_Store rewritten during preparation never fails the run (still included)", async () => {
+    // macOS Finder rewrites .DS_Store on its own schedule; over a long prep it will
+    // mutate. That must never fail the source-integrity assertion. The file itself
+    // stays included in the workspace — only its churn is exempt from integrity.
+    put(".DS_Store", "   ");
+    put("check/.DS_Store", "   ");
+    put("roster.csv", "氏名,学籍番号,学生証番号,評定\n山田太郎,123456,A000000,A\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+
+    const report = await prepareWorkspace(dir, {
+      beforeIntegrityVerification: async () => {
+        writeFileSync(path.join(dir, ".DS_Store"), Buffer.from([9, 9, 9, 9, 9]));
+        mkdirSync(path.join(dir, "sub"), { recursive: true });
+        writeFileSync(path.join(dir, "sub", ".DS_Store"), Buffer.from([1, 2, 3]));
+      },
+    });
+    // Preparation completed (no throw) and .DS_Store is still delivered.
+    expect(report.files.some((f) => f.relpath === ".DS_Store")).toBe(true);
+    expect(existsSync(path.join(report.outDir, ".DS_Store"))).toBe(true);
+  });
+
+  it("FINAL ARTIFACT: no delivered CSV/nested/TXT/XLSX contains raw names or IDs; grades remain", async () => {
+    // The security-critical guarantee, asserted against the ACTUAL bytes on disk
+    // (reopened after every write/rename/fallback) — not an in-memory transform.
+    const HEADER = ["氏名", "学籍番号", "学生証番号", "評定"];
+    const ROWS = [
+      ["山田太郎", "123456", "A000000", "A"],
+      ["佐藤花子", "990192", "A005007", "B"],
+    ];
+    const RAW = ["山田太郎", "佐藤花子", "123456", "990192", "A000000", "A005007"];
+    const csvText = [HEADER.join(","), ...ROWS.map((r) => r.join(","))].join("\n") + "\n";
+    const tsvText = [HEADER.join("\t"), ...ROWS.map((r) => r.join("\t"))].join("\n") + "\n";
+
+    put("評定.csv", csvText);
+    put("check/評定-0723.csv", csvText);
+    put("評定.txt", tsvText);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("評定");
+    ws.addRow(HEADER);
+    for (const r of ROWS) ws.addRow([r[0], Number(r[1]), r[2], r[3]]); // numeric 学籍番号
+    mkdirSync(path.join(dir, "check"), { recursive: true });
+    writeFileSync(path.join(dir, "評定.xlsx"), Buffer.from(await wb.xlsx.writeBuffer()));
+    writeFileSync(path.join(dir, "check", "評定-0723.xlsx"), Buffer.from(await wb.xlsx.writeBuffer()));
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+
+    const report = await prepareWorkspace(dir);
+
+    const readXlsxText = async (abs: string): Promise<string> => {
+      const w = new ExcelJS.Workbook();
+      await w.xlsx.readFile(abs);
+      const cells: string[] = [];
+      w.eachSheet((sheet) => sheet.eachRow((row) => row.eachCell((c) => cells.push(String(c.value ?? "")))));
+      return cells.join("|");
+    };
+
+    for (const entry of report.files) {
+      if (entry.omitted || !/\.(?:csv|txt|xlsx)$/i.test(entry.relpath)) continue;
+      const abs = path.join(report.outDir, ...entry.relpath.split("/"));
+      expect(existsSync(abs)).toBe(true);
+      const text = entry.relpath.endsWith(".xlsx") ? await readXlsxText(abs) : readFileSync(abs, "utf8");
+      for (const secret of RAW) {
+        expect(text, `${entry.relpath} leaked ${secret}`).not.toContain(secret);
+      }
+      // Grades (analytical values) must survive the de-identification.
+      expect(/[|,\t]A(\||$|\n)/.test(text) || text.includes("A") ).toBe(true);
+      // The final gate must have verified this delivered artifact.
+      expect(entry.finalRescanVerified).toBe(true);
+    }
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.finalRescan.identifierLeaks).toBe(0);
   });
 
   it("creates a new immutable run when blocked files are explicitly excluded", async () => {
@@ -264,7 +973,11 @@ describe("prepareWorkspace", () => {
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
     const partial = await prepareWorkspace(dir, { provider: fakeProvider() });
-    expect(partial.errors).toHaveLength(1);
+    // The malformed table is DELIVERED with a warning (always-pass promise); the user
+    // can still explicitly exclude it, producing a fresh immutable run below.
+    expect(partial.files.find((file) => file.relpath === "malformed.csv")?.outcome).toBe(
+      "included-unverified",
+    );
     const oldManifest = readFileSync(path.join(partial.outDir, "manifest.json"), "utf8");
 
     const recovered = await prepareWorkspace(dir, {
@@ -471,7 +1184,7 @@ describe("prepareWorkspace", () => {
     expect(report.sourceModified).toBe(0);
     expect(report.errors).toHaveLength(0);
 
-    const absent = [".env", "data/salaries.csv", "docs/internal/notes.md", "logo.bin"];
+    const absent = [".env", "data/salaries.csv", "docs/internal/notes.md"];
     for (const rel of absent) expect(existsSync(path.join(report.outDir, rel)), rel).toBe(false);
     expect(readFileSync(path.join(report.outDir, "src/app.ts"), "utf8")).toBe(files["src/app.ts"]);
     expect(readFileSync(path.join(report.outDir, "README.md"), "utf8")).toBe(files["README.md"]);
@@ -487,7 +1200,11 @@ describe("prepareWorkspace", () => {
     const salaryDecision = report.decisions?.find((d) => d.relpath === "data/salaries.csv");
     expect(salaryDecision?.action).toBe("local-only");
     expect(salaryDecision?.ruleName).toBe("salary-restricted");
-    expect(report.files.find((f) => f.relpath === "logo.bin")?.omitted).toBe(true);
+    expect(readFileSync(path.join(report.outDir, "logo.bin"))).toEqual(files["logo.bin"]);
+    expect(report.files.find((f) => f.relpath === "logo.bin")).toMatchObject({
+      outcome: "included-unverified",
+      transmission: "approved",
+    });
     expect(report.report.filesSummarized).toBe(2);
     const metrics = buildPreparedMetrics(report);
     expect(metrics.filesInspected).toBe(report.files.length);
@@ -500,7 +1217,7 @@ describe("prepareWorkspace", () => {
     expect(metrics.sensitiveValuesMasked).toBe(
       report.files.reduce((total, file) => total + (file.maskedValues ?? 0), 0),
     );
-    expect(metrics.filesKeptLocal).toBe(4);
+    expect(metrics.filesKeptLocal).toBe(3);
     expect(metrics.filesExcluded).toBe(0);
   });
 

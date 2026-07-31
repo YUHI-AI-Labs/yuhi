@@ -28,6 +28,7 @@ import {
   validatePreparedPath,
   writeSessionMetadata,
   writeAndVerifyClaudeSandboxPolicy,
+  verifyExistingClaudeSandboxPolicy,
 } from "./launch.js";
 
 const cleanups: string[] = [];
@@ -149,12 +150,21 @@ describe("launch metadata and policy", () => {
     expect(claudeMarketplaceUrl()).toContain("itemName=anthropic.claude-code");
   });
 
-  it("classifies complete, warning, partial, and failed outcomes", async () => {
+  it("classifies complete, warning, and failed outcomes (no file-level Partial)", async () => {
     const { report } = await fixture();
     expect(classifyOutcome(report)).toBe("Complete");
     expect(classifyOutcome({ ...report, blocked: [report.files[2]!] })).toBe("Complete with warnings");
-    expect(classifyOutcome({ ...report, errors: [report.files[2]!] })).toBe("Partial");
-    expect(classifyOutcome({ ...report, files: [report.files[2]!], errors: [report.files[2]!] })).toBe("Failed");
+    expect(classifyOutcome({ ...report, errors: [report.files[2]!] })).toBe("Complete with warnings");
+    // Only a WORKSPACE-level failure (launchAllowed=false) is FAILED — never a file warning.
+    expect(classifyOutcome({
+      ...report,
+      tabularAcceptance: { ...report.tabularAcceptance!, launchAllowed: false },
+    })).toBe("Failed");
+    expect(classifyOutcome({
+      ...report,
+      files: [report.files[2]!],
+      errors: [report.files[2]!],
+    })).toBe("Complete with warnings");
   });
 
   it("only opens complete outcomes", () => {
@@ -172,7 +182,7 @@ describe("launch metadata and policy", () => {
     expect(detail).toContain("Sensitive findings detected:");
     expect(detail).toContain("OS sandbox: enabled");
     expect(detail).toContain("Initial context prepared by Yuhi");
-    expect(detail).toContain("Workspace boundary: enforced");
+    expect(detail).toContain("Workspace boundary: advisory");
     expect(detail).toContain("Filesystem enforcement: claude-code-sandbox");
     expect(detail).not.toContain("confined");
   });
@@ -200,16 +210,19 @@ describe("launch metadata and policy", () => {
       report.runId,
       (await import("@yuhi/core")).buildPreparedMetrics(report),
     ).join("\n");
-    expect(lines).toContain("Workspace boundary: enforced");
+    expect(lines).toContain("Workspace boundary: advisory");
     expect(lines).toContain("Filesystem enforcement: claude-code-sandbox");
     expect(lines).toContain("OS sandbox: enabled");
   });
 
-  it("notice contains the enforced policy and no source path", async () => {
+  it("notice states an advisory boundary (no OS-sandbox guarantee) and no source path", async () => {
     const { root } = await fixture();
-    expect(PREPARED_WORKSPACE_NOTICE).toContain("OS-level sandbox");
-    expect(PREPARED_WORKSPACE_NOTICE).toContain("Workspace boundary: enforced");
-    expect(PREPARED_WORKSPACE_NOTICE).toContain("Reading outside this Prepared Workspace is denied");
+    expect(PREPARED_WORKSPACE_NOTICE).toContain("not OS-level isolation");
+    expect(PREPARED_WORKSPACE_NOTICE).not.toContain("OS-level sandbox");
+    expect(PREPARED_WORKSPACE_NOTICE).not.toContain("fail-closed");
+    expect(PREPARED_WORKSPACE_NOTICE).toContain("Workspace boundary: advisory");
+    expect(PREPARED_WORKSPACE_NOTICE).toContain("user-approved external paths may still be accessible");
+    expect(PREPARED_WORKSPACE_NOTICE).toContain(".yuhi/context/AGENT_HANDOFF.md");
     expect(PREPARED_WORKSPACE_NOTICE).not.toContain(root);
   });
 
@@ -224,7 +237,7 @@ describe("launch metadata and policy", () => {
     expect(rendered).toContain("Original files modified: 0");
     expect(rendered).toContain("## Runtime boundary");
     expect(rendered).toContain("Filesystem enforcement: claude-code-sandbox");
-    expect(rendered).toContain("External-path access may still be possible: no");
+    expect(rendered).toContain("External-path access may still be possible: yes");
   });
 
   it("validates exactly one run directory below the prepared base", async () => {
@@ -242,10 +255,33 @@ describe("launch metadata and policy", () => {
     expect(policy).toEqual(CLAUDE_SANDBOX_POLICY);
     expect(policy.sandbox.allowUnsandboxedCommands).toBe(false);
     expect(policy.sandbox.excludedCommands).toEqual([]);
-    expect(policy.sandbox.filesystem).toEqual({ denyRead: ["~/"], allowRead: ["."] });
+    expect(policy.sandbox.filesystem).toEqual({
+      denyRead: ["~/", "/tmp", "/private/tmp"],
+      allowRead: ["."],
+    });
+    expect(policy.permissions.deny).toEqual([
+      "Read(//tmp/**)",
+      "Read(//private/tmp/**)",
+    ]);
     expect(policy.permissions.disableBypassPermissionsMode).toBe("disable");
     expect(policy.permissions.disableAutoMode).toBe("disable");
     await expect(readFile(path.join(root, CLAUDE_SANDBOX_RELPATH), "utf8")).rejects.toThrow();
+  });
+
+  it("verifies an on-disk policy without a path assertion (advisory re-check)", async () => {
+    const { root, outDir } = await fixture();
+    // Missing policy → not verified.
+    expect(await verifyExistingClaudeSandboxPolicy(outDir)).toBe(false);
+    // After a correct install → verified from disk alone (no managed-path check).
+    await writeAndVerifyClaudeSandboxPolicy(root, outDir);
+    expect(await verifyExistingClaudeSandboxPolicy(outDir)).toBe(true);
+    // A tampered policy → not verified.
+    await writeFile(
+      path.join(outDir, CLAUDE_SANDBOX_RELPATH),
+      JSON.stringify({ sandbox: { enabled: false } }),
+      "utf8",
+    );
+    expect(await verifyExistingClaudeSandboxPolicy(outDir)).toBe(false);
   });
 
   it("fails closed when the Claude sandbox policy cannot be installed", async () => {
@@ -283,10 +319,10 @@ describe("launch metadata and policy", () => {
       initialContextPrepared: true,
       startDirectory: "prepared-workspace",
       workspaceInstructionPresent: true,
-      workspaceBoundary: "enforced",
+      workspaceBoundary: "advisory",
       filesystemEnforcement: "claude-code-sandbox",
       osSandboxEnabled: true,
-      externalPathAccessPossible: false,
+      externalPathAccessPossible: true,
     });
   });
 
@@ -320,8 +356,8 @@ describe("launch metadata and policy", () => {
     const raw = await readFile(path.join(outDir, ".yuhi", "session.json"), "utf8");
     expect(outDir.startsWith(external)).toBe(false);
     expect(raw).not.toContain(external);
-    expect(session.runtime.externalPathAccessPossible).toBe(false);
-    expect(PREPARED_WORKSPACE_NOTICE).toContain("Reading outside this Prepared Workspace is denied");
+    expect(session.runtime.externalPathAccessPossible).toBe(true);
+    expect(PREPARED_WORKSPACE_NOTICE).toContain("user-approved external paths may still be accessible");
   });
 });
 
@@ -339,9 +375,10 @@ describe("launch orchestration", () => {
     expect(h.openFolder).not.toHaveBeenCalledWith(root, expect.anything());
   });
 
-  it("does not open after a partial result", async () => {
+  it("does not open when the prepared output itself is unsafe", async () => {
     const { root, report } = await fixture();
     report.errors = [report.files[0]!];
+    report.tabularAcceptance = { ...report.tabularAcceptance!, launchAllowed: false };
     const h = host();
     const reviewBlocked = vi.fn(async () => {});
     const result = await runPrepareAndOpen({
@@ -358,7 +395,13 @@ describe("launch orchestration", () => {
 
   it("does not offer or accept an override after a failed result", async () => {
     const { root, report } = await fixture();
-    report.files = [{ ...report.files[2]!, status: "error" }];
+    report.files = [{
+      ...report.files[2]!,
+      action: "allow",
+      status: "error",
+      transmission: "blocked",
+      omitted: false,
+    }];
     report.errors = [report.files[0]!];
     const h = host();
     const override = vi.fn(async () => true);
@@ -413,6 +456,22 @@ describe("launch orchestration", () => {
     });
     expect(result.status).toBe("cancelled");
     expect(h.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("auto-transitions into Yuhi Mode without a second confirmation click", async () => {
+    const { root, outDir, report } = await fixture();
+    const h = host();
+    const confirmLaunch = vi.fn(async () => "open" as const);
+    const result = await runPrepareAndStartClaude({
+      host: h, getWorkspaceRoot: () => root, prepare: async () => report,
+      pickMode: async () => "extension", resolveCliFile: () => null,
+      autoLaunch: true,
+      confirmLaunch, reviewDetails: async () => {},
+    });
+    // The user already chose to start: no confirmation prompt, workspace opens.
+    expect(confirmLaunch).not.toHaveBeenCalled();
+    expect(h.openFolder).toHaveBeenCalledWith(outDir, true);
+    expect(result.status).toBe("extension-opened");
   });
 
   it("supports review then approval without preparing twice", async () => {

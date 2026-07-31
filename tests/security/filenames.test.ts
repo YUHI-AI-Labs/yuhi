@@ -25,8 +25,8 @@ afterEach(() => {
   rmSync(parent, { recursive: true, force: true });
 });
 
-function build(root: string) {
-  const scan = scanRepo(root, { largeFileBytes: 5_000_000, entropyThreshold: 4, keywords: [] });
+async function build(root: string) {
+  const scan = await scanRepo(root, { largeFileBytes: 5_000_000, entropyThreshold: 4, keywords: [] });
   const evalResult = resolvePolicy(
     { defaultAction: "allow", rules: [], interactive: false },
     scan.files.map((f) => ({ relpath: f.relpath, findings: f.findings })),
@@ -44,19 +44,19 @@ function build(root: string) {
 }
 
 describe("hostile filenames", () => {
-  it("copies files whose names contain shell metacharacters verbatim (no shell involved)", () => {
+  it("copies files whose names contain shell metacharacters verbatim (no shell involved)", async () => {
     // These are dangerous only if a shell ever interprets them; Yuhi uses spawn
     // argv arrays and plain fs, so they are just bytes.
     const names = ["a b.txt", "weird$(whoami).txt", "semi;rm.txt", "quote'.txt", "back`tick`.txt"];
     for (const n of names) writeFileSync(path.join(src, n), "content\n");
-    const { treeDir, manifest } = build(src);
+    const { treeDir, manifest } = await build(src);
     for (const n of names) {
       expect(existsSync(path.join(treeDir, n))).toBe(true);
     }
     expect(manifest.counts.visible).toBeGreaterThanOrEqual(names.length);
   });
 
-  it("handles a newline in a filename without splitting or escaping the tree", () => {
+  it("handles a newline in a filename without splitting or escaping the tree", async () => {
     let name: string;
     try {
       name = "line1\nline2.txt";
@@ -64,7 +64,7 @@ describe("hostile filenames", () => {
     } catch {
       return; // some filesystems reject newlines
     }
-    const { treeDir } = build(src);
+    const { treeDir } = await build(src);
     // Everything created stays under treeDir (no path split into two entries above root).
     const top = existsSync(treeDir) ? readdirSync(treeDir) : [];
     for (const entry of top) {
@@ -72,11 +72,11 @@ describe("hostile filenames", () => {
     }
   });
 
-  it("a deeply nested path stays confined to the workspace", () => {
+  it("a deeply nested path stays confined to the workspace", async () => {
     const deep = path.join("a", "b", "c", "d", "e", "f", "g.txt");
     mkdirSync(path.dirname(path.join(src, deep)), { recursive: true });
     writeFileSync(path.join(src, deep), "deep\n");
-    const { treeDir } = build(src);
+    const { treeDir } = await build(src);
     const out = path.join(treeDir, deep);
     expect(existsSync(out)).toBe(true);
     expect(path.resolve(out).startsWith(path.resolve(treeDir))).toBe(true);

@@ -2,15 +2,19 @@ import { describe, expect, it } from "vitest";
 import { fileCapabilities, processorSupported } from "./file-capabilities.js";
 
 describe("file capability registry", () => {
-  it("keeps PDF and XLSX unsupported until verified processors exist", () => {
-    for (const name of ["synthetic.pdf", "synthetic.xlsx"]) {
-      expect(fileCapabilities(name, true)).toMatchObject({
-        parserAvailable: false,
-        scannerAvailable: false,
-        transformers: [],
-        verifierAvailable: false,
-      });
-    }
+  it("supports verified XLSX transformation while keeping PDF local-only", () => {
+    expect(fileCapabilities("synthetic.xlsx", true)).toMatchObject({
+      parserAvailable: true,
+      scannerAvailable: true,
+      transformers: ["pseudonymize-student-records", "safety-check"],
+      verifierAvailable: true,
+    });
+    expect(fileCapabilities("synthetic.pdf", true)).toMatchObject({
+      parserAvailable: false,
+      scannerAvailable: false,
+      transformers: [],
+      verifierAvailable: false,
+    });
   });
 
   it("advertises only executable processors for delimited tables", () => {

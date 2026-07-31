@@ -36,6 +36,42 @@ describe("Prepared Workspace recovery reconciliation", () => {
     await rm(f.root, { recursive: true });
   });
 
+  it("accepts a complete run whose unavailable files were omitted", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.workspace, "manifest.json"), JSON.stringify({
+      runId: "new",
+      files: [{
+        relpath: "unavailable.dat",
+        status: "error",
+        omitted: true,
+        transmission: "blocked",
+      }],
+      tabularAcceptance: { launchAllowed: true, rawFallbackUsed: false },
+    }));
+    expect(await validatePreparedWorkspace(f)).toMatchObject({ kind: "valid", runId: "new" });
+    await rm(f.root, { recursive: true });
+  });
+
+  it("accepts a launchable run whose high-risk file was INCLUDED with a warning", async () => {
+    // High-risk findings are informational only — an included-unverified file is the
+    // intended successful outcome and must NOT trigger recovery.
+    const f = await fixture();
+    await writeFile(path.join(f.workspace, "manifest.json"), JSON.stringify({
+      runId: "new",
+      files: [{
+        relpath: "records.csv",
+        status: "ok",
+        omitted: false,
+        transmission: "approved",
+        outcome: "included-unverified",
+        unresolvedHighRiskCount: 4,
+      }],
+      tabularAcceptance: { launchAllowed: true, rawFallbackUsed: false },
+    }));
+    expect(await validatePreparedWorkspace(f)).toMatchObject({ kind: "valid", runId: "new" });
+    await rm(f.root, { recursive: true });
+  });
+
   it.each([
     ["deleted workspace", async (f: Awaited<ReturnType<typeof fixture>>) => rm(f.workspace, { recursive: true }), "prepared-workspace-missing"],
     ["missing manifest", async (f) => rm(path.join(f.workspace, "manifest.json")), "manifest-missing"],
@@ -70,18 +106,12 @@ describe("Prepared Workspace recovery reconciliation", () => {
     await rm(f.root, { recursive: true });
   });
 
-  it("rejects incomplete, high-risk, mismatched, and nested runs", async () => {
-    for (const kind of ["started", "high", "mismatch", "nested"] as const) {
+  it("rejects incomplete, mismatched, and nested runs", async () => {
+    for (const kind of ["started", "mismatch", "nested"] as const) {
       const f = await fixture();
       if (kind === "started") {
         await writeFile(path.join(f.workspace, ".yuhi", "session.json"), JSON.stringify({
           schemaVersion: 2, preparedBy: "Yuhi", runId: "new", preparationResult: "started",
-        }));
-      } else if (kind === "high") {
-        await writeFile(path.join(f.workspace, "manifest.json"), JSON.stringify({
-          runId: "new",
-          files: [{ unresolvedHighRiskCount: 1 }],
-          tabularAcceptance: { launchAllowed: true, rawFallbackUsed: false },
         }));
       } else if (kind === "mismatch") {
         await writeFile(path.join(f.workspace, ".yuhi", "session.json"), JSON.stringify({

@@ -2,6 +2,7 @@ import {
   classifyStudentRecordHeaders,
   classifyStudentRecordTable,
   parseDelimitedTable,
+  splitTablePreamble,
   type ScanFinding,
   type Severity,
   type StudentRecordClassification,
@@ -247,10 +248,25 @@ function scanStructuredPersonalData(content: string, relpath?: string): ScanFind
       }
     }
   } catch {
-    malformed = true;
-    const header = content.replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0] ?? "";
-    const delimiter = header.includes("\t") ? "\t" : ",";
-    classification = classifyStudentRecordHeaders(header.split(delimiter));
+    // Real exports often prepend title/metadata rows before the header, which
+    // makes strict parsing fail as "ragged". Recover the real table region so the
+    // file is still classified as sensitive (and routed to transformation, which
+    // strips the same preamble) instead of being treated as opaque/malformed.
+    const stripped = (() => {
+      try {
+        return splitTablePreamble(content);
+      } catch {
+        return null;
+      }
+    })();
+    if (stripped) {
+      classification = classifyStudentRecordTable(stripped.table.rows);
+    } else {
+      malformed = true;
+      const header = content.replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0] ?? "";
+      const delimiter = header.includes("\t") ? "\t" : ",";
+      classification = classifyStudentRecordHeaders(header.split(delimiter));
+    }
   }
   if (classification.sensitivity === "none") return [];
   const findings: ScanFinding[] = [];

@@ -12,6 +12,9 @@ export * from "./route-executor.js";
 export * from "./prepare-workspace.js";
 export * from "./prepared-run.js";
 export * from "./prepared-metrics.js";
+export * from "./agent-changes.js";
+export * from "./workflow-state.js";
+export * from "./background-documents.js";
 
 // Convenience re-exports so the CLI/VS Code can depend on just @yuhi/core.
 export {

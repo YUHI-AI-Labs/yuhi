@@ -6,6 +6,7 @@ export interface MatchableFile {
   relpath: string;
   findings: ScanFinding[];
   inspection?: FileInfo["inspection"];
+  documentInspection?: FileInfo["documentInspection"];
 }
 
 /** Precompiled matcher for a rule (path globs + detector set). */

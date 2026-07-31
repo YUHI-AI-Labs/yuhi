@@ -84,6 +84,54 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
       inspectionSucceeded: registeredCapabilities.parserAvailable,
       contentVerified: registeredCapabilities.parserAvailable,
     };
+    const inspectedPdf = capabilities.fileType === "pdf" && capabilities.contentVerified;
+    const pdfSecretFinding = inspectedPdf && file.findings.some(
+      (finding) =>
+        (finding.severity === "high" || finding.severity === "critical") &&
+        !finding.detector.startsWith("document-personal-"),
+    );
+    const pdfPersonalFinding = inspectedPdf && file.findings.some(
+      (finding) => finding.detector.startsWith("document-personal-"),
+    );
+
+    // Backward-compatible migration for Yuhi's former generated default.
+    // A user-authored block rule remains authoritative; only the exact
+    // first-party legacy rule name is upgraded, and only for .env files.
+    const environmentFile = /(?:^|\/)\.env(?:\.[^/]*)?$/i.test(file.relpath) &&
+      !/\.env\.(?:example|sample)$/i.test(file.relpath);
+    if (environmentFile && winningRule === "block-environment-files") {
+      action = "prepare-locally";
+      winningRule = "yuhi:environment-sanitized-copy";
+      reason =
+        "Environment configuration will be sanitized locally; secret values stay on this computer.";
+      winningDestinations = ["external", "local"];
+      winningProcessors = ["sanitize-environment", "safety-check"];
+    }
+    const structuredCredentialFile = /(?:^|\/)(?:credentials\.json|secrets?\.(?:json|ya?ml))$/i
+      .test(file.relpath);
+    if (
+      structuredCredentialFile &&
+      (winningRule === "block-environment-files" ||
+        winningRule === "block-credential-files" ||
+        winningRule === "block-secret-directories")
+    ) {
+      action = "prepare-locally";
+      winningRule = "yuhi:credential-sanitized-copy";
+      reason =
+        "Credential configuration will be sanitized locally; secret values stay on this computer.";
+      winningDestinations = ["external", "local"];
+      winningProcessors = ["sanitize-credentials", "safety-check"];
+    }
+    const privateKeyFile =
+      /(?:^|\/)(?:id_rsa|id_ed25519|[^/]+\.(?:pem|key|p12|pfx|jks|keystore|crt|cer))$/i
+        .test(file.relpath);
+    if (privateKeyFile) {
+      action = "local-only";
+      winningRule = "file-type:private-key-local-only";
+      reason = "Private key files stay on this computer and are never copied to the Prepared Workspace.";
+      winningDestinations = ["local"];
+      winningProcessors = undefined;
+    }
 
     // An unavailable parser is a final local-only route, not an `allow` that a
     // later binary check silently discards. Likewise, never select a processor
@@ -93,7 +141,21 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
       !capabilities.scannerAvailable ||
       !capabilities.contentVerified
     ) {
-      if (action !== "block") {
+      const credentialOrPrivateKeyRoute =
+        action === "block" ||
+        winningRule === "file-type:private-key-local-only" ||
+        /(?:credential|private-key|secret-director)/i.test(winningRule);
+      const unverifiedRawAllowed =
+        !credentialOrPrivateKeyRoute &&
+        (capabilities.fileType === "pdf" || capabilities.fileType === "binary");
+      if (unverifiedRawAllowed) {
+        action = "allow";
+        winningRule = `file-type:${capabilities.fileType}-unverified-included`;
+        reason =
+          `This ${capabilities.fileType.toUpperCase()} file could not be inspected. ` +
+          "It will be included unchanged with an explicit warning.";
+        winningDestinations = ["external", "local"];
+      } else if (!credentialOrPrivateKeyRoute) {
         action = "local-only";
         winningRule = capabilities.parserAvailable
           ? `file-type:${capabilities.fileType}-inspection-incomplete`
@@ -106,6 +168,29 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
               : `File kept local because verified local ${capabilities.fileType.toUpperCase()} inspection is unavailable.`;
         winningDestinations = ["local"];
       }
+      winningProcessors = undefined;
+    } else if (pdfSecretFinding) {
+      action = "local-only";
+      winningRule = "document:unresolved-secret-local-only";
+      reason =
+        "PDF inspection detected unresolved secret-like content; the original document stays local.";
+      winningDestinations = ["local"];
+      winningProcessors = undefined;
+    } else if (pdfPersonalFinding && winningRule === "default") {
+      action = "allow";
+      winningRule = "document:personal-information-warning";
+      reason =
+        "PDF was inspected locally and may contain personal information; included unchanged with a warning.";
+      winningDestinations = ["external", "local"];
+      winningProcessors = undefined;
+    } else if (inspectedPdf && winningRule === "default" && action === "allow") {
+      action = "allow";
+      winningRule = "document:pdf-inspected";
+      reason =
+        file.documentInspection?.extractionMethod === "ocr"
+          ? "PDF was inspected locally with OCR and no security findings were detected."
+          : "PDF text was inspected locally and no security findings were detected.";
+      winningDestinations = ["external", "local"];
       winningProcessors = undefined;
     } else if (
       winningProcessors?.some((processor) => !processorSupported(capabilities, processor))

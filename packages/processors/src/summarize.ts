@@ -26,6 +26,10 @@ export interface SummarizeOptions {
   chunkChars?: number;
   /** Safety cap on chunks. Default 24. Behavior when exceeded depends on `mode`. */
   maxChunks?: number;
+  /** Maximum completion tokens per local-model request. Default 768. */
+  maxOutputTokens?: number;
+  /** Maximum concurrent chunk requests. Default 2; output order stays deterministic. */
+  maxParallelRequests?: number;
   /**
    * Reduction mode governs what happens when the input exceeds `maxChunks`:
    *  - conservative → throw (input exceeds the safe limit; nothing is omitted silently)
@@ -83,6 +87,7 @@ export function createSummarizer(options: SummarizeOptions): Processor {
   const chunkChars = options.chunkChars ?? 6000;
   const maxChunks = options.maxChunks ?? 24;
   const mode: ReductionMode = options.mode ?? "balanced";
+  const maxParallelRequests = Math.max(1, Math.floor(options.maxParallelRequests ?? 2));
 
   return {
     id: "summarize-local",
@@ -100,12 +105,28 @@ export function createSummarizer(options: SummarizeOptions): Processor {
       }
       const chunks = allChunks.slice(0, maxChunks);
 
-      const partials: string[] = [];
-      for (const c of chunks) {
-        // Normalize each response: strip any <think>…</think> reasoning so it never
-        // reaches prepared artifacts. Raw response is discarded after this.
-        partials.push(normalizeModelResponse(await provider.generate(c, buildOpts(options, SUMMARY_SYSTEM))));
-      }
+      // Run independent chunk summaries with bounded concurrency. Results are
+      // written by index so consolidation remains deterministic regardless of
+      // completion order.
+      const partials = new Array<string>(chunks.length);
+      let nextIndex = 0;
+      const workers = Array.from(
+        { length: Math.min(maxParallelRequests, chunks.length) },
+        async () => {
+          while (true) {
+            const index = nextIndex++;
+            if (index >= chunks.length) return;
+            partials[index] = normalizeModelResponse(
+              await provider.generate(chunks[index]!, buildOpts(options, SUMMARY_SYSTEM)),
+            );
+          }
+        },
+      );
+      const settled = await Promise.allSettled(workers);
+      const failure = settled.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failure) throw failure.reason;
 
       let output = partials.join("\n\n");
       if (partials.length > 1) {
@@ -139,6 +160,7 @@ export function createSummarizer(options: SummarizeOptions): Processor {
           itemsChanged: chunks.length,
           note:
             `local summary via ${provider.id}/${modelName}; ${chunks.length}/${allChunks.length} chunk(s)` +
+            `; parallelism ${Math.min(maxParallelRequests, Math.max(1, chunks.length))}` +
             (omitted > 0 ? `; ${omitted} omitted (${mode})` : "") +
             "; pending safety-check",
         },
@@ -148,7 +170,7 @@ export function createSummarizer(options: SummarizeOptions): Processor {
 }
 
 function buildOpts(o: SummarizeOptions, system: string): GenerateOptions {
-  const g: GenerateOptions = { system };
+  const g: GenerateOptions = { system, maxTokens: o.maxOutputTokens ?? 768 };
   if (o.model !== undefined) g.model = o.model;
   if (o.signal !== undefined) g.signal = o.signal;
   return g;

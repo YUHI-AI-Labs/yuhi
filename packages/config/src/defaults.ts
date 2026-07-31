@@ -2,7 +2,7 @@ import type { YuhiConfig } from "./schema.js";
 
 /**
  * The default policy used when generating a new yuhi.yaml. Conservative by design:
- * environment/credential files are blocked, detector-driven secrets are redacted.
+ * environment files are sanitized; credential containers and keys remain local.
  */
 export function defaultConfig(projectName: string): YuhiConfig {
   return {
@@ -19,15 +19,39 @@ export function defaultConfig(projectName: string): YuhiConfig {
     },
     rules: [
       {
-        name: "block-environment-files",
+        name: "sanitize-environment-files",
         match: {
           paths: [
             "**/.env",
             "**/.env.*",
             "!**/.env.example",
             "!**/.env.sample",
+          ],
+        },
+        action: "prepare-locally",
+        processors: ["sanitize-environment", "safety-check"],
+        reason: "Secret values stay local while non-sensitive configuration is preserved.",
+      },
+      {
+        name: "sanitize-credential-files",
+        match: {
+          paths: [
             "**/credentials.json",
+            "**/secrets.json",
+            "**/secrets.yaml",
+            "**/secrets.yml",
+          ],
+        },
+        action: "prepare-locally",
+        processors: ["sanitize-credentials", "safety-check"],
+        reason: "Credential values stay local while a placeholder copy is created.",
+      },
+      {
+        name: "block-private-key-files",
+        match: {
+          paths: [
             "**/*.pem",
+            "**/*.key",
             "**/id_rsa",
             "**/id_ed25519",
           ],
@@ -90,18 +114,36 @@ workspace:
   large_file_bytes: 5000000
 
 rules:
-  - name: block-environment-files
+  - name: sanitize-environment-files
     match:
       paths:
         - "**/.env"
         - "**/.env.*"
         - "!**/.env.example"   # keep example env files (safe, useful context)
         - "!**/.env.sample"
+    action: prepare-locally
+    processors: [sanitize-environment, safety-check]
+    reason: "Secret values stay local while non-sensitive configuration is preserved."
+
+  - name: sanitize-credential-files
+    match:
+      paths:
         - "**/credentials.json"
+        - "**/secrets.json"
+        - "**/secrets.yaml"
+        - "**/secrets.yml"
+    action: prepare-locally
+    processors: [sanitize-credentials, safety-check]
+    reason: "Credential values stay local while a placeholder copy is created."
+
+  - name: block-private-key-files
+    match:
+      paths:
         - "**/*.pem"
+        - "**/*.key"
         - "**/id_rsa"
     action: block
-    reason: "Environment and credential files must not be exposed."
+    reason: "Credential containers and private keys stay on this computer."
 
   - name: redact-detected-secrets
     match:

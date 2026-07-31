@@ -161,10 +161,22 @@ export type LaunchOutcome = "Complete" | "Complete with warnings" | "Partial" | 
 export function classifyOutcome(report: PrepareReport): LaunchOutcome {
   const errs = report.errors.length;
   const blocked = report.blocked.length;
-  const preparedOk = report.files.filter((f) => f.status === "ok" && !f.omitted).length;
-  if (preparedOk === 0 && (errs > 0 || blocked > 0)) return "Failed";
-  if (errs > 0) return "Partial";
-  if (blocked > 0) return "Complete with warnings";
+  // One launch decision: FAILED only when an INCLUDED file is not usable (copy
+  // failure) or the workspace itself is invalid (launchAllowed=false). Everything
+  // else is launchable — with warnings when files were excluded/kept-local/limited.
+  if (
+    report.files.some(
+      (file) =>
+        !file.omitted &&
+        (file.status !== "ok" || file.transmission !== "approved"),
+    ) ||
+    report.tabularAcceptance?.launchAllowed === false
+  ) {
+    return "Failed";
+  }
+  if (errs > 0 || blocked > 0 || report.tabularAcceptance?.hasLimitations) {
+    return "Complete with warnings";
+  }
   return "Complete";
 }
 
@@ -269,7 +281,7 @@ export function formatSummaryDetail(s: PreparedSummary): string {
     `Workspace-only instruction: ${runtime.workspaceInstructionPresent ? "enabled" : "not present"}`,
     `Filesystem enforcement: ${runtime.filesystemEnforcement === "none" ? "not enabled" : runtime.filesystemEnforcement}`,
     `OS sandbox: ${runtime.osSandboxEnabled ? "enabled" : "not enabled"}`,
-    "External filesystem reads are restricted to the Prepared Workspace by Claude Code sandbox policy.",
+    "Known sensitive locations are denied, but user-approved external-path access may still be possible.",
   ].join("\n");
 }
 
@@ -303,7 +315,7 @@ export function preparedStatusTooltipLines(runId: string, metrics: PreparedMetri
     `Workspace-only instruction: ${runtime.workspaceInstructionPresent ? "enabled" : "not present"}`,
     `Filesystem enforcement: ${runtime.filesystemEnforcement === "none" ? "not enabled" : runtime.filesystemEnforcement}`,
     `OS sandbox: ${runtime.osSandboxEnabled ? "enabled" : "not enabled"}`,
-    "External filesystem reads are restricted to the Prepared Workspace by Claude Code sandbox policy.",
+    "Known sensitive locations are denied, but user-approved external-path access may still be possible.",
   ];
 }
 
@@ -325,13 +337,19 @@ This is a generated **Yuhi Prepared Workspace**.
 - Missing information should be reported instead of retrieving files from parent
   directories or absolute paths.
 - Yuhi controls the initial prepared context.
-- Yuhi configures Claude Code's OS-level sandbox for this workspace.
-- Workspace boundary: enforced for Claude Code file and Bash access.
-- Reading outside this Prepared Workspace is denied.
+- Yuhi writes a best-effort filesystem-deny policy for Claude Code (home directory, /tmp, /private/tmp).
+- Workspace boundary: advisory — defense-in-depth over the initial context, not OS-level isolation.
+- Known sensitive locations are denied best-effort, but user-approved external paths may still be accessible.
 
 ## Guidance for any AI agent working here
 
 Work only within the currently opened workspace.
+
+First read \`.yuhi/context/AGENT_HANDOFF.md\`.
+
+If \`.yuhi/context/document-index.md\` exists, read it next as Yuhi's locally
+generated document map. Use linked summaries as prepared context and consult the
+original document only when the summary is insufficient.
 
 Do not access the original project directory or any absolute path outside this
 workspace.
@@ -343,9 +361,10 @@ Base all analysis and edits only on files available in this prepared workspace.
 If required information is missing, stop and report what is missing rather than
 opening external paths.
 
-Yuhi controls the prepared input context and installs a fail-closed Claude Code
-sandbox policy. If the sandbox is unavailable or the policy cannot be verified,
-Claude Code must not start from this workspace.
+Yuhi controls the prepared input context and writes a best-effort Claude Code
+filesystem-deny policy for this workspace. This is an advisory, defense-in-depth
+boundary — not OS-level isolation. User-approved external paths may still be
+accessible, so treat missing information as missing rather than reaching outside.
 `;
 
 export function formatPreparedWorkspaceNotice(metrics: PreparedMetrics): string {
@@ -378,6 +397,14 @@ export function formatPreparedWorkspaceNotice(metrics: PreparedMetrics): string 
 
 /** Relative location of the notice inside a prepared workspace. */
 export const PREPARED_NOTICE_RELPATH = path.join(".yuhi", "PREPARED_WORKSPACE.md");
+export const PREPARED_CONTEXT_INSTRUCTION_RELPATH = path.join(".claude", "CLAUDE.md");
+export const PREPARED_CONTEXT_INSTRUCTION = `# Yuhi Prepared Context
+
+First read \`.yuhi/context/AGENT_HANDOFF.md\`. Then read
+\`.yuhi/context/document-index.md\` when it exists. Use linked local summaries as
+the initial document map. Open the original prepared document only when the summary
+is insufficient. Do not look outside this Prepared Workspace.
+`;
 
 /** Write the notice into the prepared workspace. `writer`/`mkDir` are injectable for tests. */
 export async function writePreparedNotice(
@@ -450,7 +477,7 @@ export const CLAUDE_SANDBOX_POLICY = {
     excludedCommands: [],
     autoAllowBashIfSandboxed: false,
     filesystem: {
-      denyRead: ["~/"],
+      denyRead: ["~/", "/tmp", "/private/tmp"],
       allowRead: ["."],
     },
   },
@@ -458,6 +485,10 @@ export const CLAUDE_SANDBOX_POLICY = {
     defaultMode: "default",
     disableBypassPermissionsMode: "disable",
     disableAutoMode: "disable",
+    deny: [
+      "Read(//tmp/**)",
+      "Read(//private/tmp/**)",
+    ],
   },
 } as const;
 
@@ -480,14 +511,66 @@ export async function writeAndVerifyClaudeSandboxPolicy(
     saved.sandbox?.allowUnsandboxedCommands !== false ||
     !Array.isArray(saved.sandbox?.excludedCommands) ||
     saved.sandbox.excludedCommands.length !== 0 ||
-    saved.sandbox?.filesystem?.denyRead?.[0] !== "~/" ||
+    !saved.sandbox?.filesystem?.denyRead?.includes("~/") ||
+    !saved.sandbox?.filesystem?.denyRead?.includes("/tmp") ||
+    !saved.sandbox?.filesystem?.denyRead?.includes("/private/tmp") ||
     saved.sandbox?.filesystem?.allowRead?.[0] !== "." ||
+    !saved.permissions?.deny?.includes("Read(//tmp/**)") ||
+    !saved.permissions?.deny?.includes("Read(//private/tmp/**)") ||
     saved.permissions?.disableBypassPermissionsMode !== "disable" ||
     saved.permissions?.disableAutoMode !== "disable"
   ) {
     throw new Error("Yuhi could not verify the Claude Code sandbox policy. Launch blocked.");
   }
   return target;
+}
+
+/**
+ * Advisory re-check of a policy already on disk — same structural checks as
+ * {@link writeAndVerifyClaudeSandboxPolicy} but WITHOUT the strict managed-path
+ * assertion or a rewrite. Used at click time so a launch is never blocked by a
+ * stale/false in-memory flag or a path-assertion edge case when the policy file
+ * itself is present and correct. Returns false only if it is missing or wrong.
+ */
+export async function verifyExistingClaudeSandboxPolicy(outDir: string): Promise<boolean> {
+  return (await claudeSandboxPolicyDiagnostic(outDir)).valid;
+}
+
+/** The single source of truth for "is the on-disk Claude sandbox policy correct?".
+ *  Returns a structured, metadata-safe result: `valid` plus, on failure, the exact
+ *  first failed assertion and whether the file was present. Never returns paths,
+ *  usernames, or secret values. Used both to gate launch and to log honest reasons. */
+export async function claudeSandboxPolicyDiagnostic(
+  outDir: string,
+): Promise<{ valid: boolean; present: boolean; failedAssertion?: string }> {
+  let saved: typeof CLAUDE_SANDBOX_POLICY;
+  try {
+    saved = JSON.parse(
+      await readFile(path.join(outDir, CLAUDE_SANDBOX_RELPATH), "utf8"),
+    ) as typeof CLAUDE_SANDBOX_POLICY;
+  } catch {
+    return { valid: false, present: false, failedAssertion: "policy-file-missing-or-unreadable" };
+  }
+  const checks: [string, boolean][] = [
+    ["sandbox.enabled===true", saved.sandbox?.enabled === true],
+    ["sandbox.failIfUnavailable===true", saved.sandbox?.failIfUnavailable === true],
+    ["sandbox.allowUnsandboxedCommands===false", saved.sandbox?.allowUnsandboxedCommands === false],
+    ["sandbox.excludedCommands===[]", Array.isArray(saved.sandbox?.excludedCommands) && saved.sandbox.excludedCommands.length === 0],
+    ["sandbox.filesystem.denyRead⊇[~/,/tmp,/private/tmp]",
+      !!saved.sandbox?.filesystem?.denyRead?.includes("~/") &&
+      !!saved.sandbox?.filesystem?.denyRead?.includes("/tmp") &&
+      !!saved.sandbox?.filesystem?.denyRead?.includes("/private/tmp")],
+    ["sandbox.filesystem.allowRead[0]===.", saved.sandbox?.filesystem?.allowRead?.[0] === "."],
+    ["permissions.deny⊇[Read(//tmp/**),Read(//private/tmp/**)]",
+      !!saved.permissions?.deny?.includes("Read(//tmp/**)") &&
+      !!saved.permissions?.deny?.includes("Read(//private/tmp/**)")],
+    ["permissions.disableBypassPermissionsMode===disable", saved.permissions?.disableBypassPermissionsMode === "disable"],
+    ["permissions.disableAutoMode===disable", saved.permissions?.disableAutoMode === "disable"],
+  ];
+  const failed = checks.find(([, ok]) => !ok);
+  return failed
+    ? { valid: false, present: true, failedAssertion: failed[0] }
+    : { valid: true, present: true };
 }
 
 /** Read schema v2 and upgrade schema v1 metadata in memory without rewriting it. */
@@ -531,8 +614,7 @@ export function normalizePreparedSession(value: unknown): PreparedSession {
   const runtime =
     raw.schemaVersion === 2 &&
     storedRuntime?.filesystemEnforcement === "claude-code-sandbox" &&
-    storedRuntime.osSandboxEnabled === true &&
-    storedRuntime.externalPathAccessPossible === false
+    storedRuntime.osSandboxEnabled === true
       ? buildPreparedRuntimeBoundary("claude-code-sandbox")
       : buildPreparedRuntimeBoundary();
   return {
@@ -595,7 +677,7 @@ export async function appendLaunchAudit(
   await appendFile(target, JSON.stringify({ schemaVersion: 1, createdAt, runId, event }) + "\n", "utf8");
 }
 
-async function writePreparedArtifacts(
+export async function writePreparedArtifacts(
   root: string,
   report: PrepareReport,
   outcome: LaunchOutcome,
@@ -603,6 +685,9 @@ async function writePreparedArtifacts(
   await assertPreparedPath(root, report.outDir);
   await writeAndVerifyClaudeSandboxPolicy(root, report.outDir);
   await writePreparedNotice(report.outDir, buildPreparedMetrics(report));
+  const contextInstruction = path.join(report.outDir, PREPARED_CONTEXT_INSTRUCTION_RELPATH);
+  await mkdir(path.dirname(contextInstruction), { recursive: true });
+  await writeFile(contextInstruction, PREPARED_CONTEXT_INSTRUCTION, "utf8");
   await writeSessionMetadata(root, report, outcome);
 }
 
@@ -789,6 +874,12 @@ export interface PrepareAndStartClaudeDeps extends PrepareDeps {
   reviewDetails(): Promise<"open" | "cancel" | void>;
   /** Separate, explicit acknowledgement when high-risk findings would remain unchanged. */
   confirmHighRiskOverride?(count: number): Promise<boolean>;
+  /**
+   * True when the user already chose "Prepare and start Claude Code": once the
+   * workspace is launchable, transition into Yuhi Mode automatically without a
+   * second confirmation click. File-level exclusions never prevent this.
+   */
+  autoLaunch?: boolean;
 }
 
 export type PrepareAndStartClaudeResult =
@@ -852,7 +943,10 @@ export async function runPrepareAndStartClaude(
     }
     await appendLaunchAudit(root, report.outDir, report.runId, "unresolved-finding-override");
   }
-  while (true) {
+  // Auto-transition: the user already chose to start Claude Code, so a launchable
+  // workspace opens straight into Yuhi Mode — no second confirmation click. The
+  // exclusion/warning summary is surfaced non-blockingly after the window opens.
+  while (!deps.autoLaunch) {
     const confirmation = await launchStage("confirmation-failure", () =>
       deps.confirmLaunch(summary),
     );

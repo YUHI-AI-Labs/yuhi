@@ -27,3 +27,7 @@ apps/vscode/*.vsix
 
 # Demo fixture (intentional fake secrets for the walkthrough)
 !examples/demo/.env
+HANDOFF.md
+
+# Local working brief — never commit (contains local notes)
+WEBSITE_RENEWAL_INSTRUCTION.md

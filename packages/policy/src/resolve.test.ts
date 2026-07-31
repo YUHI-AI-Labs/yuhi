@@ -41,6 +41,54 @@ describe("resolvePolicy", () => {
     expect(decisions[0]?.action).toBe("block");
   });
 
+  it("upgrades Yuhi's legacy generated env rule to a verified sanitized copy", () => {
+    const rules: PolicyInput["rules"] = [{
+      name: "block-environment-files",
+      match: { paths: ["**/.env", "**/.env.*"] },
+      action: "block",
+    }];
+    const decision = resolvePolicy(input({ rules }), [{
+      relpath: ".env",
+      findings: [finding("api-key")],
+      inspection: {
+        ...fileCapabilities(".env"),
+        inspectionAttempted: true,
+        inspectionSucceeded: true,
+        contentVerified: true,
+      },
+    }]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "prepare-locally",
+      ruleName: "yuhi:environment-sanitized-copy",
+      processors: ["sanitize-environment", "safety-check"],
+    });
+  });
+
+  it("does not override a differently named user block rule", () => {
+    const decision = resolvePolicy(input(), [{ relpath: ".env", findings: [] }]).decisions[0];
+    expect(decision?.action).toBe("block");
+    expect(decision?.ruleName).toBe("block-env");
+  });
+
+  it("keeps private-key file types local even without a project rule", () => {
+    for (const relpath of [
+      "server.pem",
+      "private.key",
+      "identity.p12",
+      "identity.pfx",
+      "trust.jks",
+      "server.crt",
+      "keys/id_rsa",
+      "keys/id_ed25519",
+    ]) {
+      const decision = resolvePolicy(input({ rules: [] }), [{ relpath, findings: [] }]).decisions[0];
+      expect(decision).toMatchObject({
+        action: "local-only",
+        ruleName: "file-type:private-key-local-only",
+      });
+    }
+  });
+
   it("most-restrictive-wins: .env.example matches allow AND is not blocked by .env glob", () => {
     // .env.example does NOT match **/.env but matches **/.env.* (block) and allow rule.
     // block is more restrictive, so it wins — demonstrating fail-safe precedence.
@@ -72,7 +120,7 @@ describe("resolvePolicy", () => {
     expect(decisions[0]?.ruleName).toBe("detector:tabular-auto-pseudonymize");
   });
 
-  it("routes an unparsed PDF local-only instead of allow", () => {
+  it("includes an unparsed PDF unchanged with an explicit warning route", () => {
     const inspection = {
       fileType: "pdf" as const,
       parserAvailable: false,
@@ -87,10 +135,101 @@ describe("resolvePolicy", () => {
       { relpath: "synthetic.pdf", findings: [], inspection },
     ]).decisions[0];
     expect(decision).toMatchObject({
-      action: "local-only",
-      ruleName: "file-type:pdf-inspection-unavailable",
+      action: "allow",
+      ruleName: "file-type:pdf-unverified-included",
     });
     expect(decision).not.toHaveProperty("processors");
+  });
+
+  it("keeps an inspected PDF with an unresolved secret local", () => {
+    const capabilities = {
+      ...fileCapabilities("secret.pdf"),
+      parserAvailable: true,
+      scannerAvailable: true,
+      verifierAvailable: true,
+      inspectionAttempted: true,
+      inspectionSucceeded: true,
+      contentVerified: true,
+    };
+    const decision = resolvePolicy(input({ rules: [] }), [{
+      relpath: "secret.pdf",
+      findings: [finding("api-key")],
+      inspection: capabilities,
+    }]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "local-only",
+      ruleName: "document:unresolved-secret-local-only",
+    });
+  });
+
+  it("includes an inspected PDF with possible personal information and a warning", () => {
+    const capabilities = {
+      ...fileCapabilities("personal.pdf"),
+      parserAvailable: true,
+      scannerAvailable: true,
+      verifierAvailable: true,
+      inspectionAttempted: true,
+      inspectionSucceeded: true,
+      contentVerified: true,
+    };
+    const personal: ScanFinding = {
+      detector: "document-personal-email",
+      path: "personal.pdf",
+      severity: "medium",
+      maskedPreview: "[possible personal information]",
+      description: "Possible personal information",
+    };
+    const decision = resolvePolicy(input({ rules: [] }), [{
+      relpath: "personal.pdf",
+      findings: [personal],
+      inspection: capabilities,
+    }]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "allow",
+      ruleName: "document:personal-information-warning",
+    });
+  });
+
+  it("includes an uninspectable binary unchanged with an explicit warning route", () => {
+    const inspection = {
+      fileType: "binary" as const,
+      parserAvailable: false,
+      scannerAvailable: false,
+      transformers: [],
+      verifierAvailable: false,
+      inspectionAttempted: false,
+      inspectionSucceeded: false,
+      contentVerified: false,
+    };
+    const decision = resolvePolicy(input({ rules: [] }), [
+      { relpath: "synthetic.bin", findings: [], inspection },
+    ]).decisions[0];
+    expect(decision).toMatchObject({
+      action: "allow",
+      ruleName: "file-type:binary-unverified-included",
+    });
+  });
+
+  it("never lets unverified binary inclusion override a private-key route", () => {
+    const inspection = {
+      fileType: "binary" as const,
+      parserAvailable: false,
+      scannerAvailable: false,
+      transformers: [],
+      verifierAvailable: false,
+      inspectionAttempted: false,
+      inspectionSucceeded: false,
+      contentVerified: false,
+    };
+    for (const relpath of ["private.key", "server.pem", "keys/id_rsa"]) {
+      const decision = resolvePolicy(input({ rules: [] }), [
+        { relpath, findings: [], inspection },
+      ]).decisions[0];
+      expect(decision).toMatchObject({
+        action: "local-only",
+        ruleName: "file-type:private-key-local-only",
+      });
+    }
   });
 
   it("never selects an XLSX processor when no parser exists", () => {
