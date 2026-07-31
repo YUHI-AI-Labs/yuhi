@@ -8,11 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While Yuhi is in `0.x`, minor releases may include breaking changes; these will
 be called out explicitly.
 
+## [0.3.0] — released
+
+Repository Ready: a shareable, **public-safe** Repository Report (terminal / Markdown / JSON /
+SVG), a read-only **What the AI Can See** review in VS Code, per-format document inspection that
+delivers sanitized companions or safe placeholders (originals of PDF/DOCX/PPTX are never shared),
+and the report-only Yuhi GitHub Action. The VS Code extension is published on the Marketplace
+(0.3.0); the npm package `@yuhi-ai-labs/yuhi` is published on the `beta` dist-tag.
+**CLI agent launch (`yuhi run` / `yuhi open`) is temporarily disabled** — prepare and report on
+the CLI; launch Claude Code from the VS Code extension.
+
 ## [Unreleased]
 
-This is the initial MVP of Yuhi. Nothing has been published to npm, the VS Code
-Marketplace, or Open VSX yet. The items below describe the first working
-end-to-end flow.
+The items below describe the initial end-to-end flow. Some early command surface (notably
+`yuhi run <agent>` CLI agent launch) is **superseded / temporarily disabled** in 0.3.0; launch is
+now driven by the VS Code extension.
 
 ### Added
 

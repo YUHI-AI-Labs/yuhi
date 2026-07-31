@@ -2,7 +2,7 @@
 
 <p align="center"><strong>让任何仓库都成为 AI-ready 的仓库。</strong></p>
 
-<p align="center">在编码智能体看到你的仓库之前，Yuhi 会先准备一个更小、更干净、更安全的工作区——然后交给你一份可分享的报告，清楚说明它究竟做了什么。</p>
+<p align="center">在编码智能体看到你的仓库之前，Yuhi 会先准备一个更小、更干净、更安全的工作区——你可以在本地详细查看 AI 能看到什么，而可分享的只是 public-safe 的汇总摘要。</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
@@ -51,7 +51,7 @@ Yuhi 回答一个简单的问题——*这个仓库里，AI 真正应该看到�
 然后正好准备这么多:
 
 - **拦截机密。** 凭据和私钥会在本地被无害化，绝不会交给智能体。
-- **将文档转换为对 AI 友好的内容。** PDF / DOCX / PPTX 会变成经过净化的 Markdown 副本;原件绝不共享。
+- **将文档转换为对 AI 友好的内容。** 受支持的文档（PDF / DOCX / PPTX）会变成经过净化的 Markdown 副本；当无法验证安全准备时，源文件会保留在本地或替换为安全占位符，原始文件绝不会交给智能体。
 - **将仓库缩减到真正重要的部分。** 过大的、二进制的、无关的文件都留在本地，不予发送。
 - **一条命令即准备好 Claude Code。** 把智能体指向 Prepared Workspace，即可开始。
 
@@ -87,8 +87,7 @@ yuhi report <run> --format svg > .github/yuhi-badge.svg
 然后在一个标记为 **Prepared by Yuhi** 的新窗口中打开 Prepared Workspace，
 供官方的 `anthropic.claude-code` 扩展使用。
 
-**在命令行中**——执行 `yuhi prepare` 后，在 Yuhi 生成的 Prepared Workspace 中启动
-Claude Code。此时智能体基于已准备好的上下文工作,你的原始文件保持不动。
+**在命令行中**——`yuhi prepare` 与 `yuhi report` 现已可用。智能体的启动目前通过 VS Code 扩展提供。
 
 > Yuhi 准备的是 *初始上下文*。它 **不是** 操作系统级的沙箱:如果智能体的运行时或你本人
 > 允许，智能体仍可能访问 Prepared Workspace 之外的路径。参见

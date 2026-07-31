@@ -6,26 +6,7 @@
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
-> **0.2.4 development theme — Intelligent Preparation**
->
-> 0.2.2: Prepare safely. 0.2.3: Work safely with AI agents. 0.2.4:
-> inspect and organize document context locally before handoff.
-
-0.2.4 adds local PDF extraction, OCR fallback, Ollama document summaries,
-summary security verification, and a `.yuhi/context/document-index.md` entry
-point. Extracted document text remains memory-only; generated summaries are
-included only after deterministic rescanning.
-
-Yuhi Recommended prioritizes a usable Prepared Workspace while making
-uncertainty visible. Credential files and private-key material are never copied
-unchanged. Supported CSV/TSV/XLSX tables and credential configuration are
-transformed locally and verified before inclusion. PDF, image, binary, and
-unknown binary formats that Yuhi cannot inspect are included unchanged with an
-**Unverified files included** warning; Claude Code may read those files. Review
-them before using Yuhi with sensitive information.
->
-> Prepared Workspace → Agent execution → Change review → Apply safely. Agent
-> changes are never applied to the Original Workspace automatically.
+> **Current release: 0.3.0** — Repository Ready: a shareable, public-safe report of what the AI can see, plus a read-only review inside VS Code.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
@@ -81,9 +62,9 @@ Yuhi answers a simple question — *how much of this repository should the AI re
 and then prepares exactly that:
 
 - **Blocks secrets.** Credentials and private keys are neutralized locally and never handed to the agent.
-- **Converts documents to AI-friendly content.** PDF / DOCX / PPTX become sanitized Markdown companions; the original is never shared.
-- **Reduces the repository to what matters.** Oversized, binary, and irrelevant files are kept local, not sent.
-- **Prepares Claude Code in one command.** Point your agent at the Prepared Workspace and start.
+- **Converts documents to AI-friendly content.** Supported documents (PDF / DOCX / PPTX) become sanitized Markdown companions; when safe preparation can't be verified, the source is kept local or replaced with a safe placeholder — the original is never delivered to the agent.
+- **Reduces the repository to what matters.** Oversized and irrelevant files are kept local; files Yuhi can't safely inspect are either kept local or included with an explicit *unverified* warning.
+- **Prepares your workspace in one command.** Then start Claude Code from the VS Code extension.
 
 ## Share the result
 
@@ -117,8 +98,7 @@ and run **`Yuhi: Prepare and Start Claude Code`**. Yuhi prepares and reviews the
 then opens the Prepared Workspace in a new window marked **Prepared by Yuhi** for the official
 `anthropic.claude-code` extension.
 
-**On the CLI** — after `yuhi prepare`, start Claude Code in the Prepared Workspace that Yuhi
-generated. Your agent now works from prepared context; your original files stay untouched.
+**On the CLI** — `yuhi prepare` and `yuhi report` are available today. Agent launch is currently supported through the VS Code extension.
 
 > Yuhi prepares *initial context*. It is **not** an OS-level sandbox: an agent may still access
 > paths outside the Prepared Workspace if its runtime or you permit it. See

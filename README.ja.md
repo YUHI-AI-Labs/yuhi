@@ -2,7 +2,7 @@
 
 <p align="center"><strong>どんなリポジトリも、AI-ready なリポジトリに。</strong></p>
 
-<p align="center">Yuhi は、コーディングエージェントがリポジトリを見る前に、より小さく、よりクリーンで、より安全なワークスペースを準備します — そして、何をしたのかを共有可能なレポートとして手渡します。</p>
+<p align="center">Yuhi は、コーディングエージェントがリポジトリを見る前に、より小さく、よりクリーンで、より安全なワークスペースを準備します — そして、AI が何を見えるかを端末内で詳細にレビューでき、共有できるのは public-safe な集計要約です。</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
@@ -52,7 +52,7 @@ Yuhi はシンプルな問いに答えます — *このリポジトリのうち
 そして、まさにその分だけを準備します:
 
 - **シークレットを遮断。** 認証情報や秘密鍵はローカルで無害化され、エージェントには決して渡されません。
-- **ドキュメントを AI 向けのコンテンツに変換。** PDF / DOCX / PPTX はサニタイズされた Markdown の相方になります。元ファイルは共有されません。
+- **ドキュメントを AI 向けのコンテンツに変換。** 対応ドキュメント（PDF / DOCX / PPTX）はサニタイズされた Markdown の相方になります。安全な準備が検証できない場合は、元ファイルは端末内に保持されるか安全なプレースホルダに置き換えられ、原本がエージェントに渡ることはありません。
 - **リポジトリを本当に必要な分まで削減。** 過大なファイル、バイナリ、無関係なファイルはローカルに留め、送信しません。
 - **ワンコマンドで Claude Code を準備。** Prepared Workspace にエージェントを向けて、すぐに開始できます。
 
@@ -87,8 +87,7 @@ yuhi report <run> --format svg > .github/yuhi-badge.svg
 準備・レビューし、公式の `anthropic.claude-code` 拡張機能向けに、**Prepared by Yuhi** と表示された
 新しいウィンドウで Prepared Workspace を開きます。
 
-**CLI で** — `yuhi prepare` の後、Yuhi が生成した Prepared Workspace で Claude Code を起動します。
-エージェントは準備済みのコンテキストから作業し、元のファイルはそのまま保たれます。
+**CLI では** — `yuhi prepare` と `yuhi report` が利用できます。エージェントの起動は現在 VS Code 拡張からサポートしています。
 
 > Yuhi が準備するのは *初期コンテキスト* です。OS レベルのサンドボックスでは **ありません**:
 > エージェントは、そのランタイムやあなたが許可すれば、Prepared Workspace の外のパスにアクセスできる場合があります。
