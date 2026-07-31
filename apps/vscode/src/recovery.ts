@@ -119,14 +119,13 @@ export async function validatePreparedWorkspace(input: {
   ) return recovery("preparation-incomplete");
 
   const files = manifest.files as Record<string, unknown>[];
-  if (files.some((file) => file.status === "error")) {
+  if (files.some((file) => file.status === "error" && file.omitted !== true)) {
     return recovery("preparation-incomplete");
   }
-  if (
-    files.some((file) =>
-      typeof file.unresolvedHighRiskCount === "number" && file.unresolvedHighRiskCount > 0
-    )
-  ) return recovery("unresolved-high-risk");
+  // NOTE: high-risk findings are NOT a recovery trigger. Recovery only repairs an
+  // UNUSABLE Prepared Workspace (missing/invalid manifest or session, copy failure,
+  // launchAllowed=false). A high-risk finding is a file-level warning — the intended,
+  // successful outcome — and is surfaced in the UI, never "repaired".
 
   return { kind: "valid", runId: session.runId, workspace };
 }

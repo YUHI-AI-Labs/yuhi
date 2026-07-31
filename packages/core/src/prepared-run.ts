@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import type { PrepareReport } from "./prepare-workspace.js";
 import { managedWorkspaceBaseDir } from "./prepare-workspace.js";
 import { buildPreparedMetrics } from "./prepared-metrics.js";
+import { deriveWorkflowState, type YuhiWorkflowState } from "./workflow-state.js";
 
 export type PreparedRunStatus = "Success" | "Partial" | "Failed";
 
@@ -30,24 +31,30 @@ export interface SafePreparedRunSummary {
   launchAllowed: boolean;
   agentStarted: boolean;
   safeErrorCategory: string[];
+  workflowState: YuhiWorkflowState;
+  localModelName?: string;
+  localModelRequests: number;
+  localModelSucceeded: number;
+  localModelFailed: number;
+  localModelElapsedMs: number;
+  localModelMaxConcurrency: number;
+  localModelConfiguredParallelism: number;
 }
 
 export function buildSafePreparedRunSummary(report: PrepareReport): SafePreparedRunSummary {
   const metrics = buildPreparedMetrics(report);
   const included = report.files.filter((file) => file.status === "ok" && !file.omitted);
   const acceptance = report.tabularAcceptance;
-  const status: PreparedRunStatus =
-    included.length === 0 && report.errors.length > 0
-      ? "Failed"
-      : report.errors.length > 0
-        ? "Partial"
-        : "Success";
+  // One source of truth: the workspace's launchAllowed. File-level warnings
+  // (unresolved high-risk findings in included-unverified files, etc.) never
+  // downgrade a launchable workspace — they are surfaced in the UI only.
+  const safePreparedOutput = acceptance?.launchAllowed ?? true;
+  const status: PreparedRunStatus = !safePreparedOutput ? "Partial" : "Success";
   const malformed = acceptance?.malformedTables ?? 0;
   const unverified = acceptance?.unverifiedTransformations ?? 0;
   const launchAllowed =
     status === "Success" &&
-    (acceptance?.launchAllowed ?? true) &&
-    metrics.unresolvedHighRiskFindings === 0;
+    safePreparedOutput;
   return {
     schemaVersion: 1,
     status,
@@ -76,6 +83,18 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
       ...((acceptance?.unsupportedOrUnverifiedFiles ?? 0) > 0 ? ["inspection-limitation"] : []),
       ...(report.errors.length > malformed + unverified ? ["preparation-error"] : []),
     ],
+    workflowState: deriveWorkflowState({
+      preparationStatus: status,
+      launchAllowed,
+      agentStarted: false,
+    }),
+    ...(acceptance?.localModelName ? { localModelName: acceptance.localModelName } : {}),
+    localModelRequests: acceptance?.localModelRequests ?? 0,
+    localModelSucceeded: acceptance?.localModelSucceeded ?? 0,
+    localModelFailed: acceptance?.localModelFailed ?? 0,
+    localModelElapsedMs: acceptance?.localModelElapsedMs ?? 0,
+    localModelMaxConcurrency: acceptance?.localModelMaxConcurrency ?? 0,
+    localModelConfiguredParallelism: acceptance?.localModelConfiguredParallelism ?? 0,
   };
 }
 

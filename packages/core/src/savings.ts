@@ -50,7 +50,12 @@ export function contextSavings(plan: Plan): ContextSavings {
       afterFiles += 1;
     }
     if (d.action === "local-only") noiseKeptLocalBytes += size;
-    if (d.findings.length > 0 && (d.action === "block" || d.action === "redact")) secretsRemoved += 1;
+    if (
+      d.findings.length > 0 &&
+      (d.action === "block" || d.action === "redact" || d.action === "prepare-locally")
+    ) {
+      secretsRemoved += 1;
+    }
   }
 
   const tokenReductionPct =

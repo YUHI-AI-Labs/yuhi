@@ -38,6 +38,26 @@ copy. It is **defense-in-depth against accidental exposure**, not a sandbox.
    data to a third party).
 4. Agent CLI ↔ model provider (outside Yuhi's boundary entirely).
 
+### Three distinct decision boundaries
+
+These are deliberately separate — see `CLAUDE.md` for the product rationale. Conflating
+them (e.g. letting a file-level finding block the launch) is a defect, not a safety feature.
+
+- **File-exclusion boundary (per file).** Each file gets a risk assessment. Safe → included;
+  caution/unverified with no concrete finding → included with a warning; high-risk (incl. an
+  unresolved credential in a would-be-sent file) → **excluded by recommendation (kept local)**,
+  never sent raw. The excluded original is written **only** to the user's machine, never to the
+  Prepared Workspace.
+- **Workspace-launch boundary (per run).** Launch is allowed whenever a valid Prepared Workspace
+  exists and everything actually placed in it is safe. It is blocked **only** by workspace-level
+  failure: cannot create the workspace, cannot verify the destination, no usable workspace, an
+  internal integrity failure, or the sandbox policy cannot be verified. A file-level exclusion
+  **must not** block launch.
+- **Explicit-override boundary (user-initiated).** The user may deliberately include an excluded
+  file after a one-time risk confirmation. An override is **not** described as safe, sandboxed, or
+  confined — it is an informed choice to expose that file's original content to the agent. (The
+  override UI is a planned addition; until it ships, an excluded file is never silently sent.)
+
 ## Threats & mitigations
 
 | # | Threat | Mitigation (v0.1) | Residual risk |

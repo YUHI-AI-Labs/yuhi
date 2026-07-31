@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PrepareReport } from "@yuhi/core";
 import {
@@ -69,6 +71,16 @@ function report(partial = false): PrepareReport {
 }
 
 describe("CLI preparation acceptance output", () => {
+  it("does not gate prepare on an unconditional local-model health request", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/cli/src/index.ts"), "utf8");
+    const prepareCommand = source.slice(
+      source.indexOf('.command("prepare [dir]")'),
+      source.indexOf('.command("review <run>")'),
+    );
+    expect(prepareCommand).not.toContain("provider.health()");
+    expect(prepareCommand).toContain("prepareWorkspace(target");
+  });
+
   it("renders metadata-safe success and JSON schema", () => {
     const result = buildCliPrepareResult(report());
     expect(result).toMatchObject({

@@ -60,6 +60,35 @@ describe("summarize-local processor", () => {
     expect(r.audit.itemsChanged).toBeGreaterThan(1);
   });
 
+  it("runs chunks with bounded parallelism and consolidates in source order", async () => {
+    let active = 0;
+    let peak = 0;
+    let consolidationPrompt = "";
+    const p = fakeProvider(async (prompt) => {
+      if (prompt.includes("S0") && prompt.includes("S3")) {
+        consolidationPrompt = prompt;
+        return "FINAL";
+      }
+      const index = Number(prompt.match(/part-(\d)/)?.[1] ?? 0);
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, (4 - index) * 5));
+      active -= 1;
+      return `S${index}`;
+    });
+    const r = await createSummarizer({
+      provider: p,
+      chunkChars: 8,
+      maxParallelRequests: 2,
+    }).process("part-0\npart-1\npart-2\npart-3");
+    expect(r.output).toBe("FINAL");
+    expect(peak).toBe(2);
+    expect(consolidationPrompt.indexOf("S0")).toBeLessThan(consolidationPrompt.indexOf("S1"));
+    expect(consolidationPrompt.indexOf("S1")).toBeLessThan(consolidationPrompt.indexOf("S2"));
+    expect(consolidationPrompt.indexOf("S2")).toBeLessThan(consolidationPrompt.indexOf("S3"));
+    expect(r.audit.note).toContain("parallelism 2");
+  });
+
   it("reports size reduction", async () => {
     const p = fakeProvider(async () => "tiny");
     const r = await createSummarizer({ provider: p }).process("x".repeat(1000));

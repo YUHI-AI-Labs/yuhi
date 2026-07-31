@@ -67,8 +67,8 @@ const rules = [
   { name: "local-customer", match: { paths: ["customer-data/**"] }, action: "local-only" as const },
 ];
 
-function buildDecisions(root: string) {
-  const scan = scanRepo(root, { largeFileBytes: 5_000_000, entropyThreshold: 4.0, keywords: [] });
+async function buildDecisions(root: string) {
+  const scan = await scanRepo(root, { largeFileBytes: 5_000_000, entropyThreshold: 4.0, keywords: [] });
   const matchable = scan.files.map((f) => ({ relpath: f.relpath, findings: f.findings }));
   const evalResult = resolvePolicy(
     { defaultAction: "allow", rules, interactive: false },
@@ -78,7 +78,7 @@ function buildDecisions(root: string) {
 }
 
 describe("createWorkspace (security-critical)", () => {
-  it("copies allowed files, blocks secrets/local-only, redacts, and never touches the source", () => {
+  it("copies allowed files, blocks secrets/local-only, redacts, and never touches the source", async () => {
     write("src/index.ts", "export const x = 1;\n");
     write("README.md", "# Public\n");
     write(".env", "SECRET=" + "sk-ant-" + "abcdefghijklmnopqrstuvwxyz012345\n");
@@ -86,7 +86,7 @@ describe("createWorkspace (security-critical)", () => {
     write("customer-data/list.csv", "alice,bob\n");
 
     const before = hashTree(src);
-    const { scan, decisions } = buildDecisions(src);
+    const { scan, decisions } = await buildDecisions(src);
 
     const { manifest, treeDir } = createWorkspace({
       sourceRoot: src,
@@ -121,7 +121,7 @@ describe("createWorkspace (security-critical)", () => {
     expect(manifest.counts.transformed).toBeGreaterThanOrEqual(1);
   });
 
-  it("does not follow symlinks that point outside the repo", () => {
+  it("does not follow symlinks that point outside the repo", async () => {
     write("real.txt", "hi\n");
     const secretOutside = path.join(parent, "outside-secret.txt");
     writeFileSync(secretOutside, "TOP SECRET\n");
@@ -131,7 +131,7 @@ describe("createWorkspace (security-critical)", () => {
       return; // symlink not permitted on this platform
     }
 
-    const { scan, decisions } = buildDecisions(src);
+    const { scan, decisions } = await buildDecisions(src);
     const { treeDir, manifest } = createWorkspace({
       sourceRoot: src,
       agent: "dummy",
@@ -147,11 +147,11 @@ describe("createWorkspace (security-critical)", () => {
     expect(manifest.symlinksSkipped).toContain("leak.txt");
   });
 
-  it("refuses to write outside the workspace (path traversal)", () => {
+  it("refuses to write outside the workspace (path traversal)", async () => {
     // A malicious decision with a traversal relpath, backed by a real source file.
     const evil = path.join(parent, "evil.txt");
     writeFileSync(evil, "pwned\n");
-    const scan = scanRepo(src, { largeFileBytes: 5_000_000, entropyThreshold: 4, keywords: [] });
+    const scan = await scanRepo(src, { largeFileBytes: 5_000_000, entropyThreshold: 4, keywords: [] });
     const decisions: FileDecision[] = [
       {
         relpath: "../evil.txt",
@@ -182,9 +182,9 @@ describe("createWorkspace (security-critical)", () => {
     expect(existsSync(path.join(path.dirname(evil), "repo"))).toBe(false);
   });
 
-  it("dry-run computes a manifest without writing any files", () => {
+  it("dry-run computes a manifest without writing any files", async () => {
     write("src/index.ts", "x\n");
-    const { scan, decisions } = buildDecisions(src);
+    const { scan, decisions } = await buildDecisions(src);
     const { manifest, treeDir } = createWorkspace({
       sourceRoot: src,
       agent: "dummy",

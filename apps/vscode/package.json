@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi — Local AI Prep",
   "description": "Prepare your workspace locally with a small on-device model before anything is sent to Claude. Local-first, no telemetry.",
-  "version": "0.2.2",
+  "version": "0.2.8",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -55,7 +55,8 @@
       "yuhi": [
         {
           "id": "yuhi.workspace",
-          "name": "Claude Code with Yuhi"
+          "name": "Claude Code with Yuhi",
+          "type": "webview"
         }
       ]
     },
@@ -119,6 +120,16 @@
         "command": "yuhi.dismissPreviousRun",
         "title": "Yuhi: Dismiss Previous Run",
         "icon": "$(close)"
+      },
+      {
+        "command": "yuhi.reviewAgentChanges",
+        "title": "Yuhi: Review Agent Changes",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "yuhi.showRecovery",
+        "title": "Yuhi: Open Recovery Options",
+        "icon": "$(tools)"
       }
     ],
     "menus": {
@@ -126,20 +137,64 @@
         {
           "command": "yuhi.prepareHere",
           "when": "false"
+        },
+        {
+          "command": "yuhi.doctor",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.setupLocalAI",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.prepareWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.reviewPrepared",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.prepareAndOpen",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.openClaudeHere",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.switchWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.exitWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.restartFlow",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.openSourceWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.dismissPreviousRun",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.reviewAgentChanges",
+          "when": "false"
+        },
+        {
+          "command": "yuhi.showRecovery",
+          "when": "false"
         }
       ],
       "explorer/context": [
         {
-          "command": "yuhi.prepareHere",
-          "group": "yuhi@1"
-        },
-        {
-          "command": "yuhi.prepareAndOpen",
-          "group": "yuhi@2"
-        },
-        {
           "command": "yuhi.prepareAndStartClaude",
-          "group": "yuhi@3"
+          "group": "yuhi@1"
         }
       ]
     }

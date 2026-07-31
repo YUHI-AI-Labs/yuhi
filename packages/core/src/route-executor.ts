@@ -17,7 +17,10 @@ import {
   createSummarizer,
   createValidator,
   inMemoryMappingStore,
+  sanitizeCredentialDocument,
+  sanitizeDotenv,
 } from "@yuhi/processors";
+import { runDetectors } from "@yuhi/scanner";
 import type { Plan } from "./plan.js";
 
 export interface RouteResult {
@@ -75,6 +78,26 @@ export function runPrepareLocally(
       output = r.output;
       audits.push(r.audit);
       steps.push(r.safePreview);
+    } else if (id === "sanitize-environment") {
+      const transformed = sanitizeDotenv(output);
+      output = transformed.output;
+      audits.push({
+        processorId: id,
+        version: "1.0.0",
+        kind: "rule-based",
+        itemsChanged: transformed.valuesProtected,
+      });
+      steps.push(`${transformed.valuesProtected} environment value(s) protected locally`);
+    } else if (id === "sanitize-credentials") {
+      const transformed = sanitizeCredentialDocument(output);
+      output = transformed.output;
+      audits.push({
+        processorId: id,
+        version: "1.0.0",
+        kind: "rule-based",
+        itemsChanged: transformed.valuesProtected,
+      });
+      steps.push(`${transformed.valuesProtected} credential value(s) protected locally`);
     } else if (id === "safety-check") {
       const r = createValidator({
         forbid: identifiers,
@@ -85,6 +108,13 @@ export function runPrepareLocally(
       if (r.validation && !r.validation.ok) {
         return { output, allowed: false, audits, steps };
       }
+      const unresolved = runDetectors(output, {
+        entropyThreshold: 4,
+        keywords: [],
+      }).filter((finding) =>
+        finding.severity === "high" || finding.severity === "critical"
+      );
+      if (unresolved.length > 0) return { output, allowed: false, audits, steps };
     }
     // Future processors (generalize, summarize-local, …) plug in here.
   }
@@ -142,6 +172,8 @@ export async function runLocalPreparation(
     signal?: AbortSignal;
     /** Reduction mode for summarize-local (conservative fails on overflow, etc.). */
     mode?: ReductionMode;
+    /** Bounded local-model request concurrency selected by the preparation runtime. */
+    localModelParallelism?: number;
     /** Run-scoped in-memory linkage for explicit tabular pseudonymization. */
     studentAliases?: StudentAliasContext;
   } = {},
@@ -182,6 +214,9 @@ export async function runLocalPreparation(
         const summarizer = createSummarizer({
           provider: opts.provider,
           ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
+          ...(opts.localModelParallelism !== undefined
+            ? { maxParallelRequests: opts.localModelParallelism }
+            : {}),
           ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         });
         const r = (await summarizer.process(output)) as ProcessorResult;
@@ -210,6 +245,32 @@ export async function runLocalPreparation(
           note: `${transformed.aliasesCreated} stable alias(es) created in memory`,
         });
         steps.push(`${transformed.valuesReplaced} direct-identifier value(s) pseudonymized locally`);
+      } else if (id === "sanitize-environment") {
+        const transformed = sanitizeDotenv(output);
+        output = transformed.output;
+        audits.push({
+          processorId: id,
+          version: "1.0.0",
+          kind: "rule-based",
+          itemsChanged: transformed.valuesProtected,
+          note:
+            `${transformed.valuesProtected} value(s) protected; ` +
+            `${transformed.configurationValuesPreserved} configuration value(s) preserved`,
+        });
+        steps.push(`${transformed.valuesProtected} environment value(s) protected locally`);
+      } else if (id === "sanitize-credentials") {
+        const transformed = sanitizeCredentialDocument(output);
+        output = transformed.output;
+        audits.push({
+          processorId: id,
+          version: "1.0.0",
+          kind: "rule-based",
+          itemsChanged: transformed.valuesProtected,
+          note:
+            `${transformed.valuesProtected} value(s) protected; ` +
+            `${transformed.configurationValuesPreserved} configuration value(s) preserved`,
+        });
+        steps.push(`${transformed.valuesProtected} credential value(s) protected locally`);
       } else if (id === "aggregate-student-records") {
         const transformed = aggregateStudentRecords(output);
         output = transformed.output;

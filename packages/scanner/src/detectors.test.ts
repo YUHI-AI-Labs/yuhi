@@ -94,7 +94,12 @@ describe("detectors", () => {
       (_, index) => `123456,${String(300000 + index)},${index % 101}`,
     ).join("\n");
     const findings = runDetectors(content, { ...opts, relpath: "synthetic.txt" });
+    // Value-based detection now positively recognizes the unique fixed-width
+    // numeric column as a direct identifier (better than the vague headerless
+    // heuristic), so the table is still flagged sensitive and — in the prepare
+    // pipeline — routed to pseudonymization rather than copied verbatim.
     expect(findings.some((finding) =>
+      finding.detector === "tabular-direct-identifier-column" ||
       finding.detector === "tabular-headerless-sensitive-data"
     )).toBe(true);
   });

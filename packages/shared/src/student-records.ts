@@ -42,7 +42,7 @@ function directIdentifierType(value: string): DirectIdentifierType | undefined {
     ["address", ["address", "住所"]],
     ["institutional-id", ["governmentid", "institutionalid"]],
   ];
-  return groups.find(([, aliases]) =>
+  const aliasMatch = groups.find(([, aliases]) =>
     aliases.some((candidate) => {
       const normalized = normalizedHeader(candidate);
       if (header === normalized) return true;
@@ -50,6 +50,24 @@ function directIdentifierType(value: string): DirectIdentifierType | undefined {
       // 学生証番号6桁 or "student id (required)". Do not prefix-match generic
       // labels such as "name", "email", or "phone".
       return normalized.length >= 5 && header.startsWith(normalized);
+    }),
+  )?.[0];
+  if (aliasMatch) return aliasMatch;
+  // General rule (not a guessed header list): Japanese compound headers place
+  // the qualifier first and the identifier morpheme last — 受診者氏名, 保護者氏名,
+  // 受診者番号, 整理番号, 連絡先メール. Match by the trailing morpheme so any
+  // X氏名 / X番号 / Xメール is recognized without enumerating every prefix.
+  const morphemes: [DirectIdentifierType, string[]][] = [
+    ["name", ["氏名", "名前", "フルネーム", "なまえ"]],
+    ["email", ["メールアドレス", "メール"]],
+    ["phone", ["電話番号", "電話", "tel"]],
+    ["address", ["住所"]],
+    ["account-id", ["番号", "id", "コード"]],
+  ];
+  return morphemes.find(([, suffixes]) =>
+    suffixes.some((suffix) => {
+      const normalized = normalizedHeader(suffix);
+      return header.endsWith(normalized) && header.length <= normalized.length + 8;
     }),
   )?.[0];
 }
@@ -111,12 +129,36 @@ export function classifyStudentRecordTable(rows: readonly (readonly string[])[])
     if (values.length === 0) continue;
     const emailCount = values.filter((value) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)).length;
     const phoneCount = values.filter((value) => /^\+?[0-9][0-9 ()-]{7,}$/.test(value)).length;
+    // Header-independent identifier detection: a column whose values are
+    // almost all distinct and shaped like record codes (A000000, 20260722-…,
+    // fixed-width numeric IDs) is a direct identifier even when Yuhi does not
+    // recognize its header. Requiring high cardinality + a code shape avoids
+    // masking measurements (decimals, short repeated categories).
+    const unique = new Set(values).size;
+    const cardinality = unique / values.length;
+    // Fixed-width is a strong record-code signal (zero-padded / sequential IDs
+    // share a length; quantities like revenue vary in magnitude), so pure
+    // numeric columns only count as codes when every sampled value shares a
+    // width. Mixed alphanumeric (A000000) is already unambiguous.
+    const numericWidths = new Set(values.filter((value) => /^\d+$/.test(value)).map((value) => value.length));
+    const numericFixedWidth = numericWidths.size === 1;
+    const codeCount = values.filter((value) => {
+      if (value.length < 4 || value.length > 48) return false;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value)) return false; // pure code, no spaces/CJK
+      if (value.includes(".") && /^\d+\.\d+$/.test(value)) return false; // decimal measurement
+      const hasLetter = /[A-Za-z]/.test(value);
+      const digits = (value.match(/\d/g) ?? []).length;
+      if (hasLetter) return digits >= 1; // alphanumeric code — unambiguous
+      return digits >= 6 && numericFixedWidth; // long, fixed-width numeric ID only
+    }).length;
     const inferred: DirectIdentifierType | undefined =
       emailCount / values.length >= 0.8
         ? "email"
         : phoneCount / values.length >= 0.8
           ? "phone"
-          : undefined;
+          : cardinality >= 0.9 && codeCount / values.length >= 0.8
+            ? "account-id"
+            : undefined;
     if (inferred) {
       indexes.push(index);
       types.push(inferred);
@@ -142,7 +184,8 @@ export interface ParsedDelimitedTable {
   rows: string[][];
 }
 
-export function parseDelimitedTable(input: string): ParsedDelimitedTable {
+/** Tokenize delimited text into rows WITHOUT validating column consistency. */
+function tokenizeDelimited(input: string): { delimiter: "," | "\t"; rows: string[][] } {
   const text = input.replace(/^\uFEFF/, "");
   const firstLineEnd = text.search(/\r?\n/);
   const firstLine = firstLineEnd < 0 ? text : text.slice(0, firstLineEnd);
@@ -183,6 +226,11 @@ export function parseDelimitedTable(input: string): ParsedDelimitedTable {
     row.push(cell.replace(/\r$/, ""));
     rows.push(row);
   }
+  return { delimiter, rows };
+}
+
+export function parseDelimitedTable(input: string): ParsedDelimitedTable {
+  const { delimiter, rows } = tokenizeDelimited(input);
   if (rows.length < 2 || rows[0]!.length < 1) {
     throw new Error("Malformed delimited table: header and data rows are required.");
   }
@@ -191,6 +239,50 @@ export function parseDelimitedTable(input: string): ParsedDelimitedTable {
     throw new Error("Malformed delimited table: inconsistent column count.");
   }
   return { delimiter, rows };
+}
+
+/**
+ * Real-world exports (especially Japanese systems) often prepend title/metadata
+ * rows before the actual header \u2014 e.g. `\u5065\u5EB7\u8A3A\u65AD\u7D50\u679C\u4E00\u89A7`, `\u51FA\u529B\u65E5,2026-07-22`, a
+ * blank line, then the table. Strict parsing rejects these as ragged, which used
+ * to route a clearly-sensitive file to raw passthrough.
+ *
+ * This finds the consistent table region (a run of >=2 rows sharing the modal
+ * column count, width >= 2) and returns it plus the dropped preamble rows, so the
+ * transform can pseudonymize the table and re-emit the preamble unchanged.
+ * Returns null when no such region exists (a genuinely malformed file).
+ */
+export function splitTablePreamble(
+  input: string,
+): { preamble: string[][]; table: ParsedDelimitedTable } | null {
+  const { delimiter, rows } = tokenizeDelimited(input);
+  if (rows.length < 3) return null; // need preamble + header + >=1 data row
+  // Modal column count among candidate table rows (>= 2 columns).
+  const widthCounts = new Map<number, number>();
+  for (const row of rows) {
+    if (row.length >= 2) widthCounts.set(row.length, (widthCounts.get(row.length) ?? 0) + 1);
+  }
+  let modalWidth = 0;
+  let modalCount = 0;
+  for (const [width, count] of widthCounts) {
+    if (count > modalCount || (count === modalCount && width > modalWidth)) {
+      modalWidth = width;
+      modalCount = count;
+    }
+  }
+  if (modalWidth < 2 || modalCount < 2) return null;
+  // First index that begins a contiguous run of >=2 modal-width rows (the header).
+  let start = -1;
+  for (let i = 0; i < rows.length - 1; i += 1) {
+    if (rows[i]!.length === modalWidth && rows[i + 1]!.length === modalWidth) {
+      start = i;
+      break;
+    }
+  }
+  if (start <= 0) return null; // no preamble (start 0) or not found
+  const tableRows = rows.slice(start).filter((row) => row.length === modalWidth);
+  if (tableRows.length < 2) return null;
+  return { preamble: rows.slice(0, start), table: { delimiter, rows: tableRows } };
 }
 
 function encodeCell(value: string, delimiter: string): string {
@@ -210,16 +302,78 @@ export interface StudentRecordTransform {
   classification: StudentRecordClassification;
   aliasesCreated: number;
   valuesReplaced: number;
+  /** Rows whose identifiers conflicted and were isolated under a fresh entity
+   *  (best-effort). > 0 means the output is de-identified but linkage may be
+   *  imperfect — surfaced as a data-quality warning, never a failure. */
+  conflicts: number;
+}
+
+/**
+ * Parse a table, transparently stripping a leading metadata preamble when strict
+ * parsing fails only because of it. The preamble rows are returned so a transform
+ * that re-emits the whole file (pseudonymization) can prepend them unchanged.
+ */
+function parseTableWithPreamble(
+  input: string,
+): { table: ParsedDelimitedTable; preamble: string[][] } {
+  try {
+    return { table: parseDelimitedTable(input), preamble: [] };
+  } catch (error) {
+    if (error instanceof Error && /inconsistent column count/.test(error.message)) {
+      const stripped = splitTablePreamble(input);
+      if (stripped) return { table: stripped.table, preamble: stripped.preamble };
+    }
+    throw error;
+  }
+}
+
+/** Prepend serialized preamble rows to a transformed table body. */
+function withPreamble(preamble: string[][], delimiter: "," | "\t", body: string): string {
+  if (preamble.length === 0) return body;
+  return serializeDelimitedTable({ delimiter, rows: preamble }) + body;
 }
 
 export interface StudentAliasContext {
   identifierToEntity: Map<string, number | null>;
   entityIdentifiers: Map<number, Map<DirectIdentifierType, string>>;
   nextEntity: number;
+  /** Value-keyed stable tokens for attributes tokenized by value (e.g. phone). */
+  attributeTokens: Map<string, string>;
 }
 
 export function createStudentAliasContext(): StudentAliasContext {
-  return { identifierToEntity: new Map(), entityIdentifiers: new Map(), nextEntity: 1 };
+  return {
+    identifierToEntity: new Map(),
+    entityIdentifiers: new Map(),
+    nextEntity: 1,
+    attributeTokens: new Map(),
+  };
+}
+
+/** Stable per-distinct-value token so the same phone number always maps to the
+ *  same PHONE-NNN (cross-checkable) without exposing the real value. */
+function phoneToken(context: StudentAliasContext, value: string): string {
+  const key = identifierKey("phone", value);
+  const existing = context.attributeTokens.get(key);
+  if (existing) return existing;
+  let count = 0;
+  for (const token of context.attributeTokens.values()) if (token.startsWith("PHONE-")) count += 1;
+  const token = `PHONE-${String(count + 1).padStart(3, "0")}`;
+  context.attributeTokens.set(key, token);
+  return token;
+}
+
+/**
+ * Generalize a Japanese address: keep the coarse locality (都道府県 / 市区町村 /
+ * 町名) and drop the identifying 丁目・番地・号 + building. We cut at the first
+ * digit (half- or full-width), which removes the street number while preserving
+ * prefecture/city/district. If nothing textual precedes the digits (e.g. a
+ * number-first Western address), fall back to a fully-removed marker.
+ */
+function generalizeAddress(value: string): string {
+  const normalized = value.normalize("NFKC").trim();
+  const coarse = (normalized.match(/^[^0-9]*/)?.[0] ?? "").trim().replace(/[-\s、,]+$/u, "").trim();
+  return coarse.length > 0 ? coarse : "[address removed]";
 }
 
 function identifierKey(type: DirectIdentifierType, value: string): string {
@@ -247,7 +401,7 @@ function aliasFor(
 }
 
 export function tabularDirectIdentifierValues(input: string): string[] {
-  const table = parseDelimitedTable(input);
+  const { table } = parseTableWithPreamble(input);
   const classification = classifyStudentRecordTable(table.rows);
   const values = new Set<string>();
   for (const row of table.rows.slice(1)) {
@@ -263,7 +417,7 @@ export function pseudonymizeStudentRecords(
   input: string,
   context: StudentAliasContext = createStudentAliasContext(),
 ): StudentRecordTransform {
-  const table = parseDelimitedTable(input);
+  const { table, preamble } = parseTableWithPreamble(input);
   const originalRows = table.rows.map((row) => [...row]);
   const classification = classifyStudentRecordTable(table.rows);
   if (classification.directIdentifierColumns === 0) {
@@ -277,6 +431,7 @@ export function pseudonymizeStudentRecords(
         : "person";
   const entitiesBefore = context.nextEntity;
   let valuesReplaced = 0;
+  let conflicts = 0;
   const priority: Record<DirectIdentifierType, number> = {
     "student-card": 1,
     "student-id": 2,
@@ -294,7 +449,12 @@ export function pseudonymizeStudentRecords(
       type: classification.directIdentifierTypes[offset]!,
       value: (row[index] ?? "").trim(),
     })).filter((item) => item.value);
-    if (identifiers.length === 0) throw new Error("Student record row has no direct identifier.");
+    // A row with no direct identifier (a blank, total/summary, or partially filled
+    // row — ubiquitous in real CSV/XLSX) has nothing to pseudonymize. Preserve it
+    // verbatim instead of failing the whole file (which would drop it from the
+    // Prepared Workspace). The post-transform safety-check remains the backstop
+    // against any residual identifier elsewhere in the output.
+    if (identifiers.length === 0) continue;
     const strong = identifiers
       .filter((item) => item.type !== "name" && item.type !== "address")
       .sort((a, b) => priority[a.type] - priority[b.type]);
@@ -302,40 +462,62 @@ export function pseudonymizeStudentRecords(
       .map((item) => context.identifierToEntity.get(identifierKey(item.type, item.value)))
       .filter((entity): entity is number => typeof entity === "number");
     const linkedEntities = [...new Set(linked)];
-    if (linkedEntities.length > 1) {
-      throw new Error("Conflicting direct identifiers refer to different entities.");
+    // BEST EFFORT (never throw on a data conflict). Detect three kinds of conflict:
+    //  1. the row's strong identifiers point to >1 existing entity;
+    //  2. the chosen entity already has a DIFFERENT value for one of these types;
+    //  3. one of these values is already mapped to a DIFFERENT entity.
+    // On any conflict we isolate this row under a FRESH entity (so it is still fully
+    // pseudonymized) and do NOT write its mappings into the shared context — that
+    // keeps cross-row/cross-file linkage for the CONSISTENT rows intact. The file is
+    // still produced; the conflict is a data-quality WARNING, not a failure.
+    let entity = linkedEntities.length === 1 ? linkedEntities[0]! : undefined;
+    let conflicted = linkedEntities.length > 1;
+    if (!conflicted && entity !== undefined) {
+      const known = context.entityIdentifiers.get(entity);
+      if (known) {
+        for (const item of strong) {
+          const prior = known.get(item.type);
+          if (prior !== undefined && prior !== identifierKey(item.type, item.value)) {
+            conflicted = true;
+            break;
+          }
+        }
+      }
     }
-    let entity = linkedEntities[0];
-    if (entity === undefined) {
+    if (!conflicted) {
+      for (const item of strong) {
+        const existing = context.identifierToEntity.get(identifierKey(item.type, item.value));
+        if (existing !== undefined && existing !== entity) {
+          conflicted = true;
+          break;
+        }
+      }
+    }
+    if (conflicted || entity === undefined) {
       entity = context.nextEntity;
       context.nextEntity += 1;
     }
-    if (strong.length > 0) {
+    if (conflicted) conflicts += 1;
+    // Commit strong-identifier mappings ONLY for non-conflicting rows, so a bad row
+    // can never corrupt the deterministic mapping used by good rows.
+    if (!conflicted && strong.length > 0) {
       const known =
         context.entityIdentifiers.get(entity) ?? new Map<DirectIdentifierType, string>();
       for (const item of strong) {
         const key = identifierKey(item.type, item.value);
-        const prior = known.get(item.type);
-        if (prior !== undefined && prior !== key) {
-          throw new Error("Safe tabular pseudonymization could not preserve entity uniqueness.");
-        }
         known.set(item.type, key);
+        context.identifierToEntity.set(key, entity);
       }
       context.entityIdentifiers.set(entity, known);
     }
+    // Pseudonymize EVERY identifier in the row (best effort) with the chosen entity.
     for (const item of identifiers) {
-      const key = identifierKey(item.type, item.value);
-      // Names and addresses never establish cross-row identity. A duplicate
-      // name may belong to different people; a row without a reliable key gets
-      // a fresh row-scoped entity.
-      if (item.type !== "name" && item.type !== "address") {
-        const existing = context.identifierToEntity.get(key);
-        if (existing === undefined) context.identifierToEntity.set(key, entity);
-        else if (existing !== entity) {
-          throw new Error("Conflicting direct identifier mapping detected.");
-        }
-      }
-      row[item.index] = aliasFor(item.type, entity, role);
+      row[item.index] =
+        item.type === "phone"
+          ? phoneToken(context, item.value)
+          : item.type === "address"
+            ? generalizeAddress(item.value)
+            : aliasFor(item.type, entity, role);
       valuesReplaced += 1;
     }
     for (const [offset, index] of classification.directIdentifierIndexes.entries()) {
@@ -356,15 +538,16 @@ export function pseudonymizeStudentRecords(
     }
   }
   return {
-    output: serializeDelimitedTable(table),
+    output: withPreamble(preamble, table.delimiter, serializeDelimitedTable(table)),
     classification,
     aliasesCreated: context.nextEntity - entitiesBefore,
     valuesReplaced,
+    conflicts,
   };
 }
 
 export function aggregateStudentRecords(input: string): StudentRecordTransform {
-  const table = parseDelimitedTable(input);
+  const { table } = parseTableWithPreamble(input);
   const classification = classifyStudentRecordTable(table.rows);
   if (classification.sensitivity === "none") {
     throw new Error("No education-record columns detected.");
@@ -384,5 +567,6 @@ export function aggregateStudentRecords(input: string): StudentRecordTransform {
     classification,
     aliasesCreated: 0,
     valuesReplaced: classification.directIdentifierColumns * (table.rows.length - 1),
+    conflicts: 0,
   };
 }

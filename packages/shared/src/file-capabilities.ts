@@ -13,6 +13,8 @@ export interface FileCapabilities {
 
 const TEXT_TRANSFORMERS: readonly ProcessorSpec[] = [
   "pseudonymize",
+  "sanitize-environment",
+  "sanitize-credentials",
   "summarize-local",
   "safety-check",
 ];
@@ -39,10 +41,10 @@ export function fileCapabilities(relpath: string, binary = false): FileCapabilit
   if (extension === ".xlsx") {
     return {
       fileType: "xlsx",
-      parserAvailable: false,
-      scannerAvailable: false,
-      transformers: [],
-      verifierAvailable: false,
+      parserAvailable: true,
+      scannerAvailable: true,
+      transformers: ["pseudonymize-student-records", "safety-check"],
+      verifierAvailable: true,
     };
   }
   if (extension === ".csv" || extension === ".tsv") {

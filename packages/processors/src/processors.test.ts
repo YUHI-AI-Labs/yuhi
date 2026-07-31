@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createPseudonymizer, stableToken, inMemoryMappingStore } from "./pseudonymize.js";
 import { createValidator } from "./validate.js";
-import { parseDotenv } from "./dotenv.js";
+import { parseDotenv, sanitizeCredentialDocument, sanitizeDotenv } from "./dotenv.js";
 
 describe("pseudonymize (rule-based)", () => {
   it("gives the same token for the same value (stable)", () => {
@@ -55,5 +55,68 @@ describe("parseDotenv (runtime-only route)", () => {
     expect(env.DB).toBe("postgres://x");
     expect(env.PORT).toBe("3000");
     expect(Object.keys(env)).not.toContain("BAD LINE");
+  });
+});
+
+describe("sanitizeDotenv", () => {
+  it("protects credentials while preserving non-sensitive configuration", () => {
+    const rawKey = ["sk", "synthetic", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    const result = sanitizeDotenv(
+      `OPENAI_API_KEY=${rawKey}\nDATABASE_URL=postgres://user:pass@host/db\nOPENAI_MODEL=gpt-5\nPORT=3000\nDEBUG=true\n`,
+    );
+    expect(result.output).toContain("OPENAI_API_KEY=${OPENAI_API_KEY}");
+    expect(result.output).toContain("DATABASE_URL=${DATABASE_URL}");
+    expect(result.output).toContain("OPENAI_MODEL=gpt-5");
+    expect(result.output).toContain("PORT=3000");
+    expect(result.output).toContain("DEBUG=true");
+    expect(result.output).not.toContain(rawKey);
+    expect(result.output).not.toContain("user:pass");
+    expect(result.valuesProtected).toBe(2);
+    expect(result.configurationValuesPreserved).toBe(3);
+  });
+
+  it("fails closed for unknown settings", () => {
+    const result = sanitizeDotenv("CUSTOM_VALUE=possibly-sensitive\n");
+    expect(result.output).toBe("CUSTOM_VALUE=${CUSTOM_VALUE}\n");
+    expect(result.valuesProtected).toBe(1);
+  });
+});
+
+describe("sanitizeCredentialDocument", () => {
+  it("sanitizes JSON credentials and preserves configuration", () => {
+    const rawToken = ["synthetic", "token", "not-real"].join("-");
+    const result = sanitizeCredentialDocument(JSON.stringify({
+      api_token: rawToken,
+      password: "synthetic-password",
+      model: "gpt-5",
+      project: "my-project",
+      region: "us",
+      port: 3000,
+    }));
+    const parsed = JSON.parse(result.output) as Record<string, unknown>;
+    expect(parsed.api_token).toBe("${API_TOKEN}");
+    expect(parsed.password).toBe("${PASSWORD}");
+    expect(parsed.model).toBe("gpt-5");
+    expect(parsed.project).toBe("my-project");
+    expect(parsed.region).toBe("us");
+    expect(parsed.port).toBe(3000);
+    expect(result.output).not.toContain(rawToken);
+    expect(result.output).not.toContain("synthetic-password");
+  });
+
+  it("sanitizes simple YAML without exposing values", () => {
+    const rawToken = ["synthetic", "yaml", "token"].join("-");
+    const result = sanitizeCredentialDocument(
+      `api_token: ${rawToken}\nmodel: gpt-5\ndebug: true\n`,
+    );
+    expect(result.output).toContain('api_token: "${API_TOKEN}"');
+    expect(result.output).toContain("model: gpt-5");
+    expect(result.output).toContain("debug: true");
+    expect(result.output).not.toContain(rawToken);
+  });
+
+  it("fails closed for an unverifiable document", () => {
+    expect(() => sanitizeCredentialDocument("not a structured credential document"))
+      .toThrow("could not be parsed safely");
   });
 });

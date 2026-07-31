@@ -1,10 +1,10 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 import { cliVersion } from "./version.js";
 import {
   YuhiError,
   isYuhiError,
-  LocalModelError,
   MODEL_TIERS,
   RECOMMENDED_MODELS,
   DEFAULT_LOCAL_MODEL,
@@ -32,12 +32,15 @@ import {
   exportAudit,
   KNOWN_AGENT_IDS,
   buildAdapter,
+  reviewAgentChanges,
+  deriveWorkflowState,
+  type AgentChangeBaseline,
 } from "@yuhi/core";
 import { loadConfig } from "@yuhi/config";
 import { createLocalModelProvider } from "@yuhi/local";
 import { lookupOnPath } from "@yuhi/agents";
 import { createTranslator, resolveLang, type Translator } from "./i18n.js";
-import { configureColor, ui, symbols, heading } from "./ui.js";
+import { configureColor, ui, symbols, heading, yuhiBanner } from "./ui.js";
 import {
   renderScan,
   renderPreview,
@@ -50,7 +53,6 @@ import { confirm } from "./prompt.js";
 import { runDoctor, renderDoctor } from "./doctor.js";
 import {
   providerConfigFromSettings,
-  configuredModel,
   isModelInstalled,
   fetchInstalledTags,
   pullModel,
@@ -205,6 +207,42 @@ async function main(): Promise<void> {
         const plan = await computePlan(dir, { interactive: false });
         if (g.json) return void printJson(plan.scan);
         renderScan(plan.scan, t);
+      }),
+    );
+
+  // ---- inspect documents ----
+  program
+    .command("inspect")
+    .description("Inspect supported documents locally without persisting extracted text")
+    .action(
+      action(async (cmd) => {
+        const { g, dir } = getContext(cmd);
+        const plan = await computePlan(dir, { interactive: false });
+        const documents = plan.scan.files.filter((file) => file.documentInspection);
+        const result = {
+          documents: documents.length,
+          pdf: documents.length,
+          textExtraction: documents.filter(
+            (file) => file.documentInspection?.extractionMethod === "pdf-text",
+          ).length,
+          ocr: documents.filter(
+            (file) => file.documentInspection?.extractionMethod === "ocr",
+          ).length,
+          summary: 0,
+          warnings: documents.filter(
+            (file) => file.documentInspection?.status !== "inspected",
+          ).length,
+          note: "Inspection is local. Run `yuhi prepare` to generate verified local summaries.",
+        };
+        if (g.json) return void printJson(result);
+        console.log(heading("Document inspection"));
+        console.log(`  Documents: ${result.documents}`);
+        console.log(`  PDF: ${result.pdf}`);
+        console.log(`  Text extraction: ${result.textExtraction}`);
+        console.log(`  OCR: ${result.ocr}`);
+        console.log(`  Summary: ${result.summary}`);
+        console.log(`  Warnings: ${result.warnings}`);
+        console.log(`\n${ui.dim(result.note)}`);
       }),
     );
 
@@ -541,41 +579,37 @@ async function main(): Promise<void> {
     .description("Prepare a local, reduced copy of your context (never sent anywhere)")
     .action(
       action(async (cmd) => {
-        const { g } = getContext(cmd);
-        const target = await assertSafeSourceWorkspace(cmd.args[0] ?? ".");
+        const { g, dir } = getContext(cmd);
+        const target = await assertSafeSourceWorkspace(cmd.args[0] ?? dir);
 
         const loaded = await loadConfig(target);
-        const provider = createLocalModelProvider(
+        const providerFactory = () => createLocalModelProvider(
           providerConfigFromSettings(loaded.config.local_model),
         );
 
-        // If Ollama can't be reached, surface the actionable error up front
-        // rather than letting every summarize target fail one-by-one.
-        const health = await provider.health();
-        if (!health.ok) {
-          const modelId = configuredModel(loaded.config.local_model);
-          const err = new LocalModelError(
-            "NOT_RUNNING",
-            `Cannot reach the local model at ${provider.endpoint} (model ${modelId}).`,
-            { hint: "Run `yuhi setup-local-ai` to install and start a local model." },
-          );
-          if (g.json) return void printJson({ error: err.code, message: err.message, hint: err.hint });
-          console.error(`\n${symbols.err()} ${ui.bold(err.code)}: ${err.message}`);
-          console.error(ui.dim(`  → ${err.hint}`));
-          return 1;
-        }
-
         const mode = loaded.config.budget?.reduction_mode;
         const res = await prepareWorkspace(target, {
-          provider,
+          providerFactory,
           ...(mode !== undefined ? { mode } : {}),
         });
         await writePreparedRunSession(res);
 
         const result = buildCliPrepareResult(res);
         if (g.json) printJson(result);
-        else if (result.status === "Success") console.log(formatCliPrepareResult(result));
-        else console.error(formatCliPrepareResult(result));
+        else if (result.status === "Success") {
+          // Blue "Yuhi Mode" banner mirroring the VS Code accent; file-level
+          // exclusions never downgrade a launchable workspace.
+          const excluded = result.filesKeptLocal + result.unsupportedOrUnverifiedFiles;
+          const detail =
+            excluded > 0
+              ? `${result.filesIncluded} files available · ${excluded} excluded by recommendation`
+              : `${result.filesIncluded} files available`;
+          console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
+          console.log(formatCliPrepareResult(result));
+        } else {
+          console.error(yuhiBanner("partial") + "\n");
+          console.error(formatCliPrepareResult(result));
+        }
         return cliPrepareExitCode(result);
       }),
     );
@@ -599,6 +633,53 @@ async function main(): Promise<void> {
           console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
           return 3;
         }
+      }),
+    );
+
+  program
+    .command("review-agent-changes <run>")
+    .description("Review post-agent Prepared Workspace changes; never applies automatically")
+    .requiredOption("--original <dir>", "original workspace used for conflict checks")
+    .requiredOption("--baseline <file>", "metadata-only baseline captured before agent execution")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts() as { original: string; baseline: string };
+        const prepared = resolvePreparedRunReference(cmd.args[0]!);
+        await readPreparedRunSession(cmd.args[0]!);
+        const original = await assertSafeSourceWorkspace(opts.original);
+        const baseline = JSON.parse(await readFile(path.resolve(opts.baseline), "utf8")) as AgentChangeBaseline;
+        if (
+          baseline?.schemaVersion !== 2 ||
+          typeof baseline.runId !== "string" ||
+          !Array.isArray(baseline.files)
+        ) {
+          console.error("Invalid input\n\nSafe error category: invalid-agent-baseline");
+          return 3;
+        }
+        const review = await reviewAgentChanges(baseline, prepared, original);
+        const output = {
+          command: "review-agent-changes",
+          runId: baseline.runId,
+          changedFileCount: review.changes.length,
+          changes: review.changes,
+          security: review.security,
+          applyAllowed: review.applyAllowed,
+          blockers: review.blockers,
+          applyResult: "unavailable-in-cli",
+          workflowState: deriveWorkflowState({
+            changedFileCount: review.changes.length,
+            reviewingChanges: true,
+          }),
+        };
+        if (g.json) printJson(output);
+        else {
+          console.log(`AI Agent completed\n\nChanges detected: ${output.changedFileCount}`);
+          console.log(`Security scan: ${output.security.safe ? "Passed" : "Blocked"}`);
+          console.log(`Apply: ${output.applyResult}`);
+          if (output.blockers.length > 0) console.log(`Blockers: ${output.blockers.join(", ")}`);
+        }
+        return 0;
       }),
     );
 
@@ -661,15 +742,11 @@ async function main(): Promise<void> {
         }
         const source = await assertSafeSourceWorkspace(opts.source);
         const loaded = await loadConfig(source);
-        const provider = createLocalModelProvider(
+        const providerFactory = () => createLocalModelProvider(
           providerConfigFromSettings(loaded.config.local_model),
         );
-        if (!(await provider.health()).ok) {
-          console.error("Preparation failed\n\nSafe error category: local-model-unavailable");
-          return 4;
-        }
         const report = await prepareWorkspace(source, {
-          provider,
+          providerFactory,
           excludeRelpaths: excluded,
           ...(loaded.config.budget?.reduction_mode
             ? { mode: loaded.config.budget.reduction_mode }

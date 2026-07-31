@@ -48,6 +48,36 @@ export interface FileInfo {
     inspectionSucceeded: boolean;
     contentVerified: boolean;
   };
+  /** Metadata-only document inspection result. Extracted text is never persisted here. */
+  documentInspection?: DocumentInspectionResult;
+}
+
+export type DocumentExtractionMethod = "pdf-text" | "ocr" | "none";
+
+export interface DocumentInspectionResult {
+  status: "inspected" | "unavailable" | "failed";
+  extractedTextAvailable: boolean;
+  extractionMethod: DocumentExtractionMethod;
+  pageCount?: number;
+  /** Stable, content-free warning categories only. */
+  warnings: string[];
+}
+
+export interface DocumentInspectionFile {
+  relpath: string;
+  absPath: string;
+}
+
+export interface DocumentInspector {
+  canInspect(file: DocumentInspectionFile): boolean;
+  /**
+   * Extracted text is delivered only to this in-memory consumer and is never
+   * part of the returned/persisted result.
+   */
+  inspect(
+    file: DocumentInspectionFile,
+    consumeExtractedText: (text: string) => void,
+  ): Promise<DocumentInspectionResult>;
 }
 
 export interface ScanResult {

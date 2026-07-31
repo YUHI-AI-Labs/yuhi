@@ -11,5 +11,8 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "exceljs": "4.4.0"
+  }
 }

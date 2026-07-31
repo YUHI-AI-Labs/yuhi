@@ -37,8 +37,8 @@ function data(over: Partial<ReviewData["report"]> = {}): ReviewData {
     runtime: {
       initialContextPrepared: true,
       startDirectory: "prepared-workspace", workspaceInstructionPresent: true,
-      workspaceBoundary: "enforced", filesystemEnforcement: "claude-code-sandbox",
-      osSandboxEnabled: true, externalPathAccessPossible: false,
+      workspaceBoundary: "advisory", filesystemEnforcement: "claude-code-sandbox",
+      osSandboxEnabled: true, externalPathAccessPossible: true,
     },
     acceptance: {
       entitiesPseudonymized: 100,
@@ -83,12 +83,14 @@ describe("renderSavingsHtml (product workflow)", () => {
 
   it("leads with a clear result and primary next action", () => {
     expect(html).toContain("Ready for Claude Code");
-    expect(html).toContain("Your original workspace was not modified.");
+    expect(html).toContain("Yuhi prepared everything it safely could. You can continue now.");
     expect(html).toContain("Open with Claude Code");
-    expect(html).toContain("View files");
-    expect(html).toContain("Claude Code will start in the Prepared Workspace.");
+    expect(html).toContain("Show details");
+    expect(html).toContain("Your workspace is ready.");
+    expect(html).toContain("Nothing has been sent yet.");
     expect(html).toContain("Cancel");
     expect(html).not.toContain("Prepared locally for files");
+    expect(html).not.toContain("LIMITED");
   });
 
   it("does not render a dead launch action in standalone review mode", () => {
@@ -182,11 +184,9 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("Malformed tables");
     expect(rendered).toContain("Unverified transformations");
     expect(rendered).toContain("Raw fallback used");
-    expect(rendered).toContain("Claude Code started");
-    expect(rendered).toContain("Some files could not be safely prepared. Claude Code was not started.");
-    expect(rendered).toContain("Exclude blocked files and prepare again");
-    expect(rendered).toContain("Review blocked files");
-    expect(rendered).toContain("Choose another source folder");
+    expect(rendered).toContain("Some files need attention.");
+    expect(rendered).toContain("Retry protection");
+    expect(rendered).toContain("Technical reason");
     expect(rendered).not.toContain(">Open with Claude Code</button>");
   });
 
@@ -237,13 +237,186 @@ describe("renderSavingsHtml (product workflow)", () => {
       },
     ];
     const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
-    expect(rendered).toContain("File kept local");
-    expect(rendered).toContain("Restricted workbook kept local");
-    expect(rendered).toContain("No verified local PDF inspection is available");
-    expect(rendered).toContain("Unresolved high-risk data");
-    expect(rendered).toContain("Some files could not be safely inspected or transformed.");
+    // New kept-local detail: WHAT was detected, the STATUS, and the concrete REASON.
+    expect(rendered).toContain("Detected");
+    expect(rendered).toContain("Transformation verification failed");
+    expect(rendered).toContain("No verified local PDF inspection is available"); // PDF reason
+    expect(rendered).toContain("Some files need attention.");
+    // Never leaks a private source filename that the caller did not put in the data.
     expect(rendered).not.toContain("private-report.pdf");
     expect(rendered).not.toContain("student-records.xlsx");
+  });
+
+  it("renders unverified included files as launchable warnings", () => {
+    const fixture = data();
+    fixture.metrics = {
+      ...fixture.metrics,
+      filesSentUnchanged: 2,
+      filesKeptLocal: 0,
+      filesExcluded: 0,
+      unresolvedHighRiskFindings: 0,
+    };
+    fixture.acceptance = {
+      ...fixture.acceptance,
+      unsupportedOrUnverifiedFiles: 2,
+      hasLimitations: true,
+      launchAllowed: true,
+    };
+    fixture.files = [
+      {
+        ...fixture.files[0]!,
+        path: "report.pdf",
+        action: "allow",
+        status: "ok",
+        omitted: false,
+        included: true,
+        claudeReceives: "Unchanged",
+        transformed: false,
+        transformations: [],
+        sensitivity: "Unknown",
+        outcome: "included-unverified",
+        fileType: "PDF",
+        inspectionStatus: "Not available",
+        limitationShown: true,
+      },
+      {
+        ...fixture.files[0]!,
+        path: "model.bin",
+        action: "allow",
+        status: "ok",
+        omitted: false,
+        included: true,
+        claudeReceives: "Unchanged",
+        transformed: false,
+        transformations: [],
+        sensitivity: "Unknown",
+        outcome: "included-unverified",
+        fileType: "BINARY",
+        inspectionStatus: "Not available",
+        limitationShown: true,
+      },
+    ];
+    fixture.projectFiles = ["report.pdf", "model.bin"];
+    fixture.preparedTree = [...fixture.projectFiles, ...fixture.metadataFiles];
+
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    // A pending PDF (background) + a binary (included unchanged) are NOT warnings:
+    // nothing needs review, so the headline stays plain READY.
+    expect(rendered).toContain("READY");
+    expect(rendered).not.toContain("WITH WARNINGS");
+    expect(rendered).toContain("Included unchanged");
+    expect(rendered).toContain("Original file");
+    expect(rendered).toContain("Open with Claude Code");
+    expect(rendered).not.toContain("Claude Code cannot start yet");
+  });
+
+  it("answers 'safe to start now' and treats pending PDFs as progress, not warnings", () => {
+    const fixture = data();
+    fixture.backgroundDocumentsPending = 2;
+    // No files kept local => nothing needs review => plain READY.
+    fixture.metrics = { ...fixture.metrics, filesKeptLocal: 0, filesExcluded: 0 };
+    fixture.acceptance = { ...fixture.acceptance, hasLimitations: false, launchAllowed: true };
+    fixture.files = [
+      {
+        ...fixture.files[0]!,
+        path: "report.pdf",
+        action: "allow",
+        omitted: false,
+        included: true,
+        claudeReceives: "Unchanged",
+        transformed: false,
+        transformations: [],
+        sensitivity: "Unknown",
+        outcome: "included-unverified",
+        fileType: "PDF",
+        // documentStatus intentionally absent => still queued for background inspection.
+      },
+    ];
+    fixture.projectFiles = ["report.pdf"];
+    fixture.preparedTree = [...fixture.projectFiles, ...fixture.metadataFiles];
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    // Server-side truths: the count is injected, and a deferred PDF is progress,
+    // so the headline stays plain READY (never "READY WITH WARNINGS").
+    expect(rendered).toContain("const backgroundPending=2");
+    expect(rendered).not.toContain("WITH WARNINGS");
+    expect(rendered).toContain(">Open with Claude Code</button>");
+    // Reassurance + progress copy exist in the panel.
+    expect(rendered).toContain("Safe to start now.");
+    expect(rendered).toContain("Document inspection keeps running in the background");
+    expect(rendered).toContain("in the background");
+  });
+
+  it("shows a real unverified file as 'included unchanged' with a human type and honest reason", () => {
+    const fixture = data();
+    fixture.metrics = { ...fixture.metrics, filesKeptLocal: 0, filesExcluded: 0 };
+    fixture.acceptance = { ...fixture.acceptance, launchAllowed: true };
+    fixture.files = [
+      {
+        ...fixture.files[0]!,
+        path: "health.csv",
+        action: "allow",
+        omitted: false,
+        included: true,
+        claudeReceives: "Unchanged",
+        transformed: false,
+        transformations: [],
+        sensitivity: "Unknown",
+        outcome: "included-unverified",
+        fileType: "XLSX",
+        failureCategory: "structural",
+      },
+    ];
+    fixture.projectFiles = ["health.csv"];
+    fixture.preparedTree = [...fixture.projectFiles, ...fixture.metadataFiles];
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    // Non-sensitive unverified file => "included unchanged", not a headline warning.
+    expect(rendered).toContain("READY");
+    expect(rendered).not.toContain("WITH WARNINGS");
+    expect(rendered).toContain("const backgroundPending=0");
+    expect(rendered).toContain("Included unchanged");
+    // Human label + differentiated reason (never "XLSX"/"Unknown" or a blanket
+    // "Not verified / Not applied").
+    expect(rendered).toContain("Excel workbook");
+    expect(rendered).toContain("Structure could not be parsed");
+    expect(rendered).toContain("Included with warning");
+  });
+
+  it("shows metadata-only local document inspection counts", () => {
+    const fixture = data();
+    fixture.acceptance = {
+      ...fixture.acceptance,
+      pdfInspected: 5,
+      ocrProcessed: 2,
+      unverifiedDocuments: 1,
+      documentSummariesCreated: 3,
+      documentSummariesRejected: 1,
+      documentContextBeforeTokens: 180_000,
+      documentContextAfterTokens: 65_000,
+      agentHandoffCreated: true,
+      localModelProvider: "ollama",
+      localModelName: "qwen3:1.7b",
+      localModelRequests: 7,
+      localModelSucceeded: 7,
+      localModelFailed: 0,
+      localModelInputChars: 24_000,
+      localModelOutputChars: 3_200,
+      localModelElapsedMs: 14_000,
+      hasLimitations: true,
+    };
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    expect(rendered).toContain("Document inspection");
+    expect(rendered).toContain("PDF text extraction completed");
+    expect(rendered).toContain("PDFs scanned with OCR");
+    expect(rendered).toContain("PDFs not fully inspected");
+    expect(rendered).toContain("Extracted text is used only for the security scan and is not stored or uploaded");
+    expect(rendered).toContain("What Yuhi did");
+    expect(rendered).toContain("Context preparation");
+    expect(rendered).toContain("Context summaries created");
+    expect(rendered).toContain("Estimated original document context");
+    expect(rendered).toContain("Agent handoff");
+    expect(rendered).toContain("Yuhi processing activity");
+    expect(rendered).toContain("Local processing requests");
+    expect(rendered).not.toContain("qwen3:1.7b");
   });
 
   it("uses simple default columns and user-facing actions", () => {
@@ -257,22 +430,72 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(html).not.toContain("<span>Rule</span>");
   });
 
-  it("states the enforced runtime boundary once in primary UI", () => {
-    const notice = "Yuhi prepared the initial context. Claude Code sandbox policy is enforced.";
+  it("states an advisory runtime boundary once and never claims OS-level enforcement", () => {
+    const notice =
+      "Yuhi prepared the initial context. This is an advisory workspace boundary, not an OS-level sandbox.";
     expect(html.split(notice)).toHaveLength(2);
     expect(html).toContain("Workspace boundary");
-    expect(html).toContain("Enforced");
+    expect(html).toContain("Advisory");
     expect(html).toContain("External-path access");
-    expect(html).toContain("Blocked by policy");
+    expect(html).toContain("May still be possible");
+    // No guarantee wording may survive anywhere in the rendered UI.
+    expect(html).not.toContain("policy is enforced");
+    expect(html).not.toContain("re-allows only");
+    expect(html).not.toContain("Launch fails if the sandbox");
     expect(html).not.toContain("Claude cannot access");
     expect(html).not.toContain("confined");
   });
 
   it("collapses metadata, runtime, and advanced details by default", () => {
     expect(html).toContain('<details class="metadata">');
-    expect(html).toContain("<summary>Advanced details</summary>");
+    expect(html).toContain("<summary>Technical details</summary>");
     expect(html).toContain("<summary>Full file decisions</summary>");
     expect(html).not.toContain("<details open");
+  });
+
+  it("presents kept-local files as 'excluded by recommendation' without blocking launch", () => {
+    const fixture = data();
+    fixture.acceptance = {
+      ...fixture.acceptance,
+      hasLimitations: true,
+      unsupportedOrUnverifiedFiles: 3,
+    };
+    fixture.metrics.filesKeptLocal = 3;
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    // Recommend, don't trap: excluded files keep the headline plain READY.
+    expect(rendered).toContain("READY");
+    expect(rendered).not.toContain("WITH WARNINGS");
+    expect(rendered).toContain("Ready for Claude Code");
+    expect(rendered).toContain("Excluded by recommendation");
+    expect(rendered).toContain(">Open with Claude Code</button>"); // launch still allowed
+    expect(rendered).not.toContain("LIMITED");
+    expect(rendered).not.toContain("Preparation was limited");
+  });
+
+  it("shows credential protection as a ready workflow without exposing values", () => {
+    const fixture = data();
+    fixture.files = [{
+      ...fixture.files[0]!,
+      path: ".env",
+      rule: "yuhi:environment-sanitized-copy",
+      transformed: true,
+      transformations: ["masked"],
+      claudeReceives: "Transformed",
+    }];
+    fixture.projectFiles = [".env"];
+    fixture.metrics.sensitiveValuesMasked = 2;
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    expect(rendered).toContain("Ready for Claude Code");
+    expect(rendered).toContain("Sensitive values handled");
+    expect(rendered).toContain("Runtime configuration preserved");
+    expect(rendered).toContain("Credential configuration prepared locally");
+    expect(rendered).toContain("Transformed copies verified");
+    expect(rendered).toContain("Credential values");
+    expect(rendered).toContain("Not included in Prepared Workspace");
+    expect(rendered).toContain("runtime environment");
+    expect(rendered).toContain("Prepared copy");
+    expect(rendered).toContain("Created");
+    expect(rendered).not.toMatch(/sk-[A-Za-z0-9_-]+/);
   });
 
   it("supports narrow windows and long path tooltips without page overflow", () => {

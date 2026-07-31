@@ -22,8 +22,16 @@ export interface PreparedFileDecision {
   unresolvedHighRiskCount: number;
   outcome: NonNullable<PreparedFileEntry["outcome"]>;
   fileType: string;
+  failureCategory?: string;
   inspectionStatus: "Verified" | "Incomplete" | "Not available";
   limitationShown: boolean;
+}
+
+/** Human-facing file-type token, derived from inspection or the path extension. */
+function fileTypeToken(entry: PreparedFileEntry): string {
+  if (entry.inspection?.fileType) return entry.inspection.fileType.toUpperCase();
+  const ext = path.extname(entry.relpath).replace(/^\./, "").toUpperCase();
+  return ext || "Unknown";
 }
 
 export interface PreparedMetrics {
@@ -157,7 +165,8 @@ export function buildFileDecision(
     agentReceives: !included ? "No" : transformed ? "Transformed" : "Unchanged",
     unresolvedHighRiskCount,
     outcome,
-    fileType: entry.inspection?.fileType.toUpperCase() ?? "Unknown",
+    fileType: fileTypeToken(entry),
+    ...(entry.failureCategory ? { failureCategory: entry.failureCategory } : {}),
     inspectionStatus,
     limitationShown: entry.limitation !== undefined,
   };
@@ -184,7 +193,16 @@ export function buildPreparedMetrics(report: PrepareReport): PreparedMetrics {
     const output = sourceFiles.find(
       (f) => normalizedRelativePath(f.relpath) === normalizedRelativePath(decision.relpath),
     );
-    if (!output || output.omitted || output.action !== "allow") return total;
+    // Match the launch gate: omitted files (kept local) and included-unverified files
+    // (delivered with a surfaced "review before sharing" warning) are already
+    // resolved, so their findings do not count as unresolved — otherwise the summary
+    // reports Partial / "launch not allowed" while the real gate says allowed.
+    if (
+      !output ||
+      output.omitted ||
+      output.action !== "allow" ||
+      output.outcome === "included-unverified"
+    ) return total;
     return total + decision.findings.filter((f) => highRisk(f.severity)).length;
   }, 0);
   const before = report.report.beforeTokens;
@@ -236,10 +254,10 @@ export function buildPreparedRuntimeBoundary(
       initialContextPrepared: true,
       startDirectory: "prepared-workspace",
       workspaceInstructionPresent: true,
-      workspaceBoundary: "enforced",
+      workspaceBoundary: "advisory",
       filesystemEnforcement: "claude-code-sandbox",
       osSandboxEnabled: true,
-      externalPathAccessPossible: false,
+      externalPathAccessPossible: true,
     };
   }
   return {

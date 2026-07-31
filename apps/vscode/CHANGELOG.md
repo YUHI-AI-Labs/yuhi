@@ -5,6 +5,114 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.2.8]
+
+### Critical fix
+
+- Fixed the root cause of "Yuhi could not complete workspace preparation" on real
+  workspaces. Yuhi generates an `AGENT_HANDOFF.md` that lists filenames, re-scans it,
+  and previously **threw** on any finding — so a workspace containing a file with a
+  long high-entropy name (or other detector-tripping filename) made Yuhi's *own*
+  generated file fail its rescan and abort the entire, already-completed preparation.
+  Yuhi now sanitizes the generated handoff (redacting flagged spans, and — as a
+  guaranteed-clean fallback — omitting the per-file listings) and always writes it.
+  A generated file can never again fail the whole run.
+
+## [0.2.7]
+
+### Diagnostics & recovery
+
+- A preparation failure now writes the actual error (its type/code — e.g. ENOENT,
+  EACCES, ENOSPC — with all source paths redacted) to Yuhi Output, instead of only
+  an opaque category. This makes a stubborn failure diagnosable.
+- The failure dialog is now modal with Retry / Switch Workspace / View Yuhi Output
+  (and the built-in Cancel), so the recovery choices can never be missed or
+  auto-dismissed. Details of the failure are shown inline.
+
+## [0.2.6]
+
+### Reliability
+
+- **A single problematic file never fails the whole preparation.** In a large, active
+  workspace a file can be removed, moved, locked, or changed while Yuhi is preparing.
+  Each file is now processed in isolation: if one cannot be read or processed, it is
+  skipped with a note and preparation continues, instead of aborting the entire run
+  with "preparation-failure". The same isolation applies to the final privacy rescan.
+
+## [0.2.5]
+
+### Privacy & correctness
+
+- Adds a mandatory final-artifact security gate: after every write, rename, and
+  fallback, Yuhi reopens each delivered CSV/TXT/XLSX from disk and scans the actual
+  bytes. A file is reported de-identified only when its final on-disk bytes are clean.
+  A surviving credential is kept local; a surviving personal identifier is delivered
+  with a warning and never labelled "verified".
+- Never claims "Sensitive values handled" / "Transformed copies verified" when a
+  delivered file still contains identifiers — shows an explicit "could not be fully
+  de-identified — review before sharing" instead.
+- XLSX: a parseable workbook is delivered with identifier columns pseudonymized rather
+  than falling back to the raw original on a partial match.
+- Pseudonymizes identifiers that appear in filenames (e.g. `…-A000000.csv`); the
+  mapping lives only in the manifest.
+
+### Reliability
+
+- **Only files 2 MB or smaller are inspected, transformed, or OCR'd.** A larger file
+  (a big PDF, export, or log) is passed through to Claude Code as-is with a warning
+  ("over the 2 MB inspection limit — review before sharing") instead of being loaded
+  into memory. This prevents a single large file from hanging or exhausting memory
+  during preparation. Large files are always delivered, never held back.
+- `.DS_Store` and other OS-generated files no longer fail preparation: their background
+  churn is excluded from the source-integrity check (they are still delivered). Genuine
+  integrity/attack shapes still fail closed, and a failure now names the changed files
+  in Yuhi Output.
+- The preparation-failure dialog now offers Switch Workspace (alongside Retry, View
+  Yuhi Output, and Cancel) so a failed run never traps you. A running preparation stays
+  cancellable from its progress notification.
+- Local PDF summaries run only when Ollama is reachable with a model installed; when
+  not, `document-index.md` states the reason honestly instead of a silent zero.
+
+## [0.2.4]
+
+### Intelligent Preparation
+
+- Adds local PDF text-layer extraction before preparation.
+- Falls back to local page rendering and Tesseract OCR when available.
+- Scans extracted text in memory for secret-like and personal information.
+- Generates local document summaries with Ollama and rescans every generated
+  summary before inclusion.
+- Creates `.yuhi/context/document-index.md` as the agent's initial document map.
+- Shows separate document-inspection, context-generation, and estimated-context
+  metrics in Review Prepared Context.
+- Stores document inspection counts and methods only; extracted/OCR text is
+  never written to manifests, sessions, logs, or audit records.
+- Keeps Recommended one-click behavior: documents that cannot be inspected are
+  included unchanged with a transparent warning, while unresolved credentials
+  remain local.
+
+Development preview. Local tools must be installed for PDF extraction and OCR;
+no document content is uploaded by Yuhi.
+
+## [0.2.3]
+
+### Safe Agent Execution
+
+- Positions Yuhi as a protected AI-agent workspace: prepare, run, review changes, and apply safely.
+- Continues with explicitly labelled unverified PDF, image, binary, and unknown
+  binary files instead of treating inspection limitations as preparation
+  failures.
+- Keeps credential files and private-key material protected: Yuhi creates a
+  verified sanitized copy when supported; otherwise the raw file is not
+  included.
+- Tracks created, modified, deleted, and renamed files after an agent works in a Prepared Workspace.
+- Rescans changed output before Apply and blocks secrets, personal data, uninspectable output, and source conflicts.
+- Adds **Yuhi: Review Agent Changes** with explicit diff review and Apply confirmation.
+- Stores metadata-only apply audit records. Source code, findings, and secret values are not persisted.
+- Never applies agent changes automatically. Changes to transformed inputs remain non-applicable until a safe reverse-transform workflow exists.
+
+Development preview. The fixed 0.2.2 preparation policy and launch guarantees remain unchanged.
+
 ## [0.2.2]
 
 > Early preview. Not yet recommended for production, regulated data, or highly

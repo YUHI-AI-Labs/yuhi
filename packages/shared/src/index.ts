@@ -1,4 +1,5 @@
 export * from "./actions.js";
+export * from "./text-encoding.js";
 export * from "./errors.js";
 export * from "./types.js";
 export * from "./policy-input.js";
@@ -11,3 +12,4 @@ export * from "./tokens.js";
 export * from "./normalize.js";
 export * from "./student-records.js";
 export * from "./file-capabilities.js";
+export * from "./xlsx-records.js";

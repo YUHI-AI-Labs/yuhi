@@ -1,6 +1,9 @@
 # Yuhi — Local AI Prep (VS Code)
 
-**Prepare your workspace on-device before anything is sent to Claude.**
+**Yuhi creates a protected workspace for AI agents, monitors changes, and helps
+you safely apply results.**
+
+YuhiはAIエージェント用の安全な作業環境を作成し、変更を確認した上で安全に反映できるようにします。
 
 **Website:** https://yuhi-iota.vercel.app/
 
@@ -13,6 +16,32 @@ diff, before any of it leaves your computer. Your original files are never modif
 > sensitive workflows.** Yuhi prepares and reviews the initial context. It never silently
 > submits a prompt.
 > A launched agent still has the OS and network access permitted by its runtime.
+
+## Intelligent Preparation (0.2.4 development)
+
+Before creating a Prepared Workspace, Yuhi now attempts local PDF text
+extraction and, when available, local OCR. Extracted text is used only for the
+in-memory security scan and is not stored or uploaded. If inspection is
+unavailable, Recommended continues with an explicit warning.
+
+When Ollama is available, inspected document text flows through memory to a
+local summary generator. Yuhi rescans the generated summary and includes it
+only when verification passes. The Prepared Workspace receives a local
+`.yuhi/context/document-index.md`; extracted source text is never persisted.
+
+## Safe Agent Execution
+
+0.2.2 prepares context safely. 0.2.3 adds the next controlled step:
+
+**Prepared Workspace → Agent execution → Change review → Apply safely**
+
+After the agent finishes, run **Yuhi: Review Agent Changes** from the Prepared
+Workspace. Yuhi shows metadata-only file changes, rescans generated output, and
+requires explicit confirmation before applying verified changes to the Original
+Workspace. It never applies changes automatically.
+
+Changes to pseudonymized or otherwise transformed source files cannot currently
+be applied back because Yuhi does not persist reversible identity mappings.
 
 ## Features
 

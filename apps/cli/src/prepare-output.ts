@@ -19,6 +19,7 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
       "Preparation incomplete",
       "",
       `Status: ${result.status}`,
+      `Workflow: ${result.workflowState}`,
       `Malformed tables: ${result.malformedTables}`,
       `Unverified transformations: ${result.unverifiedTransformations}`,
       `Unsupported or unverified files: ${result.unsupportedOrUnverifiedFiles}`,
@@ -37,6 +38,7 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     "Prepared by Yuhi",
     "",
     "Status: Success",
+    `Workflow: ${result.workflowState}`,
     `Files included: ${result.filesIncluded}`,
     `Files transformed: ${result.filesTransformed}`,
     ...(result.hasLimitations
@@ -53,6 +55,12 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     "Raw fallback used: No",
     `Launch allowed: ${result.launchAllowed ? "Yes" : "No"}`,
     `Original source modified: ${result.originalSourceFilesModified === 0 ? "No" : "Yes"}`,
+    `Yuhi local processing requests: ${result.localModelRequests}`,
+    `Yuhi local processing succeeded: ${result.localModelSucceeded}`,
+    `Yuhi local processing failed: ${result.localModelFailed}`,
+    `Configured parallelism: ${result.localModelConfiguredParallelism}`,
+    `Peak parallel requests: ${result.localModelMaxConcurrency}`,
+    `Yuhi local processing time: ${(result.localModelElapsedMs / 1000).toFixed(1)} seconds`,
     "",
     `Run ID: ${result.runId}`,
   ].join("\n");

@@ -63,13 +63,16 @@ describe("end-to-end pipeline", () => {
     expect(plan.scan.filesInspected).toBeGreaterThan(0);
     const preview = buildPreview(plan);
     expect(preview.summary.visible).toBeGreaterThan(0);
-    // .env should be blocked by the default policy.
-    expect(preview.byAction.block.some((d) => d.relpath === ".env")).toBe(true);
+    // .env should become a locally sanitized copy under the default policy.
+    expect(preview.byAction["prepare-locally"].some((d) => d.relpath === ".env")).toBe(true);
 
     // workspace
     const { manifest, treeDir } = await createWorkspaceForDir(dir, { interactive: false });
     expect(existsSync(path.join(treeDir, "src/index.ts"))).toBe(true);
-    expect(existsSync(path.join(treeDir, ".env"))).toBe(false);
+    expect(existsSync(path.join(treeDir, ".env"))).toBe(true);
+    const preparedEnv = readFileSync(path.join(treeDir, ".env"), "utf8");
+    expect(preparedEnv).toContain("OPENAI_API_KEY=${OPENAI_API_KEY}");
+    expect(preparedEnv).not.toContain("abcdefghijklmnopqrstuvwxyz0123");
     expect(manifest.counts.visible).toBeGreaterThan(0);
 
     // Original tree is byte-for-byte unchanged (yuhi.yaml + .yuhi were added by init,
