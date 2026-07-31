@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.0]
+
+### Repository Ready — the shareable preparation report
+
+- After a successful prepare, the review panel shows a **Repository Ready** card with
+  concrete, measurable outcomes: source files, prepared artifacts, documents prepared,
+  secrets blocked, identifiers transformed, and the estimated accessible-content
+  reduction. Wording is honest: *estimated accessible content, not model token savings*.
+- **Copy public report** copies the Markdown report to the clipboard; **Export…** saves
+  it as Markdown, JSON, or an SVG badge. Every format is **public-safe** — aggregate
+  numbers only, never a filename, path, secret type, or identity — so it is safe to paste
+  into a README, a PR, or a post.
+- Positioning refresh: "Turn any repository into an AI-ready repository." The listing and
+  README now lead with preparation outcomes and correct the document capabilities
+  (PDF/DOCX/PPTX are converted to sanitized companions; they are no longer "unsupported").
+
 ## [0.2.9]
 
 ### Document protection (PDF / DOCX / DOCM / PPTX / PPTM)
