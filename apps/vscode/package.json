@@ -19,14 +19,14 @@
     "Other"
   ],
   "keywords": [
-    "ai",
-    "claude",
-    "local-first",
+    "claude-code",
+    "ai-coding-agent",
+    "context-management",
     "privacy",
+    "local-first",
+    "security",
     "ollama",
-    "local-ai",
-    "context",
-    "security"
+    "ai"
   ],
   "repository": {
     "type": "git",

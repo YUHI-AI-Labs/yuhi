@@ -2,7 +2,7 @@
 
 <p align="center"><strong>Turn any repository into an AI-ready repository.</strong></p>
 
-<p align="center">Yuhi prepares a smaller, cleaner, safer workspace before your coding agent sees it — then hands you a shareable report of exactly what it did.</p>
+<p align="center">Yuhi prepares a smaller, cleaner, safer workspace before your coding agent sees it — then lets you review what the AI can see and share a public-safe summary of what it did.</p>
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
@@ -35,6 +35,12 @@ them before using Yuhi with sensitive information.
 </p>
 
 <p align="center">🌐 Also in <a href="./README.ja.md">日本語</a> · <a href="./README.zh-CN.md">简体中文</a></p>
+
+<p align="center">
+  <img alt="Yuhi — every file's route at a glance" src="docs/preview.png" width="760">
+</p>
+
+<!-- Static preview of `yuhi preview`. For an animated GIF, run `vhs docs/demo.tape` → writes docs/demo.gif (see docs/DEMO.md), then swap the src above. -->
 
 ---
 
