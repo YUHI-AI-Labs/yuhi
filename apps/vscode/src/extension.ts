@@ -22,6 +22,8 @@ import {
   DEFAULT_CONTEXT_DETAIL,
   DEFAULT_PREPARE_SAFETY_MODE,
   isSafetyMode,
+  safetyModeLabel,
+  checkSafetyModeFreshness,
   type SafetyMode,
   type PrepareReport,
   type PreparedFileEntry,
@@ -2071,6 +2073,29 @@ async function commandReview(awaitDecision = false): Promise<"open" | "cancel" |
         })();
       }
       if (msg?.type === "launch" || msg?.type === "cancel") {
+        // Launch gating: never open Claude Code on a run whose Safety Mode no longer
+        // matches the selected mode. The UI already disables the button while dirty;
+        // this is the host-side guarantee (survives reload / alternate invocation).
+        if (msg.type === "launch") {
+          const selected = currentSafetyMode();
+          const freshness = checkSafetyModeFreshness(report.safetyMode, selected);
+          if (!freshness.fresh) {
+            void vscode.window.showWarningMessage(
+              "The prepared repository is out of date.",
+              {
+                modal: true,
+                detail:
+                  `Prepared mode: ${safetyModeLabel(report.safetyMode)}\n` +
+                  `Selected mode: ${safetyModeLabel(selected)}\n\n` +
+                  "Re-prepare the repository before launching Claude Code.",
+              },
+              "Re-prepare",
+            ).then((choice) => {
+              if (choice === "Re-prepare") reviewPanel?.webview.postMessage({ type: "reprepare" });
+            });
+            return;
+          }
+        }
         const resolveDecision = pendingReviewDecision;
         pendingReviewDecision = undefined;
         if (resolveDecision) {

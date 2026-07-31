@@ -5,6 +5,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.2]
+
+### Safety Mode
+
+- A **Safety Mode** preset — **Balanced** (default), **Strict**, **Maximum Privacy** —
+  chosen from a selector in the review, or `yuhi prepare --safety-mode <mode>`, or the
+  `yuhi.safetyMode` workspace setting / `yuhi.yaml`. Higher modes keep more content
+  local; each withholds a strict superset of the mode below it, and no mode ever
+  weakens a hard block. Credentials and PII are never delivered raw in any mode.
+- The selected mode shapes the effective preparation policy in the core, so the CLI,
+  VS Code, and reports all behave identically. The resolved mode is saved in the
+  manifest and shown in the Repository Report.
+- Changing the mode marks the prepared workspace **out of date** — a *Re-prepare
+  required* banner appears and launching Claude Code is blocked until you re-prepare
+  with the selected mode.
+- Report wording clarified: *Secrets blocked* counts credential files kept fully
+  local; *Identifiers transformed* counts all redacted/pseudonymized sensitive values
+  (PII and secret redactions).
+
 ## [0.3.1]
 
 First published 0.3.x release. Folds in the 0.3.0 work below plus a concise, softened

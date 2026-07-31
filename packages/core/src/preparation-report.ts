@@ -20,7 +20,13 @@ export interface PreparationReport {
   sourceFiles: number;
   preparedArtifacts: number;
   documentsPrepared: number;
+  /** Credential/secret FILES kept fully local (never delivered) — i.e. an unresolved
+   *  credential. A `.env` whose values are safely redacted is delivered, so it is NOT
+   *  counted here; its redactions count under `identifiersTransformed`. */
   secretsBlocked: number;
+  /** Total sensitive VALUES redacted or pseudonymized across delivered files —
+   *  includes PII masks (names/emails/IDs) AND secret redactions (e.g. `.env`
+   *  `${VAR}` placeholders), not PII alone. */
   identifiersTransformed: number;
   largeFilesExcluded: number;
   /** Explicitly an estimate of agent-accessible content reduction, not token savings. */
