@@ -1,5 +1,6 @@
 import {
   buildSafePreparedRunSummary,
+  formatPreparationReport,
   type SafePreparedRunSummary,
 } from "@yuhi/core";
 
@@ -35,6 +36,11 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     ].join("\n");
   }
   return [
+    // Lead with the shareable, public-safe Repository Report — the proof of value.
+    formatPreparationReport(result.preparationReport, "terminal"),
+    "",
+    `Share it: yuhi report ${result.runId} --format markdown  (also: json, svg)`,
+    "",
     "Prepared by Yuhi",
     "",
     "Status: Success",

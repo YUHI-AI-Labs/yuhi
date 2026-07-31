@@ -34,6 +34,7 @@ import {
   buildAdapter,
   reviewAgentChanges,
   deriveWorkflowState,
+  formatPreparationReport,
   type AgentChangeBaseline,
 } from "@yuhi/core";
 import { loadConfig } from "@yuhi/config";
@@ -611,6 +612,35 @@ async function main(): Promise<void> {
           console.error(formatCliPrepareResult(result));
         }
         return cliPrepareExitCode(result);
+      }),
+    );
+
+  // ---- report ----  the shareable, public-safe proof-of-value artifact
+  program
+    .command("report <run>")
+    .description("Print the shareable Yuhi Repository Report (public-safe: numbers only)")
+    .option("--format <format>", "terminal | markdown | json | svg", "terminal")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const format = String(cmd.opts().format ?? "terminal");
+        const allowed = ["terminal", "markdown", "json", "svg"] as const;
+        if (!(allowed as readonly string[]).includes(format)) {
+          console.error(`${symbols.err()} Unknown --format '${format}'. Use: ${allowed.join(", ")}.`);
+          return 3;
+        }
+        try {
+          const { session } = await readPreparedRunSession(cmd.args[0]!);
+          const report = session.summary.preparationReport;
+          if (g.json && format === "terminal") return void printJson(report);
+          process.stdout.write(
+            formatPreparationReport(report, format as "terminal" | "markdown" | "json" | "svg") + "\n",
+          );
+          return 0;
+        } catch {
+          console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
+          return 3;
+        }
       }),
     );
 

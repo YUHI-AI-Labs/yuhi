@@ -36,3 +36,4 @@ export * from "./disclosure-config.js";
 export * from "./what-ai-can-see.js";
 export * from "./ai-readiness-report.js";
 export * from "./repository-overview.js";
+export * from "./preparation-report.js";

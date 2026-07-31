@@ -5,6 +5,8 @@ import type { PrepareReport } from "./prepare-workspace.js";
 import { managedWorkspaceBaseDir } from "./prepare-workspace.js";
 import { buildPreparedMetrics } from "./prepared-metrics.js";
 import { deriveWorkflowState, type YuhiWorkflowState } from "./workflow-state.js";
+import { buildAiReadinessReport } from "./ai-readiness-report.js";
+import { buildPreparationReport, type PreparationReport } from "./preparation-report.js";
 
 export type PreparedRunStatus = "Success" | "Partial" | "Failed";
 
@@ -39,6 +41,12 @@ export interface SafePreparedRunSummary {
   localModelElapsedMs: number;
   localModelMaxConcurrency: number;
   localModelConfiguredParallelism: number;
+  /**
+   * The shareable Yuhi Preparation Report — aggregate, PUBLIC-SAFE numbers only
+   * (no filenames, paths, secret types, or identities). This is what `yuhi report`
+   * renders to terminal / Markdown / JSON / SVG for READMEs, PRs, and posts.
+   */
+  preparationReport: PreparationReport;
 }
 
 export function buildSafePreparedRunSummary(report: PrepareReport): SafePreparedRunSummary {
@@ -55,6 +63,9 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
   const launchAllowed =
     status === "Success" &&
     safePreparedOutput;
+  // Public-safe shareable report — aggregate numbers derived from the readiness
+  // outcomes. Report generation must never fail a preparation (fall back to zero).
+  const preparationReport = buildPreparationReportSafely(report, !launchAllowed);
   return {
     schemaVersion: 1,
     status,
@@ -95,7 +106,27 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     localModelElapsedMs: acceptance?.localModelElapsedMs ?? 0,
     localModelMaxConcurrency: acceptance?.localModelMaxConcurrency ?? 0,
     localModelConfiguredParallelism: acceptance?.localModelConfiguredParallelism ?? 0,
+    preparationReport,
   };
+}
+
+/** Compute the shareable report; never throw — a report error must not fail a prepare. */
+function buildPreparationReportSafely(report: PrepareReport, warning: boolean): PreparationReport {
+  try {
+    const readiness = buildAiReadinessReport(report.files);
+    return buildPreparationReport(readiness, report.files.length, { warning });
+  } catch {
+    return {
+      sourceFiles: report.files.length,
+      preparedArtifacts: 0,
+      documentsPrepared: 0,
+      secretsBlocked: 0,
+      identifiersTransformed: 0,
+      largeFilesExcluded: 0,
+      estimatedReductionPercent: 0,
+      status: warning ? "ready-with-warning" : "ready",
+    };
+  }
 }
 
 export interface CorePreparedSession {
