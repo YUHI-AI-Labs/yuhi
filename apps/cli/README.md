@@ -1,48 +1,72 @@
 # yuhi
 
-> **Prepare the right context before AI starts.**
+> **Turn any repository into an AI-ready repository.**
 
-**Website:** https://yuhi-iota.vercel.app/
+**Website:** [yuhi-iota.vercel.app](https://yuhi-iota.vercel.app/)
 
-`yuhi` is a local-first CLI that decides — per file — what your AI coding agent
-(Claude Code, and more) **sees**, what gets **prepared locally** first (pseudonymize,
-mask secrets), and what **never leaves your machine**. It then runs the agent on a
-clean, generated copy. **Your original files are never modified.**
+`yuhi` is a local-first CLI that prepares a smaller, cleaner, safer workspace before
+your AI coding agent sees it — blocking secrets, converting documents to AI-friendly
+content, de-identifying tabular data, and reducing the repository to what the agent
+actually needs. It then prints a **Repository Report** you can share. **Your original
+files are never modified.**
 
-```bash
-npx @yuhi-ai-labs/yuhi preview      # exactly what the agent would see
-npx @yuhi-ai-labs/yuhi run claude   # launch the agent on the prepared context
-```
-
-Or install globally:
+## One command
 
 ```bash
-npm install -g @yuhi-ai-labs/yuhi
-yuhi preview
+npx @yuhi-ai-labs/yuhi prepare
 ```
 
-## Why
+```text
+Repository Ready
 
-Launch an agent inside your working tree and it can read everything there — `.env`
-files, credentials, customer data, private specs. `yuhi preview` shows every file's
-route **before** anything runs; `yuhi run` executes the agent on a filtered copy under
-`~/.yuhi/workspaces/<id>`, leaving your repo untouched.
+  Source files             5,224
+  Prepared artifacts         317
+  Documents prepared          42
+  Secrets blocked             18
+  Identifiers transformed    103
 
-Every file takes one route: **Sent to Claude · Prepared locally · Runtime only · Keep local.**
+  Estimated accessible-content reduction: 94%
+
+Ready for Claude Code.
+```
+
+> Estimates of the initial prepared content — how much of your repository is made
+> accessible to the agent — **not** measurements of model token usage or cost.
+
+## Share the result
+
+The report is **public-safe** — aggregate numbers only, never a filename, path, secret
+type, or identity:
+
+```bash
+yuhi report <run> --format markdown   # a table for your README or PR
+yuhi report <run> --format json       # machine-readable, for CI
+yuhi report <run> --format svg        # a "Prepared with Yuhi — 94% reduced" badge
+```
+
+CI can post it automatically with the
+[Yuhi report GitHub Action](https://github.com/YUHI-AI-Labs/yuhi/tree/main/actions/yuhi-report)
+(report-only; writes to the Job Summary; no write permissions).
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `yuhi prepare [dir]` | Prepare a reduced, de-identified copy and print the Repository Report |
+| `yuhi report <run> [--format …]` | Print the public-safe Repository Report (terminal / markdown / json / svg) |
 | `yuhi init` | Create `yuhi.yaml` (honors `.gitignore`) |
-| `yuhi preview` | The signature command — what the agent will see |
-| `yuhi status` | The AI context at a glance, like `git status` |
-| `yuhi explain <path>` | Why a file is sent / prepared / kept |
 | `yuhi scan` | Local inspection: secrets & sensitive files (never prints values) |
-| `yuhi run <agent> [-- …]` | Generate the context and launch the agent |
+| `yuhi status` | The AI context at a glance, like `git status` |
+| `yuhi preview` | Show exactly what an agent would see |
+| `yuhi explain <path>` | Why a file is prepared / blocked / kept local |
 | `yuhi doctor` | Check your environment & config |
 
 `--json`, `--quiet`, `--no-color`, and `--lang en|ja|zh-CN` are supported everywhere.
+Advanced: `yuhi workspace list/inspect/clean`, `yuhi review <run>`.
+
+> After `yuhi prepare`, start Claude Code in the Prepared Workspace that Yuhi generated.
+> `yuhi run` / `yuhi open` are temporarily disabled in this preview — use the VS Code
+> extension for the one-click Claude Code handoff.
 
 ## Honest scope
 
