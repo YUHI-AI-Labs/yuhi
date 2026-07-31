@@ -56,6 +56,8 @@ export interface SafePreparedRunSummary {
   schemaVersion: 1;
   status: PreparedRunStatus;
   runId: string;
+  /** Deterministic, agent-independent Context ID (`sha256:<hex>`) this run prepared. */
+  contextId?: string;
   filesIncluded: number;
   filesTransformed: number;
   filesExcluded: number;
@@ -120,6 +122,7 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     schemaVersion: 1,
     status,
     runId: report.runId,
+    ...(report.contextId !== undefined ? { contextId: report.contextId } : {}),
     filesIncluded: included.length,
     filesTransformed: included.filter((file) => file.transformed).length,
     filesExcluded: metrics.filesExcluded,
@@ -188,6 +191,8 @@ export interface CorePreparedSession {
   schemaVersion: 1;
   preparedBy: "Yuhi";
   runId: string;
+  /** Links this prepared run to its deterministic, agent-independent Context ID. */
+  contextId?: string;
   status: PreparedRunStatus;
   launchAllowed: boolean;
   summary: SafePreparedRunSummary;
@@ -201,6 +206,7 @@ export async function writePreparedRunSession(
     schemaVersion: 1,
     preparedBy: "Yuhi",
     runId: report.runId,
+    ...(report.contextId !== undefined ? { contextId: report.contextId } : {}),
     status: summary.status,
     launchAllowed: summary.launchAllowed,
     summary,

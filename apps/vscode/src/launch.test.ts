@@ -50,6 +50,7 @@ async function fixture(): Promise<{ root: string; outDir: string; report: Prepar
     outDir,
     report: {
       runId: "run-1",
+      contextId: "sha256:" + "0".repeat(64),
       outDir,
       report: {
         beforeChars: 400,

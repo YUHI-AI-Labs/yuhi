@@ -1,4 +1,6 @@
 export * from "./context.js";
+export * from "./context-id.js";
+export * from "./context-manifest.js";
 export * from "./init.js";
 export * from "./plan.js";
 export * from "./preview.js";

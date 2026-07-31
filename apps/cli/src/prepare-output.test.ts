@@ -21,6 +21,7 @@ function report(partial = false): PrepareReport {
   };
   return {
     runId: partial ? "run-partial" : "run-success",
+    contextId: "sha256:" + "0".repeat(64),
     outDir: "/not-for-output",
     report: {
       beforeChars: 400,

@@ -10,6 +10,7 @@ describe("renderPrepareReport boundary and metric terminology", () => {
     vi.spyOn(console, "log").mockImplementation((...args) => lines.push(args.join(" ")));
     const report: PrepareReport = {
       runId: "synthetic",
+      contextId: "sha256:" + "0".repeat(64),
       outDir: "/synthetic/.yuhi/prepared/synthetic",
       report: {
         beforeChars: 1200, afterChars: 256,

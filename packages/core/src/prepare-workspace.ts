@@ -31,7 +31,9 @@ import {
   type FileInfo,
   type DocumentInspector,
   type StudentAliasContext,
+  YUHI_VERSION,
 } from "@yuhi/shared";
+import { computeContextId, type ContextIdSourceFile } from "./context-id.js";
 import { runDetectors, redactText, PdfDocumentInspector } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
@@ -500,6 +502,16 @@ export interface ProvenanceEntry {
 /** Structured result returned to the CLI / VS Code. */
 export interface PrepareReport {
   runId: string;
+  /**
+   * Deterministic, agent-independent Context ID (`sha256:<hex>`, v0.3.4). Same
+   * repo state + same prep settings ⇒ identical id; changing the AGENT does not
+   * change it. Computed from the same inputs the pipeline already has (no re-scan).
+   *
+   * ALWAYS present on a report produced by {@link prepareWorkspace}. Optional on
+   * the TYPE only so a report reconstructed from a legacy on-disk manifest (which
+   * predates the field) still satisfies the interface.
+   */
+  contextId?: string;
   /** Absolute path of <dir>/.yuhi/prepared/<runId>. */
   outDir: string;
   /** Aggregate reduction across processed files (token values are estimates). */
@@ -3027,8 +3039,35 @@ export async function prepareWorkspace(
         }
       : undefined;
 
+  // Deterministic, agent-independent Context ID (v0.3.4). Derived from the SAME
+  // inputs the pipeline already computed — SOURCE file relpaths + content hashes
+  // (from the scan; no re-scan), the resolved safety mode, the policy hash, the
+  // compression toggle, the token budget, and the reduction settings. It excludes
+  // time, randomness (runId), user/machine, absolute paths, and the agent id.
+  const manifestSchemaVersion = 2;
+  const contextIdSourceFiles: ContextIdSourceFile[] = plan.scan.files.map((file) => ({
+    relpath: file.relpath,
+    sha256: file.sha256 ?? null,
+    size: file.size,
+  }));
+  const contextId = computeContextId({
+    yuhiVersion: YUHI_VERSION,
+    manifestSchemaVersion,
+    sourceFiles: contextIdSourceFiles,
+    safetyMode,
+    policyHash: plan.context.policyHash,
+    compression: options.compress === true,
+    tokenBudget: options.tokenBudget ?? null,
+    reductionMode: effectiveMode,
+    compressionThresholdTokens: options.compressionThresholdTokens ?? null,
+  });
+
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: manifestSchemaVersion,
+    // Deterministic Context ID — the agent-independent identity of this prepared
+    // context. Emitted into the Context Manifest so any agent adapter can attach a
+    // per-run Agent Session to it (see @yuhi/agents session manifest).
+    contextId,
     ...(createdAt !== undefined ? { createdAt } : {}),
     runId,
     reductionMode: effectiveMode,
@@ -3226,6 +3265,7 @@ export async function prepareWorkspace(
 
   return {
     runId,
+    contextId,
     outDir,
     report,
     files,

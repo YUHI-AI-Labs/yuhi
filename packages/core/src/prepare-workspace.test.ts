@@ -145,6 +145,36 @@ const YAML =
   '    match: { paths: ["secret.txt"] }\n' +
   "    action: block\n";
 
+describe("prepareWorkspace — deterministic Context ID (v0.3.4)", () => {
+  it("emits a valid Context ID into the report and manifest, deterministic + agent-invariant", async () => {
+    put("app.ts", "export const x = 1;\n");
+    put("util.ts", "export const y = 2;\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+
+    const first = await prepareWorkspace(dir, { deferDocumentInspection: true, agent: "claude" });
+    expect(first.contextId).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const manifest = JSON.parse(readFileSync(path.join(first.outDir, "manifest.json"), "utf8"));
+    expect(manifest.contextId).toBe(first.contextId);
+
+    // Same repo state + same prep settings, but a DIFFERENT agent ⇒ SAME id.
+    const second = await prepareWorkspace(dir, { deferDocumentInspection: true, agent: "codex" });
+    expect(second.contextId).toBe(first.contextId);
+
+    // Changing the compression toggle ⇒ a DIFFERENT id.
+    const compressed = await prepareWorkspace(dir, { deferDocumentInspection: true, compress: true });
+    expect(compressed.contextId).not.toBe(first.contextId);
+  });
+
+  it("changes the Context ID when source content changes", async () => {
+    put("app.ts", "export const x = 1;\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const before = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    put("app.ts", "export const x = 999;\n");
+    const after = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    expect(after.contextId).not.toBe(before.contextId);
+  });
+});
+
 describe("prepareWorkspace", () => {
   it("delivers a sanitized companion for a PDF and never places the original in the workspace", async () => {
     writeFileSync(path.join(dir, "pending.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
