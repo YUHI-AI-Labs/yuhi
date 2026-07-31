@@ -229,7 +229,7 @@ export function selectRepresentations(
         relpath: input.relpath,
         fullTokens: input.fullTokens,
         representation: "compressed",
-        reason: "compressed",
+        reason: "structural-compression",
         finalTokens: input.compressedTokens as number,
         importanceRank,
         mustKeep: false,
@@ -271,7 +271,7 @@ export function selectRepresentations(
       if (preparedTokens <= budget) break;
       preparedTokens -= it.finalTokens;
       it.representation = "excluded";
-      it.reason = "budget";
+      it.reason = "token-budget";
       it.finalTokens = 0;
     }
 
@@ -324,7 +324,9 @@ export function selectRepresentations(
   }
 
   const reductionPercent =
-    originalTokens === 0 ? 0 : ((originalTokens - preparedTokens) / originalTokens) * 100;
+    originalTokens === 0
+      ? 0
+      : Math.round(((originalTokens - preparedTokens) / originalTokens) * 1000) / 10;
 
   const withinBudget = !hasBudget || budget === null ? true : preparedTokens <= budget;
   const status: BudgetResult["summary"]["status"] = !hasBudget

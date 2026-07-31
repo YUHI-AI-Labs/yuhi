@@ -216,6 +216,18 @@
           "default": "balanced",
           "scope": "resource",
           "description": "Safety Mode preset applied when Yuhi prepares this workspace. Changing it takes effect the next time you prepare (re-prepare) the workspace."
+        },
+        "yuhi.compress": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Compress source structure (drop implementation bodies, keep signatures) to reduce tokens."
+        },
+        "yuhi.tokenBudget": {
+          "type": "number",
+          "default": 0,
+          "scope": "resource",
+          "description": "Target token budget for the prepared context (0 = no target; best-effort)."
         }
       }
     }

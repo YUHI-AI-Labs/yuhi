@@ -10,6 +10,7 @@ import {
   type DisclosureSafetyMode,
   type ContextDetail,
   type SafetyMode,
+  type CompressionReport,
 } from "@yuhi/core";
 import { renderRepositoryReadyCard } from "./repository-ready.js";
 
@@ -129,6 +130,16 @@ export interface ReviewData {
    * copy/export actions. Optional so existing callers and older runs are unchanged.
    */
   preparationReport?: PreparationReport;
+  /**
+   * v0.3.3 Context Compression summary — present ONLY when the run was prepared
+   * with `compress: true`. Aggregate numbers plus a per-file list carrying just
+   * relpaths + representation (already shown during review). When present, the
+   * review renders the "Context Compression" section and lets the user diff each
+   * compressed file's original source against its delivered compressed copy.
+   * This structure is review-only: it is NEVER routed into the public copy/export
+   * bytes (those stay aggregate-only via `preparationReport`).
+   */
+  compression?: CompressionReport;
   /**
    * Documents queued for background inspection that have not completed yet.
    * The review panel is a point-in-time snapshot rendered right after the fast
@@ -372,6 +383,81 @@ function renderSafetyModeSelector(data: ReviewData): string {
   );
 }
 
+/** Compact k/M token formatting (e.g. 1,240,000 → "1.24M", 178,000 → "178K"). */
+function compactTokens(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (abs >= 10_000) return `${Math.round(n / 1_000)}K`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+/**
+ * v0.3.3 — the Context Compression section. Rendered ONLY when `data.compression`
+ * is present (i.e. the run was prepared with `compress: true`). Shows the aggregate
+ * numbers (compactly, like the existing metrics), a Target/Actual/Reason line when
+ * the run was `best-effort`, and a per-file list of the COMPRESSED files. Each
+ * compressed file is diffable: clicking it posts the existing `{type:"diff",path}`
+ * message, which the host resolves to "original source ↔ delivered compressed copy".
+ *
+ * Public-safe: this whole structure carries aggregate numbers + relpaths only (the
+ * same relpaths already shown during review). It is review-only markup and NEVER
+ * reaches the public copy/export path (that stays aggregate-only via preparationReport).
+ */
+function renderCompressionSection(data: ReviewData): string {
+  const c = data.compression;
+  if (!c) return "";
+  const facts: [string, string][] = [
+    ["Original", compactTokens(c.originalTokens)],
+    ["Prepared", compactTokens(c.preparedTokens)],
+    ["Reduced", `${c.reductionPercent}%`],
+    ["Full files", String(c.fullFiles)],
+    ["Compressed", String(c.compressedFiles)],
+    ["Excluded", String(c.excludedFiles)],
+  ];
+  const rows = facts
+    .map(([k, v]) => `<div class="fact"><span>${escHtml(k)}</span><b>${escHtml(v)}</b></div>`)
+    .join("");
+  const bestEffort =
+    c.status === "best-effort"
+      ? `<p class="note" id="compressionBudget">Target ${escHtml(
+          c.targetBudget !== null ? compactTokens(c.targetBudget) : "None",
+        )} · Actual ${escHtml(compactTokens(c.actualTokens))}` +
+        (c.budgetReason ? ` · ${escHtml(c.budgetReason)}` : "") +
+        `</p>`
+      : "";
+  const compressed = c.files.filter((f) => f.representation === "compressed");
+  const compressedList = compressed.length
+    ? `<div class="card table" id="compressionFiles"><div class="toolbar">` +
+      `<span class="count">View compressed files · ${compressed.length}</span></div>` +
+      compressed
+        .map((f) => {
+          const p = escHtml(f.relpath);
+          return (
+            `<div class="see-item" data-representation="compressed">` +
+            `<button class="diff" data-p="${p}"><span class="path" title="${p}">${p}</span></button>` +
+            `<span class="badge see-receives">Compressed</span>` +
+            `<span class="see-action">Signatures kept · bodies dropped</span>` +
+            `</div>`
+          );
+        })
+        .join("") +
+      `</div>`
+    : "";
+  return (
+    `<section class="card" id="contextCompression" style="margin-bottom:24px">` +
+    `<div class="inside">` +
+    `<div class="eyebrow">YUHI · CONTEXT COMPRESSION</div>` +
+    `<h2 style="margin:6px 0 4px">Context Compression</h2>` +
+    `<p class="sub">Implementation bodies were dropped from the delivered copies to reduce tokens; ` +
+    `signatures are kept. Source files were never changed.</p>` +
+    `<div class="advanced-grid">${rows}</div>` +
+    bestEffort +
+    compressedList +
+    `</div></section>`
+  );
+}
+
 export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: string): string {
   const {
     localModelProvider: _localModelProvider,
@@ -424,6 +510,10 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
   // near the Repository Ready card. Local review UI only: nothing here routes into
   // the public copy/export path (that stays aggregate-only).
   const safetyModeSection = renderSafetyModeSelector(data);
+  // v0.3.3 — the Context Compression section. Present only when the run was
+  // prepared with compress: true. Review-only markup (aggregate numbers + relpaths);
+  // nothing here routes into the public copy/export path.
+  const compressionSection = renderCompressionSection(data);
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';script-src 'nonce-${nonce}'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -458,6 +548,7 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
 </section>
 ${repositoryReadyCard}
 ${safetyModeSection}
+${compressionSection}
 ${whatAiCanSeeSection}
 <details class="card advanced" id="whatYuhiDid"><summary>What Yuhi did</summary><div class="inside"><p class="sub">A plain-language summary of preparation before Claude Code starts.</p><div class="advanced-grid" id="workSummary"></div></div></details>
 <details class="card advanced" id="contextPreparation"><summary>Context preparation</summary><div class="inside"><p class="sub">Yuhi creates a local map of inspected documents before Claude Code starts.</p><div class="advanced-grid" id="contextSummary"></div><p class="note">Token counts are estimates only. Actual Claude usage may differ.</p></div></details>
@@ -607,5 +698,8 @@ document.getElementById("reprepare")?.addEventListener("click",()=>send("reprepa
 // "What the AI Can See" (read-only): client-side filter + per-file diff. Reuses the
 // existing {type:"diff",path} protocol — no new message types.
 (function(){const root=document.getElementById("whatAiCanSee");if(!root)return;const sel=document.getElementById("aiSeeFilter");const items=[...root.querySelectorAll(".see-item")];const matchSee=(b,s)=>s==="all"||s===b||(s==="available"&&(b==="transformed"||b==="unchanged"));const applySee=()=>{const s=sel?sel.value:"all";for(const el of items)el.hidden=!matchSee(el.dataset.bucket,s);for(const gid of ["aiSeeAvailable","aiSeeUnavailable"]){const g=document.getElementById(gid);if(!g)continue;const empty=g.querySelector(".see-empty");if(!empty)continue;const anyVisible=[...g.querySelectorAll(".see-item")].some(i=>!i.hidden);empty.hidden=anyVisible;}};if(sel)sel.addEventListener("change",applySee);applySee();root.addEventListener("click",e=>{const b=e.target.closest(".diff");if(b)vscode.postMessage({type:"diff",path:b.dataset.p})});})();
+// v0.3.3 Context Compression: clicking a compressed file opens the original ↔
+// compressed diff. Reuses the existing {type:"diff",path} protocol — no new types.
+(function(){const root=document.getElementById("contextCompression");if(!root)return;root.addEventListener("click",e=>{const b=e.target.closest(".diff");if(b)vscode.postMessage({type:"diff",path:b.dataset.p})});})();
 </script></body></html>`;
 }

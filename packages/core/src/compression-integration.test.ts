@@ -122,7 +122,7 @@ describe("v0.3.3 structure compression integration", () => {
     expect(manifest.compression.compressedFiles).toBe(summary.compressedFiles);
     const mBig = manifest.files.find((f: { relpath: string }) => f.relpath === "src/big.ts");
     expect(mBig.contextRepresentation).toBe("compressed");
-    expect(mBig.compressionReason).toBe("compressed");
+    expect(mBig.compressionReason).toBe("structural-compression");
     expect(mBig.originalTokens).toBeGreaterThan(mBig.preparedTokens);
     const mPkg = manifest.files.find((f: { relpath: string }) => f.relpath === "package.json");
     expect(mPkg.contextRepresentation).toBe("full");
@@ -143,7 +143,7 @@ describe("v0.3.3 structure compression integration", () => {
     const summary = report.compression!;
     const feature = summary.files.find((f) => f.relpath === "src/feature.ts");
     expect(feature?.representation).toBe("excluded");
-    expect(feature?.reason).toBe("budget");
+    expect(feature?.reason).toBe("token-budget");
     // Excluded delivered copy is removed; source is untouched.
     expect(existsSync(path.join(report.outDir, "src/feature.ts"))).toBe(false);
     expect(existsSync(path.join(dir, "src/feature.ts"))).toBe(true);

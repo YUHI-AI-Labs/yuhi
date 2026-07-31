@@ -35,6 +35,7 @@ import {
   reviewAgentChanges,
   deriveWorkflowState,
   formatPreparationReport,
+  formatCompressionReport,
   isSafetyMode,
   safetyModeLabel,
   type SafetyMode,
@@ -582,6 +583,8 @@ async function main(): Promise<void> {
     .command("prepare [dir]")
     .description("Prepare a local, reduced copy of your context (never sent anywhere)")
     .option("--safety-mode <mode>", "balanced | strict | maximum-privacy (default: balanced)")
+    .option("--compress", "opt-in v0.3.3 structure compression of the delivered context", false)
+    .option("--token-budget <n>", "best-effort token budget for the delivered context")
     .action(
       action(async (cmd) => {
         const { g, dir } = getContext(cmd);
@@ -596,6 +599,20 @@ async function main(): Promise<void> {
             return 3;
           }
           safetyMode = rawSafetyMode;
+        }
+
+        const compress = Boolean(cmd.opts().compress);
+        const rawTokenBudget = cmd.opts().tokenBudget as string | undefined;
+        let tokenBudget: number | null = null;
+        if (rawTokenBudget !== undefined) {
+          const parsed = Number(rawTokenBudget);
+          if (!Number.isInteger(parsed) || parsed <= 0) {
+            console.error(
+              `${symbols.err()} Invalid --token-budget '${rawTokenBudget}'. Use a positive integer.`,
+            );
+            return 3;
+          }
+          tokenBudget = parsed;
         }
 
         const target = await assertSafeSourceWorkspace(cmd.args[0] ?? dir);
@@ -621,6 +638,8 @@ async function main(): Promise<void> {
           providerFactory,
           ...(mode !== undefined ? { mode } : {}),
           safetyMode: effectiveSafetyMode,
+          compress,
+          ...(tokenBudget !== null ? { tokenBudget } : {}),
         });
         await writePreparedRunSession(res);
 
@@ -636,6 +655,11 @@ async function main(): Promise<void> {
               : `${result.filesIncluded} files available`;
           console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
           console.log(formatCliPrepareResult(result));
+          // v0.3.3: when compression ran, follow the summary with the compression block.
+          // With --json the same data is already inside the JSON result (nothing extra).
+          if (res.compression) {
+            console.log("\n" + formatCompressionReport(res.compression, "terminal"));
+          }
         } else {
           console.error(yuhiBanner("partial") + "\n");
           console.error(formatCliPrepareResult(result));
@@ -665,6 +689,37 @@ async function main(): Promise<void> {
           process.stdout.write(
             formatPreparationReport(report, format as "terminal" | "markdown" | "json" | "svg") + "\n",
           );
+          return 0;
+        } catch {
+          console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
+          return 3;
+        }
+      }),
+    );
+
+  // ---- report-compression ----  the v0.3.3 Context Compression summary for a run
+  program
+    .command("report-compression <run>")
+    .description("Show the v0.3.3 Context Compression summary for a prepared run")
+    .option("--format <format>", "terminal | json", "terminal")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const format = String(cmd.opts().format ?? "terminal");
+        if (format !== "terminal" && format !== "json") {
+          console.error(`${symbols.err()} Unknown --format '${format}'. Use: terminal, json.`);
+          return 3;
+        }
+        try {
+          const { session } = await readPreparedRunSession(cmd.args[0]!);
+          const compression = session.summary.compression;
+          if (!compression) {
+            if (g.json) printJson({ command: "report-compression", compression: null });
+            else console.log("This run was prepared without --compress.");
+            return 0;
+          }
+          if (g.json) return void printJson(compression);
+          process.stdout.write(formatCompressionReport(compression, format) + "\n");
           return 0;
         } catch {
           console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
@@ -807,6 +862,7 @@ async function main(): Promise<void> {
         const report = await prepareWorkspace(source, {
           providerFactory,
           excludeRelpaths: excluded,
+          safetyMode: resolveSafetyMode({ repo: loaded.config.safetyMode }),
           ...(loaded.config.budget?.reduction_mode
             ? { mode: loaded.config.budget.reduction_mode }
             : {}),

@@ -2053,6 +2053,8 @@ export async function prepareWorkspace(
     interface CompressionCandidate {
       entry: PreparedFileEntry;
       compressedContent?: string;
+      /** Specific compressor outcome reason (kept distinct from the budget reason). */
+      compressorReason?: string;
       input: BudgetFileInput;
     }
     const candidates: CompressionCandidate[] = [];
@@ -2079,6 +2081,17 @@ export async function prepareWorkspace(
       const parseFailed = result?.warnings.some(
         (w) => w.code === "parse-failed" || w.code === "compressor-unavailable",
       );
+      // Distinct compressor outcome (kept SEPARATE per the reason vocabulary): the
+      // parser could not be loaded vs a real syntax error vs compressed-but-not-smaller.
+      const compressorReason: string | undefined = result?.warnings.some(
+        (w) => w.code === "compressor-unavailable",
+      )
+        ? "compressor-unavailable"
+        : result?.warnings.some((w) => w.code === "parse-failed")
+          ? "parse-failed"
+          : result?.warnings.some((w) => w.code === "too-small")
+            ? "compression-not-smaller"
+            : undefined;
       const input: BudgetFileInput = {
         relpath: entry.relpath,
         fullTokens,
@@ -2094,6 +2107,7 @@ export async function prepareWorkspace(
       candidates.push({
         entry,
         ...(result?.representation === "compressed" ? { compressedContent: result.content } : {}),
+        ...(compressorReason ? { compressorReason } : {}),
         input,
       });
     }
@@ -2112,7 +2126,13 @@ export async function prepareWorkspace(
       if (!decision) continue;
       const deliveredAbs = path.join(outDir, ...candidate.entry.relpath.split("/"));
       candidate.entry.contextRepresentation = decision.representation;
-      candidate.entry.compressionReason = decision.reason;
+      // Split the compressor-outcome reasons from the budget's generic ones, while
+      // keeping MustKeep reasons (entry-point, package-manifest, …) authoritative.
+      candidate.entry.compressionReason =
+        candidate.compressorReason &&
+        (decision.reason === "parse-failed" || decision.reason === "not-compressible")
+          ? candidate.compressorReason
+          : decision.reason;
       candidate.entry.originalTokens = decision.fullTokens;
       candidate.entry.preparedTokens = decision.finalTokens;
       if (decision.representation === "compressed" && candidate.compressedContent !== undefined) {
@@ -2153,13 +2173,18 @@ export async function prepareWorkspace(
         ? { budgetReason: budget.summary.budgetReason }
         : {}),
       warnings: budget.summary.warnings,
-      files: budget.decisions.map((d) => ({
-        relpath: d.relpath,
-        representation: d.representation,
-        reason: d.reason,
-        originalTokens: d.fullTokens,
-        preparedTokens: d.finalTokens,
-      })),
+      files: budget.decisions.map((d) => {
+        // Use the entry's (possibly split) reason so the report matches the manifest.
+        const entryReason = candidates.find((c) => c.entry.relpath === d.relpath)?.entry
+          .compressionReason;
+        return {
+          relpath: d.relpath,
+          representation: d.representation,
+          reason: entryReason ?? d.reason,
+          originalTokens: d.fullTokens,
+          preparedTokens: d.finalTokens,
+        };
+      }),
     };
   }
 

@@ -37,6 +37,10 @@ export * from "./what-ai-can-see.js";
 export * from "./ai-readiness-report.js";
 export * from "./repository-overview.js";
 export * from "./preparation-report.js";
+// Pure formatter for the v0.3.3 compression summary. Imports only the CompressionReport
+// TYPE (erased at build) — never the compression engine or the TypeScript compiler — so
+// it is safe to re-export here without pulling the heavy parser into every core import.
+export * from "./compression-report.js";
 // Safety Mode policy logic; the vocabulary it re-exports lives in @yuhi/shared, so
 // @yuhi/config depends only on shared (no config↔core cycle).
 export * from "./safety-mode.js";

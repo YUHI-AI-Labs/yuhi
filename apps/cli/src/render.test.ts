@@ -23,6 +23,7 @@ describe("renderPrepareReport boundary and metric terminology", () => {
         transformations: ["summarized", "pseudonymized", "masked"], maskedValues: 2,
       }],
       blocked: [], errors: [],
+      safetyMode: "balanced",
       decisions: [{
         relpath: "notes.md", action: "prepare-locally", ruleName: "synthetic",
         reason: "Synthetic fixture.", destinations: ["external"],

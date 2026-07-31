@@ -53,6 +53,7 @@ function report(partial = false): PrepareReport {
     errors: partial ? [error] : [],
     decisions: [],
     sourceModified: 0,
+    safetyMode: "balanced",
     tabularAcceptance: {
       entitiesPseudonymized: 100,
       identifierColumnsTransformed: 3,
@@ -98,6 +99,51 @@ describe("CLI preparation acceptance output", () => {
     expect(validationIndex).toBeLessThan(prepareIndex);
     // The validated mode flows to prepareWorkspace as its own option key.
     expect(prepareCommand).toContain("safetyMode");
+  });
+
+  it("registers --compress and --token-budget on prepare and threads them into prepareWorkspace", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/cli/src/index.ts"), "utf8");
+    const prepareCommand = source.slice(
+      source.indexOf('.command("prepare [dir]")'),
+      source.indexOf('.command("report <run>")'),
+    );
+    // Both flags are registered on the prepare command.
+    expect(prepareCommand).toContain('.option("--compress"');
+    expect(prepareCommand).toContain('.option("--token-budget <n>"');
+    // compress + the validated tokenBudget flow into prepareWorkspace.
+    expect(prepareCommand).toContain("compress,");
+    expect(prepareCommand).toContain("tokenBudget !== null ? { tokenBudget }");
+  });
+
+  it("rejects an invalid --token-budget with exit 3 before preparing", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/cli/src/index.ts"), "utf8");
+    const prepareCommand = source.slice(
+      source.indexOf('.command("prepare [dir]")'),
+      source.indexOf('.command("report <run>")'),
+    );
+    expect(prepareCommand).toContain("Invalid --token-budget");
+    const validationIndex = prepareCommand.indexOf("Invalid --token-budget");
+    const prepareIndex = prepareCommand.indexOf("prepareWorkspace(target");
+    expect(validationIndex).toBeGreaterThanOrEqual(0);
+    // Validation (which returns 3) happens before preparation is invoked.
+    expect(validationIndex).toBeLessThan(prepareIndex);
+  });
+
+  it("exposes report-compression that handles a run with no compression", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/cli/src/index.ts"), "utf8");
+    expect(source).toContain('.command("report-compression <run>")');
+    const cmd = source.slice(
+      source.indexOf('.command("report-compression <run>")'),
+      source.indexOf('.command("review <run>")'),
+    );
+    // Reads the prepared session and renders the compression summary.
+    expect(cmd).toContain("readPreparedRunSession");
+    expect(cmd).toContain("formatCompressionReport");
+    // A run prepared without --compress prints a clear message and exits 0.
+    expect(cmd).toContain("This run was prepared without --compress.");
+    const messageIndex = cmd.indexOf("This run was prepared without --compress.");
+    const returnZeroIndex = cmd.indexOf("return 0", messageIndex);
+    expect(returnZeroIndex).toBeGreaterThan(messageIndex);
   });
 
   it("renders metadata-safe success and JSON schema", () => {

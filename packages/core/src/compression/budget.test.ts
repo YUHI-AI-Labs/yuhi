@@ -35,11 +35,14 @@ const REASON_VOCABULARY = new Set([
   "agent-instruction",
   "test-fixture",
   "parse-failed",
+  "compressor-unavailable",
   "too-small",
-  "compressed",
+  "structural-compression",
   "not-compressible",
-  "budget",
+  "compression-not-smaller",
+  "token-budget",
   "excluded-upstream",
+  "safety-policy",
 ]);
 
 describe("selectRepresentations — three-tier budget selection", () => {
@@ -84,7 +87,7 @@ describe("selectRepresentations — three-tier budget selection", () => {
     expect(decisionFor(result, "src/big.ts").representation).toBe("compressed");
     const dropped = decisionFor(result, "assets/notes.txt");
     expect(dropped.representation).toBe("excluded");
-    expect(dropped.reason).toBe("budget");
+    expect(dropped.reason).toBe("token-budget");
     expect(dropped.mustKeep).toBe(false);
     expect(dropped.finalTokens).toBe(0);
 
@@ -159,7 +162,7 @@ describe("selectRepresentations — three-tier budget selection", () => {
     expect(decisionFor(result, "CLAUDE.md").reason).toBe("agent-instruction");
     // Everything non-MustKeep is excluded for budget.
     expect(decisionFor(result, "src/a.ts").representation).toBe("excluded");
-    expect(decisionFor(result, "src/a.ts").reason).toBe("budget");
+    expect(decisionFor(result, "src/a.ts").reason).toBe("token-budget");
     expect(decisionFor(result, "src/b.ts").representation).toBe("excluded");
 
     expect(result.summary.preparedTokens).toBe(200 + 250);
@@ -185,7 +188,7 @@ describe("selectRepresentations — three-tier budget selection", () => {
     const huge = decisionFor(result, "src/huge.ts");
     // First it was prepared as compressed...
     expect(huge.representation).toBe("excluded");
-    expect(huge.reason).toBe("budget");
+    expect(huge.reason).toBe("token-budget");
     expect(huge.mustKeep).toBe(false);
     // MustKeep entry point is never touched.
     expect(decisionFor(result, "src/entry.ts").representation).toBe("full");
@@ -333,7 +336,7 @@ describe("selectRepresentations — three-tier budget selection", () => {
       expect(REASON_VOCABULARY.has(d.reason)).toBe(true);
     }
     // Ensure the budget-drop reason is actually exercised here.
-    expect(result.decisions.some((d) => d.reason === "budget")).toBe(true);
+    expect(result.decisions.some((d) => d.reason === "token-budget")).toBe(true);
     assertReductionBalances(result);
   });
 

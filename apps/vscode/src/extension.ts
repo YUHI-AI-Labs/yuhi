@@ -734,6 +734,24 @@ function currentSafetyMode(): SafetyMode {
   return isSafetyMode(raw) ? raw : DEFAULT_PREPARE_SAFETY_MODE;
 }
 
+/**
+ * The v0.3.3 Context Compression options selected in the workspace settings
+ * (`yuhi.compress` / `yuhi.tokenBudget`). `tokenBudget` is normalized so `0`
+ * (the "no budget" default) and any non-positive/invalid value become `null`
+ * (best-effort with no target) — matching what @yuhi/core expects. When compress
+ * is off, NOTHING compression-related is threaded into the prepare call.
+ */
+function currentCompressionOptions(): { compress: boolean; tokenBudget: number | null } {
+  const cfg = vscode.workspace.getConfiguration("yuhi");
+  const compress = cfg.get<boolean>("compress") === true;
+  const rawBudget = cfg.get<number>("tokenBudget");
+  const tokenBudget =
+    typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
+      ? Math.floor(rawBudget)
+      : null;
+  return { compress, tokenBudget };
+}
+
 async function prepareWorkspaceForLaunch(
   root: string,
   excludeRelpaths: readonly string[] = [],
@@ -800,9 +818,15 @@ async function prepareWorkspaceForLaunch(
                 "Yuhi is still preparing your workspace. No files have been sent to Claude Code yet.",
             });
           }, 60_000);
+          const { compress, tokenBudget } = currentCompressionOptions();
           const preparation = prepareWorkspaceOutcome(root, {
             provider,
             safetyMode,
+            // v0.3.3 opt-in Context Compression. Threaded exactly like safetyMode:
+            // only sent when the user enabled `yuhi.compress`; the token budget is
+            // omitted (best-effort, no target) when `yuhi.tokenBudget` is 0/none.
+            ...(compress ? { compress: true } : {}),
+            ...(compress && tokenBudget !== null ? { tokenBudget } : {}),
             deferDocumentInspection: true,
             signal: controller.signal,
             onProgress: (msg) => {
@@ -1724,6 +1748,7 @@ function toReviewData(
   });
   const r = report.report;
   const metrics = buildPreparedMetrics(report);
+  const safeSummary = buildSafePreparedRunSummary(report);
   const acceptance = report.tabularAcceptance ?? {
     entitiesPseudonymized: 0,
     identifierColumnsTransformed: 0,
@@ -1811,8 +1836,12 @@ function toReviewData(
     metadataFiles,
     preparedTree: [...projectFiles, ...metadataFiles],
     // The shareable, PUBLIC-SAFE preparation report (aggregate numbers only) —
-    // drives the "Repository Ready" card with copy/export.
-    preparationReport: buildSafePreparedRunSummary(report).preparationReport,
+    // drives the "Repository Ready" card with copy/export. The v0.3.3 Context
+    // Compression summary is a SEPARATE aggregate+relpath structure (present only
+    // when the run was prepared with compress: true); it drives the review-only
+    // Context Compression section and is NEVER routed into the public report bytes.
+    preparationReport: safeSummary.preparationReport,
+    ...(safeSummary.compression ? { compression: safeSummary.compression } : {}),
     // PDFs still queued for background inspection: "in progress", not failed.
     backgroundDocumentsPending: report.files.filter(
       (file) =>
