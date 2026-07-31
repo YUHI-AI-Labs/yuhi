@@ -40,3 +40,7 @@ export * from "./preparation-report.js";
 // Safety Mode policy logic; the vocabulary it re-exports lives in @yuhi/shared, so
 // @yuhi/config depends only on shared (no config↔core cycle).
 export * from "./safety-mode.js";
+// NOTE: compression is intentionally NOT re-exported here. It pulls in the
+// TypeScript compiler (~12 MB), so it must stay opt-in / lazily imported (only
+// when `yuhi prepare --compress` runs) rather than loaded for every core import.
+// Consumers import it directly from "./compression/index.js".

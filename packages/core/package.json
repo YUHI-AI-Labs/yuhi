@@ -20,7 +20,8 @@
     "@yuhi/processors": "workspace:*",
     "@yuhi/scanner": "workspace:*",
     "@yuhi/shared": "workspace:*",
-    "@yuhi/workspace": "workspace:*"
+    "@yuhi/workspace": "workspace:*",
+    "typescript": "^5.7.2"
   },
   "devDependencies": {
     "exceljs": "4.4.0"

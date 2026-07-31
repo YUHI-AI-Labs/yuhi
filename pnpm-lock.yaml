@@ -187,6 +187,9 @@ importers:
       '@yuhi/workspace':
         specifier: workspace:*
         version: link:../workspace
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
     devDependencies:
       exceljs:
         specifier: 4.4.0
