@@ -38,9 +38,21 @@ type TsModule = typeof import("typescript");
  * until a file is actually compressed. Throws if `typescript` is not installed; the
  * caller (`compress()`) turns that into a safe FULL result.
  */
+/** A host (e.g. the VS Code extension) may inject a pre-loaded `typescript` runtime here. */
+type YuhiGlobal = typeof globalThis & { __yuhiTypeScriptRuntime?: TsModule };
+
 let tsRuntime: TsModule | undefined;
 async function loadTs(): Promise<TsModule> {
   if (!tsRuntime) {
+    // Prefer a runtime the host injected (the installed VS Code extension ships the
+    // compiler as a sibling bundle and sets this — an installed VSIX has no
+    // node_modules/typescript to import). The CLI leaves it unset and falls back to the
+    // dynamic import below, which resolves against its own node_modules as before.
+    const injected = (globalThis as YuhiGlobal).__yuhiTypeScriptRuntime;
+    if (injected) {
+      tsRuntime = injected;
+      return tsRuntime;
+    }
     const m = await import("typescript");
     tsRuntime = (m as { default?: TsModule }).default ?? m;
   }

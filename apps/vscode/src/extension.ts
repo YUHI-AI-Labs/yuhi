@@ -741,6 +741,29 @@ function currentSafetyMode(): SafetyMode {
  * (best-effort with no target) — matching what @yuhi/core expects. When compress
  * is off, NOTHING compression-related is threaded into the prepare call.
  */
+/**
+ * Lazily load the shipped `typescript-runtime.js` bundle and inject it for the core
+ * structure compressor. Called ONLY when Context Compression is enabled, right before a
+ * prepare — never at activation — so the ~9MB compiler is loaded on demand and only once
+ * (even across multiple prepares). The require path is computed (`__dirname`) so esbuild
+ * does not bundle the sibling chunk into extension.js. If the bundle is missing or corrupt
+ * the global stays unset: the compressor reports `compressor-unavailable` and keeps files
+ * FULL — never a crash and never an absolute path/error leaked into the public report.
+ */
+let typeScriptRuntimeLoaded = false;
+function ensureTypeScriptRuntime(): void {
+  if (typeScriptRuntimeLoaded) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const runtime = require(path.join(__dirname, "typescript-runtime.js"));
+    (globalThis as { __yuhiTypeScriptRuntime?: unknown }).__yuhiTypeScriptRuntime =
+      runtime?.default ?? runtime;
+    typeScriptRuntimeLoaded = true;
+  } catch {
+    /* runtime bundle missing/corrupt → leave unset → compressor-unavailable → FULL */
+  }
+}
+
 function currentCompressionOptions(): { compress: boolean; tokenBudget: number | null } {
   const cfg = vscode.workspace.getConfiguration("yuhi");
   const compress = cfg.get<boolean>("compress") === true;
@@ -819,6 +842,8 @@ async function prepareWorkspaceForLaunch(
             });
           }, 60_000);
           const { compress, tokenBudget } = currentCompressionOptions();
+          // Load the shipped TypeScript runtime ONLY when compression will actually run.
+          if (compress) ensureTypeScriptRuntime();
           const preparation = prepareWorkspaceOutcome(root, {
             provider,
             safetyMode,
