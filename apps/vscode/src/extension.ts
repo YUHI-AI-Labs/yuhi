@@ -18,6 +18,8 @@ import {
   prepareWorkspaceOutcome,
   prepareDocumentsInBackground,
   runInit,
+  DEFAULT_SAFETY_MODE,
+  DEFAULT_CONTEXT_DETAIL,
   type PrepareReport,
   type PreparedFileEntry,
   type AgentChangeBaseline,
@@ -1750,6 +1752,11 @@ function toReviewData(
       reviewingOpenedPreparedWorkspace && !launchDecisionEnabled && acceptance.launchAllowed,
     project: path.basename(root),
     agent: "Claude Code",
+    // The Safety Mode / Context Detail THIS review was prepared under. v0.3 uses the
+    // applied defaults; the *selectors* that let the user change them arrive in 2b-2b.
+    // The webview labels these honestly as the applied defaults.
+    safetyMode: DEFAULT_SAFETY_MODE,
+    contextDetail: DEFAULT_CONTEXT_DETAIL,
     runId: report.runId,
     outcome: classifyOutcome(report),
     osSandboxEnabled: false,

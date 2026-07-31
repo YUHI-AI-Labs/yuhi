@@ -1,4 +1,12 @@
-import type { PreparedMetrics, PreparedRuntimeBoundary, PreparationReport } from "@yuhi/core";
+import {
+  DEFAULT_SAFETY_MODE,
+  DEFAULT_CONTEXT_DETAIL,
+  type PreparedMetrics,
+  type PreparedRuntimeBoundary,
+  type PreparationReport,
+  type SafetyMode,
+  type ContextDetail,
+} from "@yuhi/core";
 import { renderRepositoryReadyCard } from "./repository-ready.js";
 
 export interface ReviewFile {
@@ -39,6 +47,14 @@ export interface ReviewData {
   openClaudeHereEnabled: boolean;
   project: string;
   agent: string;
+  /**
+   * The Safety Mode / Context Detail THIS review was prepared under. v0.3 Phase
+   * 2b-2a surfaces them as the applied defaults (read-only). Optional so existing
+   * callers and older runs render unchanged; the webview falls back to the
+   * exported @yuhi/core defaults. The *selectors* to change them arrive in 2b-2b.
+   */
+  safetyMode?: SafetyMode;
+  contextDetail?: ContextDetail;
   runId: string;
   outcome: string;
   osSandboxEnabled: false;
@@ -110,6 +126,175 @@ export interface ReviewData {
   backgroundDocumentsPending?: number;
 }
 
+/** Human labels for the applied Safety Mode / Context Detail (read-only in 2b-2a). */
+const SAFETY_MODE_LABELS: Record<SafetyMode, string> = {
+  strict: "Strict",
+  balanced: "Balanced",
+  open: "Open",
+};
+const CONTEXT_DETAIL_LABELS: Record<ContextDetail, string> = {
+  "full-sanitized": "Full (sanitized)",
+  standard: "Standard",
+  compact: "Compact",
+};
+
+/** Server-side HTML escaping — paths/reasons may contain markup-significant chars. */
+const escHtml = (value: string): string =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+/**
+ * "What the AI Can See" bucket for a single file. Mirrors the bucket mapping used
+ * across the review UI:
+ *   - Available to the AI  = claudeReceives !== "No"
+ *       · transformed = "Transformed", unchanged = "Unchanged"
+ *   - Unavailable to the AI = claudeReceives === "No"
+ *       · excluded  = excluded-by-user / excluded-by-policy
+ *       · kept      = everything else omitted (incl. verification-failed)
+ */
+function seeBucket(file: ReviewFile): "transformed" | "unchanged" | "excluded" | "kept" {
+  if (file.claudeReceives !== "No") {
+    return file.claudeReceives === "Transformed" ? "transformed" : "unchanged";
+  }
+  if (file.outcome === "excluded-by-user" || file.outcome === "excluded-by-policy") {
+    return "excluded";
+  }
+  return "kept";
+}
+
+/**
+ * Honest tone for a file. A file still DELIVERED to the AI but carrying an
+ * identifier-leak caveat is a *warning* (amber). A file WITHHELD because
+ * verification failed is a *failure* (calm — nothing was sent). Everything else
+ * is *neutral*: a launchable, leak-free run must never look alarming.
+ */
+function seeKind(file: ReviewFile): "neutral" | "warning" | "failure" {
+  const identifierLeak =
+    file.failureCategory === "reidentification-risk" ||
+    file.failureCategory === "conflicting-identifiers";
+  if (file.claudeReceives !== "No") {
+    return identifierLeak ? "warning" : "neutral";
+  }
+  const verificationFailed =
+    !!file.failureCategory ||
+    file.outcome === "local-only-unverified" ||
+    file.outcome === "local-only-unsupported";
+  return verificationFailed ? "failure" : "neutral";
+}
+
+/** "Claude receives" summary, reusing the file's own claudeReceives value. */
+const seeReceives = (file: ReviewFile): string =>
+  file.claudeReceives === "No" ? "Nothing" : file.claudeReceives;
+
+/**
+ * Short "what happened" label. Mirrors the `action(f)` label used in the Full
+ * File Decisions list so the two surfaces stay consistent.
+ */
+function seeActionLabel(file: ReviewFile): string {
+  return file.outcome === "included-unverified"
+    ? "Included with warning"
+    : file.outcome === "local-only-unsupported"
+      ? "Kept local"
+      : file.outcome === "local-only-unverified"
+        ? "Kept local"
+        : file.outcome === "excluded-by-user"
+          ? "Excluded by user"
+          : file.outcome === "excluded-by-policy"
+            ? "Excluded by policy"
+            : file.omitted
+              ? ["local-only", "inject", "ask", "metadata-only"].includes(file.action)
+                ? "Kept local"
+                : "Excluded"
+              : file.transformations.includes("aggregated")
+                ? "Aggregated locally"
+                : file.transformations.includes("pseudonymized")
+                  ? "Pseudonymized locally"
+                  : file.transformations.includes("masked")
+                    ? "Masked locally"
+                    : file.transformations.includes("summarized")
+                      ? "Summarized locally"
+                      : "Included unchanged";
+}
+
+/** Markup for one file row inside a "What the AI Can See" group. */
+function renderSeeItem(file: ReviewFile): string {
+  const bucket = seeBucket(file);
+  const kind = seeKind(file);
+  const path = escHtml(file.path);
+  const nameHtml = file.diffable
+    ? `<button class="diff" data-p="${path}"><span class="path" title="${path}">${path}</span></button>`
+    : `<span class="path" title="${path}">${path}</span>`;
+  const mark =
+    kind === "warning"
+      ? '<span class="see-mark warning" title="Delivered with a warning" aria-label="Delivered with a warning">⚠</span>'
+      : kind === "failure"
+        ? '<span class="see-mark failure" title="Kept on your machine" aria-label="Kept on your machine">▪</span>'
+        : "";
+  const why = escHtml(file.reason || file.rule || seeActionLabel(file));
+  return (
+    `<div class="see-item" data-bucket="${bucket}" data-kind="${kind}">` +
+    nameHtml +
+    `<span class="badge see-receives">${escHtml(seeReceives(file))}</span>` +
+    mark +
+    `<span class="see-action">${escHtml(seeActionLabel(file))}</span>` +
+    `<span class="why" title="${why}">${why}</span>` +
+    `</div>`
+  );
+}
+
+/** One group column (Available / Unavailable) with its items and an empty state. */
+function renderSeeGroup(id: string, title: string, files: ReviewFile[]): string {
+  const items = files.map(renderSeeItem).join("");
+  return (
+    `<div class="group" id="${id}"><h3>${title} <span class="count">${files.length}</span></h3>` +
+    `<div class="see-list">${items}` +
+    `<div class="empty-state see-empty"${items ? " hidden" : ""}>No files to show.</div></div></div>`
+  );
+}
+
+/**
+ * v0.3 Phase 2b-2a — "What the AI Can See": a READ-ONLY, at-a-glance review of
+ * which files reach the AI and which stay on the user's machine. Collapsed by
+ * default. Shows the applied Safety Mode / Context Detail as labels only (no
+ * selectors — those come in 2b-2b). Markup only; the host script wires the filter
+ * and reuses the existing `{type:"diff",path}` protocol for per-file diffs.
+ */
+function renderWhatAiCanSeeSection(data: ReviewData): string {
+  const files = data.files.slice().sort((a, b) => a.path.localeCompare(b.path));
+  const available = files.filter((f) => f.claudeReceives !== "No");
+  const unavailable = files.filter((f) => f.claudeReceives === "No");
+  const safety = SAFETY_MODE_LABELS[data.safetyMode ?? DEFAULT_SAFETY_MODE];
+  const detail = CONTEXT_DETAIL_LABELS[data.contextDetail ?? DEFAULT_CONTEXT_DETAIL];
+  const glance =
+    `${available.length} available to the AI · ${unavailable.length} kept on your machine`;
+  return (
+    `<details class="card advanced" id="whatAiCanSee">` +
+    `<summary>What the AI can see <span class="count" id="aiSeeGlance">· ${glance}</span></summary>` +
+    `<div class="inside">` +
+    `<p class="sub">Whether the AI can see a file, at a glance. This is a read-only review.</p>` +
+    `<div class="see-applied">` +
+    `<span class="badge" id="aiSeeSafetyMode">Safety Mode: ${escHtml(safety)} · applied default</span>` +
+    `<span class="badge" id="aiSeeContextDetail">Context Detail: ${escHtml(detail)} · applied default</span>` +
+    `</div>` +
+    `<div class="card table"><div class="toolbar"><label for="aiSeeFilter">Show</label>` +
+    `<select id="aiSeeFilter">` +
+    `<option value="all">All files</option>` +
+    `<option value="available">Available to the AI</option>` +
+    `<option value="transformed">Transformed</option>` +
+    `<option value="unchanged">Included unchanged</option>` +
+    `<option value="excluded">Excluded</option>` +
+    `<option value="kept">Kept local</option>` +
+    `</select></div>` +
+    `<div class="groups see-groups">` +
+    renderSeeGroup("aiSeeAvailable", "Available to the AI", available) +
+    renderSeeGroup("aiSeeUnavailable", "Unavailable to the AI", unavailable) +
+    `</div></div></div></details>`
+  );
+}
+
 export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: string): string {
   const {
     localModelProvider: _localModelProvider,
@@ -148,6 +333,10 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
   const repositoryReadyCard = data.preparationReport
     ? renderRepositoryReadyCard(data.preparationReport)
     : "";
+  // v0.3 Phase 2b-2a — the read-only "What the AI Can See" review. Rendered right
+  // after the Repository Ready card. Shows paths inside the webview only; none of
+  // this text ever reaches the public copy/export path (that stays aggregate-only).
+  const whatAiCanSeeSection = renderWhatAiCanSeeSection(data);
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';script-src 'nonce-${nonce}'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -168,6 +357,8 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
 @media(max-width:520px){.summary-grid{grid-template-columns:1fr}.metric.reduction{grid-column:auto}.row{grid-template-columns:minmax(130px,1fr) 115px}.row>*:nth-child(3),.row>*:nth-child(4){display:none}.hero .actions{align-items:stretch}.hero .actions .button{width:100%}}
 .checklist{list-style:none;padding:0;margin:2px 0 20px;display:grid;gap:8px}.checklist li{display:flex;gap:10px;align-items:center;font-size:15px}.checklist .ic{width:1.2em;text-align:center;flex:none;font-weight:800;font-size:15px}.checklist .ok{color:var(--good)}.checklist .warn{color:var(--warn)}.checklist .run{color:var(--vscode-charts-blue,#4aa0ff)}.checklist .muted{color:var(--muted)}.checklist .act{margin-left:auto;border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:7px;padding:4px 12px;font:600 12px var(--sans);cursor:pointer}.checklist .act:hover{background:var(--soft)}.reassure{display:flex;gap:9px;align-items:flex-start;margin:0 0 18px;padding:11px 13px;border-radius:10px;background:var(--panel);border:1px solid var(--line)}.reassure .ic{color:var(--good);font-weight:800;flex:none}.reassure b{color:var(--fg)}.reassure span{color:var(--muted)}
 @media(prefers-reduced-motion:no-preference){.spin{display:inline-block;animation:spin 1.2s linear infinite}}@keyframes spin{to{transform:rotate(360deg)}}
+.see-applied{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}.see-groups .group h3{font-size:13px;margin-bottom:4px}.see-list{margin-top:6px}.see-item{display:flex;gap:10px;align-items:center;min-width:0;padding:7px 0;border-top:1px solid var(--line)}.see-item:first-child{border-top:0}.see-item .path{flex:1 1 auto;min-width:0}.see-receives{flex:none}.see-action{flex:none;color:var(--muted);font-size:12px}.see-item .why{flex:1 1 45%;min-width:0;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.see-mark{flex:none;font-weight:800}.see-mark.warning{color:var(--warn)}.see-mark.failure{color:var(--muted)}.see-empty{padding:10px 0}
+@media(max-width:800px){.see-item .why,.see-item .see-action{display:none}}
 </style></head><body><main class="wrap">
 <section class="hero">
  <div class="hero-top"><div class="eyebrow">YUHI</div><div class="ready">${data.outcome === "Partial" || data.outcome === "Failed" ? "ACTION NEEDED" : "READY"}</div></div><h1>${data.outcome === "Partial" || data.outcome === "Failed" ? "Preparation incomplete" : "Ready for Claude Code"}</h1>
@@ -179,6 +370,7 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
  <p class="sub">${data.outcome === "Partial" ? "Claude Code cannot start yet. Choose a recovery action below." : "Nothing has been sent yet."}</p>
 </section>
 ${repositoryReadyCard}
+${whatAiCanSeeSection}
 <details class="card advanced" id="whatYuhiDid"><summary>What Yuhi did</summary><div class="inside"><p class="sub">A plain-language summary of preparation before Claude Code starts.</p><div class="advanced-grid" id="workSummary"></div></div></details>
 <details class="card advanced" id="contextPreparation"><summary>Context preparation</summary><div class="inside"><p class="sub">Yuhi creates a local map of inspected documents before Claude Code starts.</p><div class="advanced-grid" id="contextSummary"></div><p class="note">Token counts are estimates only. Actual Claude usage may differ.</p></div></details>
 <details class="card advanced" id="localAiActivity"><summary>Yuhi processing activity</summary><div class="inside"><p class="sub">Measured local preparation activity for this run only. Input content and generated responses are not stored in these metrics.</p><div class="advanced-grid" id="localAiSummary"></div></div></details>
@@ -319,5 +511,8 @@ document.getElementById("scanner").innerHTML='<p>'+esc(noFindings)+'</p><p>'+esc
 const send=t=>vscode.postMessage({type:t});["copyPublicReport","exportPublicReport"].forEach(id=>{const b=document.getElementById(id);if(b)b.addEventListener("click",()=>send(id))});document.querySelectorAll(".launchAction").forEach(b=>b.addEventListener("click",()=>send("launch")));document.querySelectorAll(".openClaudeHere").forEach(b=>b.addEventListener("click",()=>send("openClaudeHere")));document.querySelectorAll("#cancel,#cancelSticky").forEach(b=>b.addEventListener("click",()=>send("cancel")));document.getElementById("review").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});document.getElementById("backToFiles").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});
 const showWithheldFiles=()=>{const s=document.getElementById("filter");if(s)s.value="withheld";render("withheld");const d=document.getElementById("fileDecisions");if(d){d.open=true;d.scrollIntoView()}};const swBtn=document.getElementById("showWithheld");if(swBtn){swBtn.addEventListener("click",showWithheldFiles);swBtn.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();showWithheldFiles()}})}
 document.getElementById("retryProtection")?.addEventListener("click",()=>send("retryProtection"));
+// "What the AI Can See" (read-only): client-side filter + per-file diff. Reuses the
+// existing {type:"diff",path} protocol — no new message types.
+(function(){const root=document.getElementById("whatAiCanSee");if(!root)return;const sel=document.getElementById("aiSeeFilter");const items=[...root.querySelectorAll(".see-item")];const matchSee=(b,s)=>s==="all"||s===b||(s==="available"&&(b==="transformed"||b==="unchanged"));const applySee=()=>{const s=sel?sel.value:"all";for(const el of items)el.hidden=!matchSee(el.dataset.bucket,s);for(const gid of ["aiSeeAvailable","aiSeeUnavailable"]){const g=document.getElementById(gid);if(!g)continue;const empty=g.querySelector(".see-empty");if(!empty)continue;const anyVisible=[...g.querySelectorAll(".see-item")].some(i=>!i.hidden);empty.hidden=anyVisible;}};if(sel)sel.addEventListener("change",applySee);applySee();root.addEventListener("click",e=>{const b=e.target.closest(".diff");if(b)vscode.postMessage({type:"diff",path:b.dataset.p})});})();
 </script></body></html>`;
 }

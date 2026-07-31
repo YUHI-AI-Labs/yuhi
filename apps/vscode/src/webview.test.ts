@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { renderSavingsHtml, type ReviewData } from "./webview.js";
+import {
+  repositoryReadyClipboardText,
+  repositoryReadyExportText,
+  REPOSITORY_READY_EXPORT_FORMATS,
+} from "./repository-ready.js";
 
 function data(over: Partial<ReviewData["report"]> = {}): ReviewData {
   return {
@@ -565,11 +570,215 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("postMessage"); // clicks post back to the extension host
     // The card fragment itself carries only aggregate numbers — the card's
     // public-safety is asserted directly in repository-ready.test.ts.
+    // Bound the fragment to the Repository Ready card's actual next sibling. The
+    // read-only "What the AI Can See" section (id="whatAiCanSee") now sits between
+    // this card and "What Yuhi did" and legitimately shows paths inside the webview;
+    // this slice must isolate the CARD, whose public-safety we assert here.
     const card = rendered.slice(
       rendered.indexOf('id="repositoryReady"'),
-      rendered.indexOf('id="whatYuhiDid"'),
+      rendered.indexOf('id="whatAiCanSee"'),
     );
     expect(card).not.toContain("meeting-log.md");
     expect(card).not.toContain(".yuhi/prepared/abc");
+  });
+});
+
+// v0.3 Phase 2b-2a — "What the AI Can See": a READ-ONLY, at-a-glance review.
+describe("What the AI Can See (read-only review)", () => {
+  const file = (over: Partial<ReviewData["files"][number]>): ReviewData["files"][number] => ({
+    path: "src/file.ts",
+    action: "allow",
+    status: "ok",
+    omitted: false,
+    beforeTokens: 100,
+    afterTokens: 100,
+    diffable: false,
+    sensitivity: "Unknown",
+    findingCategoryCounts: {},
+    findingCount: 0,
+    rule: "preparation result",
+    reason: "Included unchanged.",
+    classificationSource: "fallback",
+    included: true,
+    claudeReceives: "Unchanged",
+    transformed: false,
+    transformations: [],
+    unresolvedHighRiskCount: 0,
+    ...over,
+  });
+
+  // A deliberate mix: available (transformed + unchanged + a delivered identifier
+  // leak) and unavailable (excluded-by-user, excluded-by-policy, verification-failed).
+  const mixed = (): ReviewData => {
+    const fixture = data();
+    fixture.files = [
+      file({
+        path: "src/summary.md", diffable: true, transformed: true,
+        transformations: ["summarized"], claudeReceives: "Transformed",
+        outcome: "included-transformed", reason: "Summarized locally.",
+      }),
+      file({
+        path: "src/app.ts", claudeReceives: "Unchanged",
+        outcome: "included-unverified", reason: "Included unchanged.",
+      }),
+      file({
+        path: "data/grades.csv", transformed: true, transformations: ["pseudonymized"],
+        claudeReceives: "Transformed", outcome: "included-transformed",
+        failureCategory: "reidentification-risk", limitationShown: true,
+        reason: "Delivered with a de-identification warning.",
+      }),
+      file({
+        path: "notes/personal.txt", included: false, omitted: true, action: "local-only",
+        status: "skipped", claudeReceives: "No", outcome: "excluded-by-user",
+        reason: "Excluded by user.",
+      }),
+      file({
+        path: "config/prod.env", included: false, omitted: true, action: "local-only",
+        status: "skipped", claudeReceives: "No", outcome: "excluded-by-policy",
+        reason: "Excluded by policy.",
+      }),
+      file({
+        path: "db/dump.sql", included: false, omitted: true, action: "local-only",
+        status: "error", claudeReceives: "No", outcome: "local-only-unverified",
+        failureCategory: "unresolved-secret", sensitivity: "Restricted",
+        reason: "Kept local — verification failed.",
+      }),
+    ];
+    fixture.projectFiles = ["src/summary.md", "src/app.ts", "data/grades.csv"];
+    return fixture;
+  };
+
+  const availableSlice = (html: string): string =>
+    html.slice(html.indexOf('id="aiSeeAvailable"'), html.indexOf('id="aiSeeUnavailable"'));
+  const unavailableSlice = (html: string): string =>
+    html.slice(html.indexOf('id="aiSeeUnavailable"'), html.indexOf("</details>", html.indexOf('id="aiSeeUnavailable"')));
+
+  it("renders the section collapsed with the applied Safety Mode and Context Detail", () => {
+    const html = renderSavingsHtml(mixed(), "vscode-resource:", "NONCE123");
+    expect(html).toContain('id="whatAiCanSee"');
+    // Collapsed by default: the section's <details> has no open attribute.
+    expect(html).toMatch(/<details[^>]*id="whatAiCanSee"(?![^>]*\bopen\b)/);
+    expect(html).toContain('id="aiSeeSafetyMode"');
+    expect(html).toContain('id="aiSeeContextDetail"');
+    // Honest: labelled as applied defaults, not live selectors.
+    expect(html).toContain("applied default");
+  });
+
+  it("shows a one-glance available/kept split with correct bucket counts", () => {
+    const html = renderSavingsHtml(mixed(), "vscode-resource:", "NONCE123");
+    // 3 available (transformed + unchanged + delivered-with-warning) · 3 kept.
+    expect(html).toContain("3 available to the AI · 3 kept on your machine");
+    const avail = availableSlice(html);
+    const unavail = unavailableSlice(html);
+    // Group headings carry the same counts.
+    expect(avail).toContain("Available to the AI");
+    expect(avail).toMatch(/Available to the AI\s*<span class="count">3<\/span>/);
+    expect(unavail).toMatch(/Unavailable to the AI\s*<span class="count">3<\/span>/);
+  });
+
+  it("splits files into Available vs Unavailable and shows each Claude-receives value", () => {
+    const html = renderSavingsHtml(mixed(), "vscode-resource:", "NONCE123");
+    const avail = availableSlice(html);
+    const unavail = unavailableSlice(html);
+    // Available holds the delivered files; Unavailable holds the withheld ones.
+    for (const p of ["src/summary.md", "src/app.ts", "data/grades.csv"]) {
+      expect(avail).toContain(p);
+      expect(unavail).not.toContain(p);
+    }
+    for (const p of ["notes/personal.txt", "config/prod.env", "db/dump.sql"]) {
+      expect(unavail).toContain(p);
+      expect(avail).not.toContain(p);
+    }
+    // Each file's "Claude receives" value is shown.
+    expect(avail).toContain("Transformed");
+    expect(avail).toContain("Unchanged");
+    expect(unavail).toContain("Nothing");
+  });
+
+  it("offers a client-side filter with the read-only buckets and a diff affordance", () => {
+    const html = renderSavingsHtml(mixed(), "vscode-resource:", "NONCE123");
+    expect(html).toContain('id="aiSeeFilter"');
+    for (const value of ["all", "available", "transformed", "unchanged", "excluded", "kept"]) {
+      expect(html).toContain(`value="${value}"`);
+    }
+    // A diffable file exposes a diff affordance reusing the existing {type:"diff"} protocol.
+    const avail = availableSlice(html);
+    expect(avail).toContain('class="diff"');
+    expect(avail).toContain('data-p="src/summary.md"');
+    expect(html).toContain('type:"diff"');
+  });
+
+  it("distinguishes a delivered warning from a withheld failure", () => {
+    const html = renderSavingsHtml(mixed(), "vscode-resource:", "NONCE123");
+    // Distinct, machine-checkable markers (not literal wording).
+    expect(html).toContain('data-kind="warning"');
+    expect(html).toContain('data-kind="failure"');
+    // The delivered-with-caveat warning lives in Available; the withheld failure in Unavailable.
+    expect(availableSlice(html)).toContain('data-kind="warning"');
+    expect(unavailableSlice(html)).toContain('data-kind="failure"');
+    // A leak-free, launchable run (all files available, none withheld) must not
+    // paint neutral files as failures/warnings.
+    const calmFixture = data();
+    calmFixture.files = [
+      file({ path: "src/a.ts", claudeReceives: "Unchanged" }),
+      file({ path: "src/b.ts", claudeReceives: "Transformed", transformed: true,
+        transformations: ["summarized"], outcome: "included-transformed" }),
+    ];
+    const calm = renderSavingsHtml(calmFixture, "vscode-resource:", "NONCE123");
+    expect(calm).toContain('data-kind="neutral"');
+    expect(calm).not.toContain('data-kind="warning"');
+    expect(calm).not.toContain('data-kind="failure"');
+  });
+
+  it("renders without throwing for a Partial run, zero files, and a very long path", () => {
+    const partial = data();
+    partial.outcome = "Partial";
+    partial.launchDecisionEnabled = false;
+    partial.acceptance = { ...partial.acceptance, launchAllowed: false };
+    expect(() => renderSavingsHtml(partial, "vscode-resource:", "NONCE123")).not.toThrow();
+
+    const empty = data();
+    empty.files = [];
+    empty.projectFiles = [];
+    const emptyHtml = renderSavingsHtml(empty, "vscode-resource:", "NONCE123");
+    expect(emptyHtml).toContain('id="whatAiCanSee"');
+    expect(emptyHtml).toContain("0 available to the AI · 0 kept on your machine");
+    expect(emptyHtml).toContain("No files to show.");
+
+    const longPath = "src/" + "very-long-directory-segment/".repeat(30) + "deeply-nested-secret.env";
+    const longFixture = data();
+    longFixture.files = [file({ path: longPath, claudeReceives: "Unchanged" })];
+    const longHtml = renderSavingsHtml(longFixture, "vscode-resource:", "NONCE123");
+    // The long path is shown (truncation/ellipsis is CSS-driven) and does not break rendering.
+    expect(longHtml).toContain(longPath);
+    expect(longHtml).toContain("text-overflow:ellipsis");
+  });
+
+  it("keeps Copy/Export public-safe even when file paths contain real secret paths", () => {
+    const secretPath = "/Users/victim/Documents/project/config/secret.env";
+    const otherPath = "/Users/victim/private/.ssh/id_rsa";
+    const fixture = data();
+    fixture.preparationReport = {
+      sourceFiles: 12, preparedArtifacts: 12, documentsPrepared: 0,
+      secretsBlocked: 2, identifiersTransformed: 0, largeFilesExcluded: 0,
+      estimatedReductionPercent: 40, status: "ready",
+    };
+    fixture.files = [
+      file({ path: secretPath, included: false, omitted: true, action: "local-only",
+        status: "error", claudeReceives: "No", outcome: "local-only-unverified",
+        failureCategory: "unresolved-secret" }),
+      file({ path: otherPath, claudeReceives: "Unchanged" }),
+    ];
+    const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    // The webview surface may show the paths (it is the user's own local window)…
+    expect(rendered).toContain(secretPath);
+    // …but the PUBLIC copy/export bytes the host emits must contain NONE of them.
+    const forbidden = [secretPath, otherPath, "secret.env", "id_rsa", "/Users/"];
+    const copy = repositoryReadyClipboardText(fixture.preparationReport!);
+    for (const bad of forbidden) expect(copy).not.toContain(bad);
+    for (const { format } of REPOSITORY_READY_EXPORT_FORMATS) {
+      const out = repositoryReadyExportText(fixture.preparationReport!, format);
+      for (const bad of forbidden) expect(out).not.toContain(bad);
+    }
   });
 });

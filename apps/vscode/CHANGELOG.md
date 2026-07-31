@@ -21,6 +21,19 @@ releases may include breaking changes.
   README now lead with preparation outcomes and correct the document capabilities
   (PDF/DOCX/PPTX are converted to sanitized companions; they are no longer "unsupported").
 
+### What the AI Can See (read-only review)
+
+- A collapsed-by-default review below the Repository Ready card that makes "what the AI can
+  see, and what stays on your machine" obvious at a glance: **Available to the AI** vs
+  **Unavailable to the AI**, split into prepared/transformed, included unchanged, excluded
+  by user, excluded by policy, and kept local because verification failed.
+- Each file shows what Claude receives (nothing / unchanged / transformed), the reason, and
+  an Original ↔ Prepared diff where available; a filter narrows the list. The applied Safety
+  Mode and Context Detail are shown as labels. Warnings (delivered with a caveat) are visually
+  distinct from withheld files, and leak-free launchable runs stay calm.
+- This is review-only; changing decisions and modes arrives in a later update. The public
+  report stays public-safe — file paths shown here never enter the copied/exported report.
+
 ## [0.2.9]
 
 ### Document protection (PDF / DOCX / DOCM / PPTX / PPTM)
