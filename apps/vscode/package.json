@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi — Local AI Prep",
   "description": "Prepare your workspace locally with a small on-device model before anything is sent to Claude. Local-first, no telemetry.",
-  "version": "0.2.6",
+  "version": "0.2.8",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",

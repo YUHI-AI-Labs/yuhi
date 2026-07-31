@@ -30,7 +30,7 @@ import {
   type DocumentInspector,
   type StudentAliasContext,
 } from "@yuhi/shared";
-import { runDetectors } from "@yuhi/scanner";
+import { runDetectors, redactText } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
 import { runLocalPreparation } from "./route-executor.js";
@@ -1935,15 +1935,61 @@ export async function prepareWorkspace(
     "When finished, tell the user to run `Yuhi: Review Agent Changes` before applying anything.",
     "",
   ].join("\n");
-  const handoffFindings = runDetectors(agentHandoff, {
+  // Guaranteed-clean fallback handoff: identical guidance but WITHOUT the per-file
+  // listings (which carry the ID-like filenames that can trip the self-rescan). Only
+  // counts appear, so it never contains an identifier.
+  const listingFreeHandoff = [
+    "# Yuhi Agent Handoff",
+    "",
+    "This handoff was generated locally by Yuhi for the AI agent working in this Prepared Workspace.",
+    "",
+    "## Start here",
+    "",
+    "1. Read `.yuhi/context/document-index.md` first — Yuhi's index of prepared document context.",
+    "2. Work only with files available in this Prepared Workspace.",
+    "3. If information is missing, tell the user what is missing. Do not search outside the workspace.",
+    "",
+    "## Preparation status",
+    "",
+    `- Launch status: ${launchAllowed ? "Ready" : "Not ready"}`,
+    `- Project files available: ${availableProjectFiles}`,
+    `- Files transformed locally: ${transformedProjectFiles}`,
+    `- Files not included: ${localOnlyProjectFiles}`,
+    "",
+    "Some files could not be fully verified or were kept local. Their names are omitted",
+    "here for safety — open “Review file decisions” in Yuhi for the full list.",
+    "",
+    "## Safety boundary",
+    "",
+    "- Extracted document text was not persisted.",
+    "- Raw credential files and unresolved secret material are not provided as project context.",
+    "- Do not assume missing files are safe to retrieve from another location.",
+    "",
+  ].join("\n");
+  const handoffScan = {
     entropyThreshold: plan.context.config.scan.entropy_threshold,
     keywords: plan.context.config.scan.keywords,
     relpath: ".yuhi/context/AGENT_HANDOFF.md",
-  });
-  if (handoffFindings.length > 0) {
-    throw new Error("Generated agent handoff failed Yuhi security verification.");
+  };
+  // Yuhi's OWN generated handoff must NEVER fail the whole preparation (never stop).
+  // A finding here is almost always a false positive from a listed filename that
+  // resembles an ID/phone (e.g. a 10-digit student number). Sanitize and write the
+  // handoff instead of aborting a completed run. Escalating fallbacks guarantee the
+  // written file is clean:
+  //   1. redact detector/entropy spans + mask long digit runs (structured IDs/phones);
+  //   2. if anything still trips the scan, drop the per-file listings entirely and
+  //      keep only the static, listing-free handoff (counts, not names).
+  let safeHandoff = agentHandoff;
+  if (runDetectors(agentHandoff, handoffScan).length > 0) {
+    const masked = redactText(agentHandoff, handoffScan).redacted.replace(
+      /\d{7,}/g,
+      "«REDACTED:number»",
+    );
+    safeHandoff =
+      runDetectors(masked, handoffScan).length === 0 ? masked : listingFreeHandoff;
+    progress("Agent handoff: sanitized ID-like content from generated listings; handoff still written.");
   }
-  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", agentHandoff);
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", safeHandoff);
 
   const manifest = {
     schemaVersion: 2,

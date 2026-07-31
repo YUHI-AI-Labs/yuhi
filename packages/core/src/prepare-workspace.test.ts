@@ -18,6 +18,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import ExcelJS from "exceljs";
 import type { DocumentInspector, LocalModelProvider } from "@yuhi/shared";
+import { runDetectors } from "@yuhi/scanner";
 import {
   prepareWorkspace,
   prepareWorkspaceOutcome,
@@ -894,6 +895,29 @@ describe("prepareWorkspace", () => {
       f.originalRelpath?.includes("A000000"),
     );
     expect(manifestEntry.relpath).toBe(entry!.relpath);
+  });
+
+  it("a workspace whose generated handoff trips its own rescan never fails: handoff sanitized, not thrown", async () => {
+    // ROOT CAUSE of the real-world "preparation-failure": AGENT_HANDOFF.md lists
+    // filenames, and a long high-entropy name (common with generated/token-like files)
+    // trips the entropy detector — so Yuhi's OWN file failed its rescan and aborted the
+    // whole run. It must sanitize + write the handoff instead of ever throwing.
+    const token = "aGVsbG8gd29ybGQtdGhpcy1pcy1hLXZlcnktbG9uZy1yYW5kb20tdG9rZW4tc3RyaW5n";
+    writeFileSync(path.join(dir, `report-${token}.bin`), Buffer.from([0, 1, 2, 255, 254, 0, 9, 7]));
+    put("normal.csv", "氏名,学籍番号,評定\n山田太郎,S-1,A\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+
+    // Must NOT throw (previously threw "Generated agent handoff failed Yuhi security verification.").
+    const report = await prepareWorkspace(dir);
+
+    const handoffPath = path.join(report.outDir, ".yuhi/context/AGENT_HANDOFF.md");
+    expect(existsSync(handoffPath)).toBe(true);
+    // The WRITTEN handoff passes its own rescan — guaranteed clean, so it can never
+    // have been the reason a completed preparation was thrown away.
+    const handoff = readFileSync(handoffPath, "utf8");
+    expect(runDetectors(handoff, { entropyThreshold: 4.0, keywords: [], relpath: "h.md" })).toHaveLength(0);
+    // The file is still delivered — a filename can never block the whole workspace.
+    expect(report.files.some((f) => f.relpath.includes("report-"))).toBe(true);
   });
 
   it("a volatile .DS_Store rewritten during preparation never fails the run (still included)", async () => {

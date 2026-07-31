@@ -559,8 +559,11 @@ describe("launch orchestration", () => {
     expect(showFailure).toHaveBeenCalledWith(
       "Yuhi prepared the workspace, but could not validate the post-prepare launch state. View Yuhi Output or retry.",
       "post-prepare-validation",
+      expect.any(String),
     );
+    // The redacted diagnostic keeps the error text but never the source path.
     expect(showFailure.mock.calls.join(" ")).not.toContain("/private/source");
+    expect(showFailure.mock.calls.join(" ")).toContain("synthetic post-prepare failure");
   });
 
   it("integrity failure shows the exact safe message and never rejects the command", async () => {
@@ -573,7 +576,11 @@ describe("launch orchestration", () => {
       showFailure,
     );
     expect(result).toBe("failed");
-    expect(showFailure).toHaveBeenCalledWith(SOURCE_INTEGRITY_ERROR, "source-integrity");
+    expect(showFailure).toHaveBeenCalledWith(
+      SOURCE_INTEGRITY_ERROR,
+      "source-integrity",
+      expect.any(String),
+    );
   });
 
   it("visible launch command settles after successful completion", async () => {

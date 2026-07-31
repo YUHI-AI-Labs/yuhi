@@ -1570,15 +1570,20 @@ async function runVisibleCommand(task: () => Promise<unknown>): Promise<void> {
   appendSafeLaunchDiagnostic("post-prepare-validation", "started", 0);
   let retry = false;
   try {
-    const result = await runVisibleLaunchCommand(task, async (message, kind) => {
+    const result = await runVisibleLaunchCommand(task, async (message, kind, diagnostic) => {
       setStatus("failed");
       appendSafeLaunchDiagnostic(kind, "failed", Date.now() - startedAt);
+      // Make the actual cause diagnosable in the LOCAL Output (redacted of the home
+      // path) instead of leaving only an opaque category.
+      if (diagnostic) yuhiOutput?.appendLine(`[prepare-error] ${kind}: ${diagnostic}`);
+      // Modal so the recovery choices can't be missed or auto-dismissed. Retry is the
+      // primary action; the user is never trapped on a failed run.
       const choice = await vscode.window.showErrorMessage(
         `${message} Error category: ${kind}.`,
-        "View Yuhi Output",
+        { modal: true, detail: diagnostic ? `Details: ${diagnostic}` : undefined },
         "Retry",
         "Switch Workspace",
-        "Cancel",
+        "View Yuhi Output",
       );
       if (choice === "View Yuhi Output") yuhiOutput?.show(true);
       else if (choice === "Switch Workspace") {

@@ -5,6 +5,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.2.8]
+
+### Critical fix
+
+- Fixed the root cause of "Yuhi could not complete workspace preparation" on real
+  workspaces. Yuhi generates an `AGENT_HANDOFF.md` that lists filenames, re-scans it,
+  and previously **threw** on any finding — so a workspace containing a file with a
+  long high-entropy name (or other detector-tripping filename) made Yuhi's *own*
+  generated file fail its rescan and abort the entire, already-completed preparation.
+  Yuhi now sanitizes the generated handoff (redacting flagged spans, and — as a
+  guaranteed-clean fallback — omitting the per-file listings) and always writes it.
+  A generated file can never again fail the whole run.
+
+## [0.2.7]
+
+### Diagnostics & recovery
+
+- A preparation failure now writes the actual error (its type/code — e.g. ENOENT,
+  EACCES, ENOSPC — with all source paths redacted) to Yuhi Output, instead of only
+  an opaque category. This makes a stubborn failure diagnosable.
+- The failure dialog is now modal with Retry / Switch Workspace / View Yuhi Output
+  (and the built-in Cancel), so the recovery choices can never be missed or
+  auto-dismissed. Details of the failure are shown inline.
+
 ## [0.2.6]
 
 ### Reliability

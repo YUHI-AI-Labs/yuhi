@@ -45,10 +45,27 @@ const VISIBLE_FAILURE_MESSAGES: Record<VisibleLaunchFailureKind, string> = {
 };
 
 export class VisibleLaunchError extends Error {
-  constructor(readonly kind: Exclude<VisibleLaunchFailureKind, "source-integrity">) {
+  constructor(
+    readonly kind: Exclude<VisibleLaunchFailureKind, "source-integrity">,
+    /** Redacted, non-persisted one-line diagnostic for the local Output channel. */
+    readonly diagnostic?: string,
+  ) {
     super(VISIBLE_FAILURE_MESSAGES[kind]);
     this.name = "VisibleLaunchError";
   }
+}
+
+/** A short, PATH-redacted description of an error, safe to surface locally so a
+ *  failure is diagnosable (the error type/code — ENOENT, EACCES, ENOSPC — is the
+ *  useful signal) without ever leaking a source path or filename. */
+export function describeLaunchError(error: unknown): string {
+  if (!(error instanceof Error)) return "non-Error value thrown during preparation";
+  let text = `${error.name}: ${error.message}`;
+  // Redact any absolute path (and quoted path) so no source path/filename escapes.
+  text = text.replace(/['"`]?(?:\/[^\s'"`:]+)+['"`]?/g, "«path»");
+  const home = process.env.HOME;
+  if (home) text = text.split(home).join("~");
+  return text.slice(0, 200);
 }
 
 async function launchStage<T>(
@@ -60,7 +77,7 @@ async function launchStage<T>(
   } catch (error) {
     if (error instanceof Error && error.message === SOURCE_INTEGRITY_ERROR) throw error;
     if (error instanceof VisibleLaunchError) throw error;
-    throw new VisibleLaunchError(kind);
+    throw new VisibleLaunchError(kind, describeLaunchError(error));
   }
 }
 
@@ -71,7 +88,11 @@ async function launchStage<T>(
  */
 export async function runVisibleLaunchCommand(
   task: () => Promise<unknown>,
-  showFailure: (message: string, kind: VisibleLaunchFailureKind) => Promise<void>,
+  showFailure: (
+    message: string,
+    kind: VisibleLaunchFailureKind,
+    diagnostic?: string,
+  ) => Promise<void>,
 ): Promise<"completed" | "failed"> {
   try {
     await task();
@@ -83,8 +104,12 @@ export async function runVisibleLaunchCommand(
       : error instanceof VisibleLaunchError
         ? error.kind
         : "post-prepare-validation";
+    const diagnostic =
+      error instanceof VisibleLaunchError
+        ? error.diagnostic
+        : describeLaunchError(error);
     try {
-      await showFailure(VISIBLE_FAILURE_MESSAGES[kind], kind);
+      await showFailure(VISIBLE_FAILURE_MESSAGES[kind], kind, diagnostic);
     } catch {
       // The command boundary must settle even if VS Code cannot render the
       // notification (for example, while its window is shutting down).
