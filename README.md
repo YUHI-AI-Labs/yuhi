@@ -18,10 +18,10 @@
 <p align="center">🌐 Also in <a href="./README.ja.md">日本語</a> · <a href="./README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <img alt="Yuhi — every file's route at a glance" src="docs/preview.png" width="760">
+  <img alt="Yuhi — yuhi status → preview → prepare, Repository Ready in one command" src="docs/demo.gif" width="820">
 </p>
 
-<!-- Static preview of `yuhi preview`. For an animated GIF, run `vhs docs/demo.tape` → writes docs/demo.gif (see docs/DEMO.md), then swap the src above. -->
+<!-- Animated demo. Regenerate with `vhs docs/demo.tape` (writes docs/demo.gif); static fallback is docs/preview.png. Same asset is reused on the product site. -->
 
 ---
 

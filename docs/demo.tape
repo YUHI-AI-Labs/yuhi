@@ -33,6 +33,6 @@ Sleep 4s
 Type "yuhi preview" Sleep 400ms Enter
 Sleep 4500ms
 
-# --- 3. Launch the agent inside the clean, generated context ---
-Type "yuhi run dummy" Sleep 400ms Enter
-Sleep 4s
+# --- 3. Prepare — Repository Ready in one command ---
+Type "yuhi prepare" Sleep 400ms Enter
+Sleep 4500ms
