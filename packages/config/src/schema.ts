@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizeAction, DEFAULT_LOCAL_MODEL, type Action } from "@yuhi/shared";
+import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
 
 /** Accept friendly (send / remove-secrets / prepare-locally / runtime-only /
  *  keep-local / exclude) or internal action names, normalized to an Action. */
@@ -99,8 +100,26 @@ export const budgetSchema = z.object({
   preserve: z.array(z.string()).default([]),
 });
 
+/**
+ * v0.3.2 Safety Mode preset (see @yuhi/core `applySafetyMode`). Higher modes keep
+ * more content local; absent → balanced. The string literals are kept in sync with
+ * @yuhi/core `SafetyMode` by the compile-time guard below.
+ */
+export const safetyModeSchema = z.enum(["balanced", "strict", "maximum-privacy"]);
+
+// Compile-time guard: fails to build if this enum ever diverges from core's SafetyMode.
+type _SafetyModeEnumInSync = z.infer<typeof safetyModeSchema> extends SafetyMode
+  ? SafetyMode extends z.infer<typeof safetyModeSchema>
+    ? true
+    : never
+  : never;
+const _safetyModeEnumInSync: _SafetyModeEnumInSync = true;
+void _safetyModeEnumInSync;
+
 export const yuhiConfigSchema = z.object({
   version: z.literal("1"),
+  /** Safety Mode preset; omitted → balanced. */
+  safetyMode: safetyModeSchema.default(DEFAULT_PREPARE_SAFETY_MODE),
   project: z.object({ name: z.string().optional() }).default({}),
   defaults: z
     .object({

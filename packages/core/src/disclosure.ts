@@ -16,7 +16,7 @@
  * A user decision can never override a hard security block (invariant #3/#20.3).
  */
 
-export type SafetyMode = "strict" | "balanced" | "open";
+export type DisclosureSafetyMode = "strict" | "balanced" | "open";
 export type ContextDetail = "full-sanitized" | "standard" | "compact";
 
 export type DisclosureDecision =
@@ -28,9 +28,9 @@ export type DisclosureDecision =
   | "pending-review"
   | "blocked";
 
-export const SAFETY_MODES: readonly SafetyMode[] = ["strict", "balanced", "open"];
+export const DISCLOSURE_SAFETY_MODES: readonly DisclosureSafetyMode[] = ["strict", "balanced", "open"];
 export const CONTEXT_DETAILS: readonly ContextDetail[] = ["full-sanitized", "standard", "compact"];
-export const DEFAULT_SAFETY_MODE: SafetyMode = "balanced";
+export const DEFAULT_DISCLOSURE_SAFETY_MODE: DisclosureSafetyMode = "balanced";
 export const DEFAULT_CONTEXT_DETAIL: ContextDetail = "standard";
 
 /** The security-relevant facts about a prepared file, derived from processing. */
@@ -103,7 +103,7 @@ function includeFor(detail: ContextDetail): DisclosureDecision {
 /** Yuhi's recommendation for a file under a given Safety Mode (before user input). */
 function recommend(
   input: DisclosureInput,
-  mode: SafetyMode,
+  mode: DisclosureSafetyMode,
   detail: ContextDetail,
 ): { decision: DisclosureDecision; reason: string; overrideAllowed: boolean } {
   // 1. Hard security block — identical in every mode, never overridable.
@@ -152,7 +152,7 @@ function recommend(
  */
 export function resolveDisclosure(
   input: DisclosureInput,
-  mode: SafetyMode = DEFAULT_SAFETY_MODE,
+  mode: DisclosureSafetyMode = DEFAULT_DISCLOSURE_SAFETY_MODE,
   overrides: DisclosureOverrides = {},
 ): DisclosureRecord {
   const contextDetail =

@@ -1,4 +1,5 @@
 export * from "./actions.js";
+export * from "./safety-mode.js";
 export * from "./text-encoding.js";
 export * from "./errors.js";
 export * from "./types.js";

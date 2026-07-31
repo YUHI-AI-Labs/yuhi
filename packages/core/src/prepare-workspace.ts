@@ -35,6 +35,13 @@ import {
 import { runDetectors, redactText, PdfDocumentInspector } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
+import {
+  DEFAULT_PREPARE_SAFETY_MODE,
+  escalatesUnverified,
+  requiresZeroFindings,
+  safetyModeLabel,
+  type SafetyMode,
+} from "./safety-mode.js";
 import { runLocalPreparation } from "./route-executor.js";
 
 /** The pipeline every summarize target is run through (local model → mask → gate). */
@@ -223,6 +230,9 @@ export interface PreparedFileEntry {
     | "reidentification-risk"
     | "unresolved-secret"
     | "unknown";
+  /** Set when a Safety Mode preset (Strict / Maximum Privacy) kept this file local
+   *  even though Balanced would have delivered it — an escalation, not a failure. */
+  keptLocalBySafetyMode?: SafetyMode;
 }
 
 /** Classify a transformation-failure reason. Structural failures are eligible for
@@ -403,6 +413,8 @@ export interface PrepareWorkspaceOptions {
   managedWorkspaceBase?: string;
   /** Explicit, caller-confirmed exclusions for a new recovery run. */
   excludeRelpaths?: readonly string[];
+  /** Safety Mode preset — shapes the effective policy (defaults to Balanced). */
+  safetyMode?: SafetyMode;
   /** Deterministic lifecycle seam for cancellation/recovery integration. */
   onCheckpoint?: (checkpoint: PreparationCheckpoint) => void;
 }
@@ -816,11 +828,17 @@ export async function prepareWorkspace(
     onDocumentText: (relpath, text) => extractedDocuments.set(relpath, text),
     ...(options.documentInspector ? { documentInspector: options.documentInspector } : {}),
     ...(options.deferDocumentInspection ? { deferDocumentInspection: true } : {}),
+    ...(options.safetyMode ? { safetyMode: options.safetyMode } : {}),
   });
   const root = plan.context.root;
   const salt = plan.context.policyHash;
   const effectiveMode: ReductionMode =
     mode ?? config?.budget?.reduction_mode ?? plan.context.config.budget?.reduction_mode ?? "balanced";
+  // Safety Mode preset (Balanced default). Strict/Maximum Privacy additionally keep
+  // any content that could not be fully verified out of the agent's Prepared
+  // Workspace — enforced at the unverified-delivery decision sites below.
+  const safetyMode: SafetyMode = options.safetyMode ?? DEFAULT_PREPARE_SAFETY_MODE;
+  const keepUnverifiedLocal = escalatesUnverified(safetyMode);
   const localModelParallelism = Math.max(
     1,
     Math.floor(options.localModelParallelism ?? recommendedLocalModelParallelism()),
@@ -1146,6 +1164,34 @@ export async function prepareWorkspace(
         ? oversizePassThroughReason(info.inspection.fileType, info.size)
         : undefined;
     if (info && oversizeReason) {
+      if (keepUnverifiedLocal) {
+        // Strict / Maximum Privacy: never deliver content that could not be
+        // verified. Keep the oversized file local (not copied to the workspace).
+        unsupportedOrUnverifiedFiles += 1;
+        beforeTokens += Math.ceil(info.size / 4);
+        approx = true;
+        files.push({
+          relpath,
+          action: "local-only",
+          status: "skipped",
+          outcome: "local-only-unverified",
+          transmission: "blocked",
+          beforeChars: info.size,
+          afterChars: 0,
+          transformed: false,
+          omitted: true,
+          limitation: "transformation-unavailable",
+          failureCategory: "structural",
+          keptLocalBySafetyMode: safetyMode,
+          error: oversizeReason,
+        });
+        decisionsProcessed += 1;
+        if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
+          progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
+        }
+        detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+        continue;
+      }
       await copyMirrored(outDir, relpath, info.absPath);
       provenance.push({ relpath, source: relpath, action: "allow" });
       unsupportedOrUnverifiedFiles += 1;
@@ -1263,6 +1309,32 @@ export async function prepareWorkspace(
           !rawPresent &&
           verified.directIdentifierColumns > 0 &&
           verified.sensitiveSheets === transformed.sensitiveSheets;
+        if (!fullyClean && keepUnverifiedLocal) {
+          // Strict / Maximum Privacy: a best-effort-only de-identified workbook was
+          // not fully verified → keep it local rather than deliver it with a warning.
+          unsupportedOrUnverifiedFiles += 1;
+          beforeTokens += tokenEstimate(sourceBytes.toString("base64")).tokens;
+          approx = true;
+          files.push({
+            relpath,
+            action: "local-only",
+            status: "skipped",
+            outcome: "local-only-unverified",
+            transmission: "blocked",
+            beforeChars: sourceBytes.length,
+            afterChars: 0,
+            transformations: ["pseudonymized", "masked"],
+            maskedValues: transformed.valuesReplaced,
+            transformed: false,
+            omitted: true,
+            keptLocalBySafetyMode: safetyMode,
+            limitation: "transformation-unavailable",
+            failureCategory: "reidentification-risk",
+            error: `Best-effort pseudonymization could not be fully verified; kept local by ${safetyModeLabel(safetyMode)}.`,
+          });
+          decisionsProcessed += 1;
+          continue;
+        }
         await writeMirrored(outDir, relpath, transformed.output);
         studentAliases = fileAliases;
         provenance.push({ relpath, source: relpath, action: decision.action });
@@ -1845,6 +1917,53 @@ export async function prepareWorkspace(
     for (const record of provenance) {
       const mapped = renamed.get(record.relpath);
       if (mapped) record.relpath = mapped; // source stays = original (the mapping record)
+    }
+  }
+
+  // ===== SAFETY-MODE CENTRALIZED ESCALATION PASS =====
+  // Strict / Maximum Privacy forbid delivering content that could not be fully
+  // inspected/verified. The two inline escalations above cover the oversized and
+  // XLSX-degraded routes, but `included-unverified` is delivered from several other
+  // sites (raw PDF/binary pass-through, unverifiable text, structural fallbacks). A
+  // single post-loop sweep guarantees NOTHING unverified survives to delivery, and —
+  // under Maximum Privacy — that no delivered file still carries a sensitive finding.
+  // Runs only in Strict/Maximum Privacy; Balanced is a strict no-op. It never weakens
+  // a hard block: credentials / private keys / `.env` are already withheld raw before
+  // this point, and this pass only ever escalates a delivered file to local-only.
+  if (keepUnverifiedLocal) {
+    const zeroFindings = requiresZeroFindings(safetyMode);
+    for (const entry of files) {
+      if (entry.omitted) continue;
+      const keepUnverified = entry.outcome === "included-unverified";
+      // Maximum Privacy also keeps local any still-delivered file whose transformed
+      // copy carried a sensitive finding. A clean verified file is left delivered, and
+      // sanitized document companions (safe by construction) are never touched.
+      const keepForFinding =
+        zeroFindings &&
+        !entry.document &&
+        ((entry.maskedValues ?? 0) > 0 || (entry.unresolvedHighRiskCount ?? 0) > 0);
+      if (!keepUnverified && !keepForFinding) continue;
+      // Remove the delivered artifact from the workspace, then mark it local-only —
+      // mirrors the final-gate "credential survived → keep local" handling.
+      const deliveredAbs = path.join(outDir, ...entry.relpath.split("/"));
+      await rm(deliveredAbs, { force: true });
+      // afterTokens feeds an ESTIMATE only; approximate the delivered cost from the
+      // artifact size and clamp so the running total never goes negative.
+      afterTokens = Math.max(0, afterTokens - Math.ceil(entry.afterChars / 4));
+      entry.omitted = true;
+      entry.status = "skipped";
+      entry.action = "local-only";
+      entry.transmission = "blocked";
+      entry.outcome = "local-only-unverified";
+      entry.transformed = false;
+      entry.afterChars = 0;
+      entry.keptLocalBySafetyMode = safetyMode;
+      filesExcluded += 1;
+      progress(
+        `${safetyModeLabel(safetyMode)}: kept ${entry.relpath} local (${
+          keepUnverified ? "unverified content" : "sensitive finding"
+        }) — not delivered to the agent.`,
+      );
     }
   }
 

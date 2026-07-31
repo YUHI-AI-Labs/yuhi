@@ -14,11 +14,11 @@ import {
   type DisclosureDecision,
   type DisclosureInput,
   type DisclosureRecord,
-  type SafetyMode,
+  type DisclosureSafetyMode,
   DEFAULT_CONTEXT_DETAIL,
-  DEFAULT_SAFETY_MODE,
+  DEFAULT_DISCLOSURE_SAFETY_MODE,
   CONTEXT_DETAILS,
-  SAFETY_MODES,
+  DISCLOSURE_SAFETY_MODES,
 } from "./disclosure.js";
 
 /** Capability-based local-AI config (no hard-coded model name in core logic). */
@@ -33,7 +33,7 @@ export interface LocalAiConfig {
 
 export interface DisclosureConfig {
   version: 1;
-  safetyMode: SafetyMode;
+  safetyMode: DisclosureSafetyMode;
   defaultContextDetail: ContextDetail;
   localAI: LocalAiConfig;
   /** Per-file overrides keyed by stable fileId (never a raw absolute path). */
@@ -55,7 +55,7 @@ export const DEFAULT_LOCAL_AI: LocalAiConfig = {
 
 export const DEFAULT_DISCLOSURE_CONFIG: DisclosureConfig = {
   version: 1,
-  safetyMode: DEFAULT_SAFETY_MODE,
+  safetyMode: DEFAULT_DISCLOSURE_SAFETY_MODE,
   defaultContextDetail: DEFAULT_CONTEXT_DETAIL,
   localAI: DEFAULT_LOCAL_AI,
   fileOverrides: {},
@@ -63,8 +63,8 @@ export const DEFAULT_DISCLOSURE_CONFIG: DisclosureConfig = {
   typeRules: {},
 };
 
-function isSafetyMode(v: unknown): v is SafetyMode {
-  return typeof v === "string" && (SAFETY_MODES as readonly string[]).includes(v);
+function isDisclosureSafetyMode(v: unknown): v is DisclosureSafetyMode {
+  return typeof v === "string" && (DISCLOSURE_SAFETY_MODES as readonly string[]).includes(v);
 }
 function isContextDetail(v: unknown): v is ContextDetail {
   return typeof v === "string" && (CONTEXT_DETAILS as readonly string[]).includes(v);
@@ -82,7 +82,7 @@ export function parseDisclosureConfig(raw: unknown): DisclosureConfig {
   };
   if (!raw || typeof raw !== "object") return cfg;
   const o = raw as Record<string, unknown>;
-  if (isSafetyMode(o.safetyMode)) cfg.safetyMode = o.safetyMode;
+  if (isDisclosureSafetyMode(o.safetyMode)) cfg.safetyMode = o.safetyMode;
   if (isContextDetail(o.defaultContextDetail)) cfg.defaultContextDetail = o.defaultContextDetail;
   if (o.localAI && typeof o.localAI === "object") {
     const l = o.localAI as Record<string, unknown>;

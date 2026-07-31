@@ -1,10 +1,10 @@
 import {
-  DEFAULT_SAFETY_MODE,
+  DEFAULT_DISCLOSURE_SAFETY_MODE,
   DEFAULT_CONTEXT_DETAIL,
   type PreparedMetrics,
   type PreparedRuntimeBoundary,
   type PreparationReport,
-  type SafetyMode,
+  type DisclosureSafetyMode,
   type ContextDetail,
 } from "@yuhi/core";
 import { renderRepositoryReadyCard } from "./repository-ready.js";
@@ -53,7 +53,7 @@ export interface ReviewData {
    * callers and older runs render unchanged; the webview falls back to the
    * exported @yuhi/core defaults. The *selectors* to change them arrive in 2b-2b.
    */
-  safetyMode?: SafetyMode;
+  safetyMode?: DisclosureSafetyMode;
   contextDetail?: ContextDetail;
   runId: string;
   outcome: string;
@@ -127,7 +127,7 @@ export interface ReviewData {
 }
 
 /** Human labels for the applied Safety Mode / Context Detail (read-only in 2b-2a). */
-const SAFETY_MODE_LABELS: Record<SafetyMode, string> = {
+const SAFETY_MODE_LABELS: Record<DisclosureSafetyMode, string> = {
   strict: "Strict",
   balanced: "Balanced",
   open: "Open",
@@ -266,7 +266,7 @@ function renderWhatAiCanSeeSection(data: ReviewData): string {
   const files = data.files.slice().sort((a, b) => a.path.localeCompare(b.path));
   const available = files.filter((f) => f.claudeReceives !== "No");
   const unavailable = files.filter((f) => f.claudeReceives === "No");
-  const safety = SAFETY_MODE_LABELS[data.safetyMode ?? DEFAULT_SAFETY_MODE];
+  const safety = SAFETY_MODE_LABELS[data.safetyMode ?? DEFAULT_DISCLOSURE_SAFETY_MODE];
   const detail = CONTEXT_DETAIL_LABELS[data.contextDetail ?? DEFAULT_CONTEXT_DETAIL];
   const glance =
     `${available.length} available to the AI · ${unavailable.length} kept on your machine`;
@@ -276,7 +276,7 @@ function renderWhatAiCanSeeSection(data: ReviewData): string {
     `<div class="inside">` +
     `<p class="sub">Whether the AI can see a file, at a glance. This is a read-only review.</p>` +
     `<div class="see-applied">` +
-    `<span class="badge" id="aiSeeSafetyMode">Safety Mode: ${escHtml(safety)} · applied default</span>` +
+    `<span class="badge" id="aiSeeDisclosureSafetyMode">Safety Mode: ${escHtml(safety)} · applied default</span>` +
     `<span class="badge" id="aiSeeContextDetail">Context Detail: ${escHtml(detail)} · applied default</span>` +
     `</div>` +
     `<div class="card table"><div class="toolbar"><label for="aiSeeFilter">Show</label>` +

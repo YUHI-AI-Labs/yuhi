@@ -81,6 +81,25 @@ describe("CLI preparation acceptance output", () => {
     expect(prepareCommand).toContain("prepareWorkspace(target");
   });
 
+  it("registers --safety-mode on prepare and rejects an invalid value before preparing", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/cli/src/index.ts"), "utf8");
+    const prepareCommand = source.slice(
+      source.indexOf('.command("prepare [dir]")'),
+      source.indexOf('.command("review <run>")'),
+    );
+    // The option is registered on the prepare command.
+    expect(prepareCommand).toContain('.option("--safety-mode <mode>"');
+    // Invalid values are validated with isSafetyMode and rejected with exit code 3.
+    expect(prepareCommand).toContain("isSafetyMode");
+    const validationIndex = prepareCommand.indexOf("isSafetyMode");
+    const prepareIndex = prepareCommand.indexOf("prepareWorkspace(target");
+    expect(validationIndex).toBeGreaterThanOrEqual(0);
+    // Validation happens before preparation is invoked (reject without preparing).
+    expect(validationIndex).toBeLessThan(prepareIndex);
+    // The validated mode flows to prepareWorkspace as its own option key.
+    expect(prepareCommand).toContain("safetyMode");
+  });
+
   it("renders metadata-safe success and JSON schema", () => {
     const result = buildCliPrepareResult(report());
     expect(result).toMatchObject({

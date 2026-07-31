@@ -658,7 +658,7 @@ describe("What the AI Can See (read-only review)", () => {
     expect(html).toContain('id="whatAiCanSee"');
     // Collapsed by default: the section's <details> has no open attribute.
     expect(html).toMatch(/<details[^>]*id="whatAiCanSee"(?![^>]*\bopen\b)/);
-    expect(html).toContain('id="aiSeeSafetyMode"');
+    expect(html).toContain('id="aiSeeDisclosureSafetyMode"');
     expect(html).toContain('id="aiSeeContextDetail"');
     // Honest: labelled as applied defaults, not live selectors.
     expect(html).toContain("applied default");

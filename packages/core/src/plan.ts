@@ -2,6 +2,7 @@ import type { DocumentInspector, PolicyEvaluation, ScanResult } from "@yuhi/shar
 import { scanRepo, isGitRepo } from "@yuhi/scanner";
 import { resolvePolicy } from "@yuhi/policy";
 import { loadContext, type YuhiContext } from "./context.js";
+import { applySafetyMode, DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "./safety-mode.js";
 
 export interface PlanOptions {
   agent?: string;
@@ -10,6 +11,8 @@ export interface PlanOptions {
   deferDocumentInspection?: boolean;
   /** In-memory only; extracted document text must never enter persisted metadata. */
   onDocumentText?: (relpath: string, text: string) => void;
+  /** Safety Mode preset — shapes the effective policy (defaults to Balanced). */
+  safetyMode?: SafetyMode;
 }
 
 export interface Plan {
@@ -55,10 +58,16 @@ export async function computePlan(dir: string, options: PlanOptions): Promise<Pl
     ...(options.onDocumentText ? { onDocumentText: options.onDocumentText } : {}),
   });
 
+  // Safety Mode shapes the EFFECTIVE policy before decisions are resolved. The
+  // transform is escalate-only, so higher modes withhold a strict superset.
+  const effectivePolicy = applySafetyMode(
+    { defaultAction: config.defaults.action, rules: config.rules },
+    options.safetyMode ?? DEFAULT_PREPARE_SAFETY_MODE,
+  );
   const evaluation = resolvePolicy(
     {
-      defaultAction: config.defaults.action,
-      rules: config.rules,
+      defaultAction: effectivePolicy.defaultAction,
+      rules: effectivePolicy.rules,
       interactive: options.interactive,
     },
     scan.files.map((f) => ({

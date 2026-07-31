@@ -10,6 +10,15 @@
           "type": "string",
           "const": "1"
         },
+        "safetyMode": {
+          "type": "string",
+          "enum": [
+            "balanced",
+            "strict",
+            "maximum-privacy"
+          ],
+          "default": "balanced"
+        },
         "project": {
           "type": "object",
           "properties": {

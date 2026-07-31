@@ -37,3 +37,6 @@ export * from "./what-ai-can-see.js";
 export * from "./ai-readiness-report.js";
 export * from "./repository-overview.js";
 export * from "./preparation-report.js";
+// Safety Mode policy logic; the vocabulary it re-exports lives in @yuhi/shared, so
+// @yuhi/config depends only on shared (no config↔core cycle).
+export * from "./safety-mode.js";

@@ -35,6 +35,9 @@ import {
   reviewAgentChanges,
   deriveWorkflowState,
   formatPreparationReport,
+  isSafetyMode,
+  safetyModeLabel,
+  type SafetyMode,
   type AgentChangeBaseline,
 } from "@yuhi/core";
 import { loadConfig } from "@yuhi/config";
@@ -578,9 +581,23 @@ async function main(): Promise<void> {
   program
     .command("prepare [dir]")
     .description("Prepare a local, reduced copy of your context (never sent anywhere)")
+    .option("--safety-mode <mode>", "balanced | strict | maximum-privacy (default: balanced)")
     .action(
       action(async (cmd) => {
         const { g, dir } = getContext(cmd);
+
+        const rawSafetyMode = cmd.opts().safetyMode as string | undefined;
+        let safetyMode: SafetyMode | undefined;
+        if (rawSafetyMode !== undefined) {
+          if (!isSafetyMode(rawSafetyMode)) {
+            console.error(
+              `${symbols.err()} Unknown --safety-mode '${rawSafetyMode}'. Use: balanced, strict, maximum-privacy.`,
+            );
+            return 3;
+          }
+          safetyMode = rawSafetyMode;
+        }
+
         const target = await assertSafeSourceWorkspace(cmd.args[0] ?? dir);
 
         const loaded = await loadConfig(target);
@@ -588,10 +605,15 @@ async function main(): Promise<void> {
           providerConfigFromSettings(loaded.config.local_model),
         );
 
+        if (!g.json && safetyMode !== undefined && safetyMode !== "balanced") {
+          console.log(`Safety Mode: ${safetyModeLabel(safetyMode)}`);
+        }
+
         const mode = loaded.config.budget?.reduction_mode;
         const res = await prepareWorkspace(target, {
           providerFactory,
           ...(mode !== undefined ? { mode } : {}),
+          ...(safetyMode !== undefined ? { safetyMode } : {}),
         });
         await writePreparedRunSession(res);
 

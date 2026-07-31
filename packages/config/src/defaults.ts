@@ -8,6 +8,7 @@ export function defaultConfig(projectName: string): YuhiConfig {
   return {
     version: "1",
     project: { name: projectName },
+    safetyMode: "balanced",
     defaults: { action: "allow", agent: "claude" },
     workspace: {
       mode: "copy",
@@ -100,6 +101,10 @@ version: "1"
 
 project:
   name: ${JSON.stringify(projectName)}
+
+# Safety Mode preset (v0.3.2): balanced | strict | maximum-privacy.
+# Higher modes keep more content local; absent → balanced.
+safetyMode: balanced
 
 defaults:
   action: allow      # default when no rule matches (secrets still escalate)
