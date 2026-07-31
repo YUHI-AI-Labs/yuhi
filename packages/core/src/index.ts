@@ -27,3 +27,6 @@ export {
 export { listAudit, showAudit, exportAudit, writeAudit, pruneAudit } from "@yuhi/audit";
 export { buildAdapter, KNOWN_AGENT_IDS, defaultEnvPassthrough } from "@yuhi/agents";
 export { lookupOnPath } from "@yuhi/agents";
+export * from "./doc-companion.js";
+export * from "./stream-text.js";
+export * from "./workspace-marker.js";

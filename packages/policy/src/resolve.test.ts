@@ -257,7 +257,11 @@ describe("resolvePolicy", () => {
     expect(decision).not.toHaveProperty("processors");
   });
 
-  it("does not allow a file whose available parser did not complete inspection", () => {
+  it("de-identifies a large parseable text file the size-limited scan could not verify (never raw-allow)", () => {
+    // A text/CSV/TSV file left unverified only because it exceeded the scan size cap
+    // is DE-IDENTIFIED via prepare-locally (the transform reads it independently and
+    // the final-artifact gate re-scans the output) — never delivered raw (allow), and
+    // no longer merely kept local.
     const registered = fileCapabilities("large.txt");
     const decision = resolvePolicy(input({ rules: [] }), [{
       relpath: "large.txt",
@@ -270,10 +274,11 @@ describe("resolvePolicy", () => {
       },
     }]).decisions[0];
     expect(decision).toMatchObject({
-      action: "local-only",
-      ruleName: "file-type:text-inspection-incomplete",
+      action: "prepare-locally",
+      ruleName: "file-type:text-transform-unverified",
     });
-    expect(decision?.processors).toBeUndefined();
+    expect(decision?.action).not.toBe("allow");
+    expect(decision?.processors).toEqual(["pseudonymize", "safety-check"]);
   });
 
   it("does not allow an explicit raw allow to downgrade sensitive tabular data", () => {

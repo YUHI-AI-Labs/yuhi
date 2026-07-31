@@ -1,6 +1,7 @@
-import { copyFile, lstat, mkdir, readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { isSafelyYuhiManaged, writeWorkspaceMarker } from "./workspace-marker.js";
 import { availableParallelism, totalmem } from "node:os";
 import { homedir, platform } from "node:os";
 import path from "node:path";
@@ -39,13 +40,45 @@ import { runLocalPreparation } from "./route-executor.js";
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
 
 /**
- * Only files at or below this size are inspected/transformed. Above it (the same
- * 2 MB bound the scanner uses), a file is stream-copied verbatim and delivered with
- * a warning — never scanned, OCR'd, or transformed — so one large file (a big PDF,
- * export, or log) can never hang or OOM the run. A deliberate speed/reliability
- * trade-off: large files reach Claude Code as-is, flagged "review before sharing".
+ * Per-format inspection limits (isolated constants — easy to make configurable).
+ * There is deliberately NO single all-format 2 MB gate: text and spreadsheets are
+ * de-identified regardless of size.
  */
-const MAX_INSPECTED_FILE_BYTES = 2 * 1024 * 1024;
+/** PDFs are inspected/OCR'd/summarized up to this size; larger ones pass through. */
+export const PDF_INSPECTION_LIMIT_BYTES = 64 * 1024 * 1024;
+/**
+ * Ceiling for loading a NON-PDF file fully into memory to inspect/transform. Text and
+ * XLSX are de-identified up to this size (no longer skipped at 2 MB); beyond it a file
+ * is passed through unverified with an honest "too large to process locally" warning
+ * rather than risking OOM on a 16 GB machine. (True streaming for larger files is a
+ * follow-up; the limit is detected and reported, never silently mislabeled.)
+ */
+export const MAX_INMEMORY_TRANSFORM_BYTES = 128 * 1024 * 1024;
+
+/** Human MB rounding for messages. */
+function mbLabel(bytes: number): string {
+  const mb = bytes / 1_000_000;
+  return mb >= 10 ? String(Math.round(mb)) : mb.toFixed(1);
+}
+
+/**
+ * Per-format size strategy. Returns a pass-through warning reason when the file is too
+ * large to inspect locally for its type, or `undefined` when it should be inspected/
+ * transformed normally. Only SIZE is decided here — explicit policy blocks and
+ * symlinks are handled by the caller and always take precedence over size.
+ */
+export function oversizePassThroughReason(fileType: string, sizeBytes: number): string | undefined {
+  if (fileType === "pdf") {
+    return sizeBytes > PDF_INSPECTION_LIMIT_BYTES
+      ? `PDF is ${mbLabel(sizeBytes)} MB — over the 64 MB PDF inspection limit. ` +
+          "Passed through as-is without inspection or transformation. Review before sharing."
+      : undefined;
+  }
+  return sizeBytes > MAX_INMEMORY_TRANSFORM_BYTES
+    ? `File is ${mbLabel(sizeBytes)} MB — too large to inspect or transform locally ` +
+        "without exhausting memory. Passed through as-is with a warning. Review before sharing."
+    : undefined;
+}
 
 function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext {
   return {
@@ -372,6 +405,59 @@ export function managedWorkspaceBaseDir(): string {
     return path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"), "Yuhi", "workspaces");
   }
   return path.join(process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state"), "yuhi", "workspaces");
+}
+
+/** How many recent prepared workspaces are always retained, newest first. */
+export const KEEP_RECENT_WORKSPACES = 3;
+/** Prepared workspaces beyond the retained set are pruned once older than this. */
+export const WORKSPACE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Prune old prepared workspaces so they cannot accumulate and fill the disk (each
+ * run is a full copy — several GB for a large workspace, and a nearly-full disk
+ * causes preparation write failures). Keeps the `KEEP_RECENT_WORKSPACES` newest runs
+ * unconditionally, then deletes any older run that is also older than
+ * `WORKSPACE_MAX_AGE_MS`. The current run is never touched. Best-effort: cleanup must
+ * never fail a preparation, so all errors are swallowed. Returns the paths removed.
+ */
+export async function pruneManagedWorkspaces(
+  managedBase: string,
+  currentRunId: string,
+  now: number,
+): Promise<string[]> {
+  const removed: string[] = [];
+  try {
+    const entries = await readdir(managedBase, { withFileTypes: true });
+    const runs: { name: string; mtimeMs: number }[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name === currentRunId) continue;
+      try {
+        const info = await stat(path.join(managedBase, entry.name));
+        runs.push({ name: entry.name, mtimeMs: info.mtimeMs });
+      } catch {
+        /* unreadable entry — skip */
+      }
+    }
+    runs.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
+    const cutoff = now - WORKSPACE_MAX_AGE_MS;
+    for (const run of runs.slice(KEEP_RECENT_WORKSPACES)) {
+      if (run.mtimeMs >= cutoff) continue; // still within the retention window
+      const dir = path.join(managedBase, run.name);
+      // SAFETY: only ever delete a directory we can positively confirm Yuhi created
+      // (valid `.yuhi-managed.json` marker, not a symlink). A missing/invalid marker
+      // or a non-Yuhi directory is left untouched — never deleted by directory name.
+      if (!(await isSafelyYuhiManaged(dir))) continue;
+      try {
+        await rm(dir, { recursive: true, force: true });
+        removed.push(run.name);
+      } catch {
+        /* best-effort — a locked/in-use run is left for next time */
+      }
+    }
+  } catch {
+    /* base dir missing or unreadable — nothing to prune */
+  }
+  return removed;
 }
 
 export const SOURCE_INTEGRITY_ERROR =
@@ -741,6 +827,20 @@ export async function prepareWorkspace(
   const outDir = path.join(managedBase, runId);
   await mkdir(outDir, { recursive: true, mode: 0o700 });
   options.onCheckpoint?.("workspace-created");
+  // Stamp a marker so future cleanup can positively confirm this directory is
+  // Yuhi-managed and safe to delete (never delete by directory name). Best-effort.
+  await writeWorkspaceMarker(outDir, {
+    managedBy: "yuhi",
+    schemaVersion: 1,
+    createdAt: createdAt ?? new Date(Date.now()).toISOString(),
+    runId,
+  }).catch(() => undefined);
+  // Free disk before the heavy copy phase: old prepared workspaces (several GB each)
+  // would otherwise accumulate and eventually cause write failures. Best-effort.
+  const prunedWorkspaces = await pruneManagedWorkspaces(managedBase, runId, Date.now());
+  if (prunedWorkspaces.length > 0) {
+    progress(`Cleaned up ${prunedWorkspaces.length} old prepared workspace(s) to free disk space.`);
+  }
   try {
   const infoByPath = new Map<string, FileInfo>(plan.scan.files.map((f) => [f.relpath, f]));
   detail("scan", "Scanning sensitive information", 0, plan.scan.files.length);
@@ -892,17 +992,17 @@ export async function prepareWorkspace(
       continue;
     }
 
-    // LARGE FILE (> 2 MB): pass through as-is WITH A WARNING — never inspected, OCR'd,
-    // or transformed. Only small files are checked. This bounds the work so one big
-    // file (a large PDF/export/log) can never hang or OOM the run, and — unlike the
-    // keep-local path below — the file is still DELIVERED (the user chose pass-through
-    // for large files). Explicit policy `block` and symlinks are handled below.
-    if (
-      info &&
-      !info.flags.isSymlink &&
-      decision.action !== "block" &&
-      info.size > MAX_INSPECTED_FILE_BYTES
-    ) {
+    // PER-FORMAT SIZE STRATEGY (no single 2 MB gate). A file too large to inspect for
+    // its type — a PDF over 64 MB, or any other file over the in-memory ceiling — is
+    // passed through as-is WITH A WARNING (delivered, `included-unverified`), never
+    // hanging or OOM-ing the run. Text and spreadsheets under the ceiling fall through
+    // to normal de-identification regardless of size. Explicit policy `block` and
+    // symlinks (handled below) always win over size.
+    const oversizeReason =
+      info && !info.flags.isSymlink && decision.action !== "block"
+        ? oversizePassThroughReason(info.inspection.fileType, info.size)
+        : undefined;
+    if (info && oversizeReason) {
       await copyMirrored(outDir, relpath, info.absPath);
       provenance.push({ relpath, source: relpath, action: "allow" });
       unsupportedOrUnverifiedFiles += 1;
@@ -910,7 +1010,6 @@ export async function prepareWorkspace(
       beforeTokens += approxTokens;
       afterTokens += approxTokens;
       approx = true;
-      const mb = info.size / 1_000_000;
       files.push({
         relpath,
         action: "allow",
@@ -923,7 +1022,7 @@ export async function prepareWorkspace(
         omitted: false,
         limitation: "transformation-unavailable",
         failureCategory: "structural",
-        error: `File is ${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB — over the 2 MB inspection limit; passed through as-is with a warning (not scanned or transformed). Review before sharing.`,
+        error: oversizeReason,
       });
       decisionsProcessed += 1;
       if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
@@ -1617,9 +1716,9 @@ export async function prepareWorkspace(
   for (const entry of files) {
     if (entry.omitted) continue;
     if (!/\.(?:csv|tsv|txt|xlsx)$/i.test(entry.relpath)) continue;
-    // Large files were passed through as-is (never inspected) — do not reopen them to
-    // rescan here, which would re-introduce the very hang the pass-through avoids.
-    if (entry.beforeChars > MAX_INSPECTED_FILE_BYTES) {
+    // Files passed through un-inspected because they exceeded the in-memory ceiling
+    // are not reopened here — that would re-introduce the OOM the pass-through avoids.
+    if (entry.beforeChars > MAX_INMEMORY_TRANSFORM_BYTES) {
       entry.finalRescanVerified = false;
       continue;
     }

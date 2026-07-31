@@ -13,3 +13,6 @@ export * from "./normalize.js";
 export * from "./student-records.js";
 export * from "./file-capabilities.js";
 export * from "./xlsx-records.js";
+export * from "./safe-unzip.js";
+export * from "./docx-extract.js";
+export * from "./pptx-extract.js";

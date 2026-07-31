@@ -145,10 +145,41 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
         action === "block" ||
         winningRule === "file-type:private-key-local-only" ||
         /(?:credential|private-key|secret-director)/i.test(winningRule);
+      // A large-but-parseable text/tabular/xlsx file may be unverified only because the
+      // size-limited scan did not read it. It can still be DE-IDENTIFIED locally: the
+      // transform reads and pseudonymizes it independently, and the final-artifact gate
+      // re-scans the written output. Prefer that over keeping it local — size alone must
+      // never demote a de-identifiable file (credentials/blocks are handled above).
+      // Only text/CSV/TSV get the size-unverified transform route. XLSX keeps its own
+      // dedicated path (a malformed workbook must stay local, never be forced through
+      // a transform), and other types are handled by the branches below.
+      const transformableUnverified =
+        !credentialOrPrivateKeyRoute &&
+        capabilities.parserAvailable &&
+        (capabilities.fileType === "csv" ||
+          capabilities.fileType === "tsv" ||
+          capabilities.fileType === "text");
       const unverifiedRawAllowed =
         !credentialOrPrivateKeyRoute &&
+        !transformableUnverified &&
         (capabilities.fileType === "pdf" || capabilities.fileType === "binary");
-      if (unverifiedRawAllowed) {
+      if (transformableUnverified) {
+        action = "prepare-locally";
+        winningRule = `file-type:${capabilities.fileType}-transform-unverified`;
+        reason =
+          "File is de-identified locally; the size-limited scan could not pre-verify it, " +
+          "so the final artifact is re-scanned before it is trusted.";
+        // Use the same curated, type-appropriate transform the verified path uses —
+        // tabular files get schema-aware pseudonymization, text gets text redaction.
+        // (The raw registry list adds aggregate/summarize processors that are wrong here.)
+        winningProcessors =
+          capabilities.fileType === "csv" ||
+          capabilities.fileType === "tsv" ||
+          capabilities.fileType === "xlsx"
+            ? ["pseudonymize-student-records", "safety-check"]
+            : ["pseudonymize", "safety-check"];
+        winningDestinations = ["external", "local"];
+      } else if (unverifiedRawAllowed) {
         action = "allow";
         winningRule = `file-type:${capabilities.fileType}-unverified-included`;
         reason =
@@ -168,7 +199,9 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
               : `File kept local because verified local ${capabilities.fileType.toUpperCase()} inspection is unavailable.`;
         winningDestinations = ["local"];
       }
-      winningProcessors = undefined;
+      // Keep the transform processors for the transformable-unverified case; only the
+      // raw/local-only branches above have no processors to run.
+      if (!transformableUnverified) winningProcessors = undefined;
     } else if (pdfSecretFinding) {
       action = "local-only";
       winningRule = "document:unresolved-secret-local-only";
