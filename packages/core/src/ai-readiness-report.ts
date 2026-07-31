@@ -96,6 +96,65 @@ export function buildAiReadinessReport(files: readonly ReadinessFile[]): AiReadi
   };
 }
 
+export interface AiReadinessScore {
+  /** 0–100 overall readiness (a heuristic indicator, not a guarantee). */
+  score: number;
+  categories: { name: string; stars: number; detail: string }[];
+}
+
+const clampStars = (n: number): number => Math.max(0, Math.min(5, Math.round(n)));
+
+/**
+ * Compute the shareable AI Readiness Score (0–100) + per-category star ratings from
+ * the readiness report and a structure signal. Deterministic and honest: it rewards
+ * "prepared" outcomes (secrets handled, documents converted, context reduced, clear
+ * structure). It is a readiness INDICATOR, never a safety guarantee.
+ */
+export function buildAiReadinessScore(
+  report: AiReadinessReport,
+  structure?: { categories: number; topModules: number },
+): AiReadinessScore {
+  // Secrets: Yuhi always keeps credentials local, so this is high by construction;
+  // finding + blocking some is the ideal "handled" signal.
+  const secretStars = 5;
+  // Documents: share of documents converted to companions vs left as placeholders.
+  const totalDocs = report.documentsSummarized + report.largeFilesReduced;
+  const docStars =
+    totalDocs === 0 ? 5 : clampStars(1 + (report.documentsSummarized / totalDocs) * 4);
+  // Structure: clear, recognizable layout scores higher.
+  const structStars = structure
+    ? clampStars(1 + Math.min(4, structure.categories - 1) * 0.8 + Math.min(1, structure.topModules / 4))
+    : 4;
+  // Context reduction: more reduction → higher, capped honestly.
+  const r = report.estimatedReductionPercent;
+  const ctxStars = r >= 90 ? 5 : r >= 70 ? 4 : r >= 50 ? 3 : r >= 25 ? 2 : r > 0 ? 1 : 3;
+
+  const categories = [
+    { name: "Secrets blocked", stars: secretStars, detail: `${report.secretsBlocked} blocked` },
+    { name: "Documents prepared", stars: docStars, detail: `${report.documentsSummarized} prepared` },
+    { name: "Repository structure", stars: structStars, detail: `${report.preparedFiles} files` },
+    { name: "Context reduction", stars: ctxStars, detail: `${report.estimatedReductionPercent}%` },
+  ];
+  const score = Math.round((categories.reduce((n, c) => n + c.stars, 0) / (categories.length * 5)) * 100);
+  return { score, categories };
+}
+
+const starBar = (n: number): string => "★".repeat(clampStars(n)) + "☆".repeat(5 - clampStars(n));
+
+/** Shareable badge text, e.g. "AI Ready 92/100". */
+export function aiReadinessBadge(score: AiReadinessScore): string {
+  return `AI Ready ${score.score}/100`;
+}
+
+export function formatAiReadinessScore(score: AiReadinessScore): string {
+  const lines = [`Repository Ready    ${score.score} / 100`, ""];
+  const w = Math.max(...score.categories.map((c) => c.name.length));
+  for (const c of score.categories) {
+    lines.push(`  ${c.name.padEnd(w)}  ${starBar(c.stars)}  ${c.detail}`);
+  }
+  return lines.join("\n");
+}
+
 /** Render the report as the plain-language block shown after `yuhi prepare`. */
 export function formatAiReadinessReport(r: AiReadinessReport): string {
   const pad = (n: number) => String(n).padStart(4);
