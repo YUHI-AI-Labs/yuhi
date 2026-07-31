@@ -66,3 +66,18 @@ export {
   type RunOptions,
   type RunSummary,
 } from "./worker.js";
+
+export {
+  computeRevisionId,
+  canonicalizeRevisionIdInput,
+  reduceProgressiveContextState,
+  toPublicProgressiveContextState,
+  isRevisionId,
+  REVISION_ID_ALGORITHM,
+  REVISION_ID_PREFIX,
+  REVISION_ID_CANONICALIZATION_VERSION,
+  type DeliveredFile,
+  type ProgressiveContextState,
+  type ProgressiveContextInput,
+  type RevisionIdInput,
+} from "./revision.js";

@@ -23,14 +23,36 @@ export interface AgentSessionManifest {
   status: AgentSessionStatus;
   startedAt: string;
   exitCode?: number;
+  /**
+   * v0.3.5 Progressive Context (ADDITIVE / optional). Records WHICH background
+   * revision of the (immutable) `contextId` this run was launched against:
+   *   - `revision`   — 0 at prepare; +1 per safely-published background artifact.
+   *   - `revisionId` — deterministic `sha256:<hex>` over the delivered file-set.
+   * Both are identity-free (no abspath / user / machine) and are omitted when the
+   * session did not record a revision, so this is fully backward-compatible.
+   */
+  revision?: number;
+  revisionId?: string;
 }
+
+/**
+ * A session that additionally records which progressive Context Revision it used.
+ * `AgentSession` remains assignable to this (the extra fields are optional), so
+ * existing callers need no change.
+ */
+export type AgentSessionRevisionInput = AgentSession & {
+  readonly revision?: number;
+  readonly revisionId?: string;
+};
 
 /**
  * Project an {@link AgentSession} into its public-safe manifest. Deliberately
  * DROPS `workingDirectory` (absolute path) and copies only whitelisted, identity-
  * free fields — it never spreads the session, so no field can leak by accident.
  */
-export function toPublicAgentSessionManifest(session: AgentSession): AgentSessionManifest {
+export function toPublicAgentSessionManifest(
+  session: AgentSessionRevisionInput,
+): AgentSessionManifest {
   return {
     schemaVersion: 1,
     kind: "agent-session",
@@ -44,5 +66,7 @@ export function toPublicAgentSessionManifest(session: AgentSession): AgentSessio
     status: session.status,
     startedAt: session.startedAt,
     ...(session.exitCode !== undefined ? { exitCode: session.exitCode } : {}),
+    ...(session.revision !== undefined ? { revision: session.revision } : {}),
+    ...(session.revisionId !== undefined ? { revisionId: session.revisionId } : {}),
   };
 }

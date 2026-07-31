@@ -33,6 +33,24 @@ describe("Agent Session Manifest — public projection", () => {
     expect("workingDirectory" in m).toBe(false);
   });
 
+  it("records WHICH progressive revision it used and still drops the abspath", () => {
+    const revisionId = "sha256:" + "c".repeat(64);
+    const m = toPublicAgentSessionManifest({ ...session(), revision: 2, revisionId });
+    expect(m.revision).toBe(2);
+    expect(m.revisionId).toBe(revisionId);
+    // The immutable base Context ID is unchanged by the revision fields.
+    expect(m.contextId).toBe(session().contextId);
+    const serialized = JSON.stringify(m);
+    expect(serialized).not.toContain("/Users/");
+    expect(serialized).not.toContain("workingDirectory");
+  });
+
+  it("omits the revision fields entirely for a session that recorded none (backward-compatible)", () => {
+    const m = toPublicAgentSessionManifest(session());
+    expect("revision" in m).toBe(false);
+    expect("revisionId" in m).toBe(false);
+  });
+
   it("is a SEPARATE artifact from the deterministic Context Manifest", () => {
     // The session manifest is per-run (sessionId, status) and carries only a LINK
     // to the context via contextId — it is not the Context Manifest itself.

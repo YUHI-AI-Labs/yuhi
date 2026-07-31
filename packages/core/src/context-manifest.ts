@@ -21,6 +21,10 @@
 import path from "node:path";
 import { YUHI_VERSION, type SafetyMode, isSafetyMode } from "@yuhi/shared";
 import { isContextId } from "./context-id.js";
+import {
+  toPublicProgressiveContextState,
+  type ProgressiveContextState,
+} from "./background/revision.js";
 
 export type ContextRepresentation = "full" | "compressed" | "excluded";
 
@@ -51,6 +55,13 @@ export interface ContextManifest {
   };
   files: ContextManifestFileEntry[];
   warnings: string[];
+  /**
+   * v0.3.5 Progressive Context (ADDITIVE / optional). Present once the immutable
+   * base Context ID has an incrementing background-artifact revision recorded.
+   * The base identity above is UNCHANGED by this field; `progressiveContext`
+   * only observes the delivered-artifact progression on top of it.
+   */
+  progressiveContext?: ProgressiveContextState;
 }
 
 /** Loose view of the on-disk manifest (`manifest.json`) fields we project from. */
@@ -61,6 +72,8 @@ interface RawManifestLike {
   safetyMode?: unknown;
   files?: unknown;
   warnings?: unknown;
+  progressiveContext?: unknown;
+  revision?: unknown;
 }
 
 function str(value: unknown, fallback = ""): string {
@@ -116,6 +129,14 @@ export function toPublicContextManifest(raw: unknown): ContextManifest {
     // Defense in depth: a public manifest must never carry an absolute path.
     .filter((file) => file.relpath !== "" && !path.isAbsolute(file.relpath));
 
+  // ADDITIVE: project a stored Progressive Context state when present (it may be
+  // stored inline as `progressiveContext` or as a sibling `revision` blob). The
+  // projector whitelists fields and drops anything without a valid base id +
+  // revisionId, so the public manifest never carries a partial/unsafe revision.
+  const progressiveContext = toPublicProgressiveContextState(
+    m.progressiveContext ?? m.revision,
+  );
+
   return {
     schemaVersion: typeof m.schemaVersion === "number" ? m.schemaVersion : 2,
     contextId: m.contextId,
@@ -129,5 +150,6 @@ export function toPublicContextManifest(raw: unknown): ContextManifest {
     },
     files,
     warnings: toWarnings(m.warnings),
+    ...(progressiveContext ? { progressiveContext } : {}),
   };
 }

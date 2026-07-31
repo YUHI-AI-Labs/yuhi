@@ -73,4 +73,29 @@ describe("Context Manifest — public projection", () => {
     delete bad.contextId;
     expect(() => toPublicContextManifest(bad)).toThrow(/contextId/);
   });
+
+  it("omits progressiveContext when the manifest predates the revision layer (additive)", () => {
+    const m = toPublicContextManifest(rawManifest());
+    expect("progressiveContext" in m).toBe(false);
+    // The base Context ID is unaffected by the (absent) revision layer.
+    expect(m.contextId).toBe(CONTEXT_ID);
+  });
+
+  it("projects a stored Progressive Context revision without touching the base Context ID", () => {
+    const raw = rawManifest();
+    raw.progressiveContext = {
+      baseContextId: CONTEXT_ID,
+      revision: 1,
+      revisionId: "sha256:" + "d".repeat(64),
+      completedItems: 1,
+      pendingItems: 0,
+      failedItems: 0,
+      updatedAt: "2026-08-01T12:00:00.000Z",
+    };
+    const m = toPublicContextManifest(raw);
+    expect(m.contextId).toBe(CONTEXT_ID);
+    expect(m.progressiveContext?.baseContextId).toBe(CONTEXT_ID);
+    expect(m.progressiveContext?.revision).toBe(1);
+    expect(m.progressiveContext?.revisionId).toBe("sha256:" + "d".repeat(64));
+  });
 });
