@@ -521,4 +521,50 @@ describe("renderSavingsHtml (product workflow)", () => {
     const evil = renderSavingsHtml({ ...data(), project: "</script><script>x" }, "", "N");
     expect(evil).not.toContain("</script><script>x");
   });
+
+  it("omits the Repository Ready card when no preparation report is supplied", () => {
+    expect(html).not.toContain('id="repositoryReady"');
+    expect(html).not.toContain("Copy public report");
+  });
+
+  it("surfaces a public-safe Repository Ready card + copy/export when a report is present", () => {
+    const rendered = renderSavingsHtml(
+      {
+        ...data(),
+        preparationReport: {
+          sourceFiles: 128,
+          preparedArtifacts: 131,
+          documentsPrepared: 4,
+          secretsBlocked: 7,
+          identifiersTransformed: 2165,
+          largeFilesExcluded: 0,
+          estimatedReductionPercent: 94,
+          status: "ready",
+        },
+      },
+      "vscode-resource:",
+      "NONCE123",
+    );
+    // The card, its metrics, and the honest reduction caveat are shown.
+    expect(rendered).toContain('id="repositoryReady"');
+    expect(rendered).toContain("Repository Ready");
+    expect(rendered).toContain("Prepared artifacts");
+    expect(rendered).toContain("2,165");
+    expect(rendered).toContain("Estimated accessible-content reduction");
+    expect(rendered).toContain("agent-accessible content, not model token savings");
+    // Copy/export are wired to the webview message protocol.
+    expect(rendered).toContain('id="copyPublicReport"');
+    expect(rendered).toContain('id="exportPublicReport"');
+    // Both buttons are wired to the webview message protocol (send → postMessage).
+    expect(rendered).toContain('["copyPublicReport","exportPublicReport"].forEach');
+    expect(rendered).toContain("b.addEventListener(\"click\",()=>send(id))");
+    // The card fragment itself carries only aggregate numbers — the card's
+    // public-safety is asserted directly in repository-ready.test.ts.
+    const card = rendered.slice(
+      rendered.indexOf('id="repositoryReady"'),
+      rendered.indexOf('id="whatYuhiDid"'),
+    );
+    expect(card).not.toContain("meeting-log.md");
+    expect(card).not.toContain(".yuhi/prepared/abc");
+  });
 });

@@ -8,6 +8,7 @@ import {
   buildPreparedMetrics,
   buildPreparedFileDecisions,
   buildPreparedRuntimeBoundary,
+  buildSafePreparedRunSummary,
   captureAgentChangeBaseline,
   reviewAgentChanges,
   applyAgentChanges,
@@ -37,6 +38,11 @@ import {
 import { loadConfig } from "@yuhi/config";
 import { parseDocument } from "yaml";
 import { renderSavingsHtml, type ReviewData } from "./webview.js";
+import {
+  repositoryReadyClipboardText,
+  repositoryReadyExportText,
+  REPOSITORY_READY_EXPORT_FORMATS,
+} from "./repository-ready.js";
 import { YUHI_ACTIVITY_VIEW_ID, YuhiActivityProvider, type PreparedDetail } from "./activity-view.js";
 import { PREPARED_WINDOW_TITLE, PREPARED_WORKBENCH_COLORS } from "./branding.js";
 import { validatePreparedWorkspace, type RecoveryReason } from "./recovery.js";
@@ -1771,6 +1777,9 @@ function toReviewData(
     projectFiles,
     metadataFiles,
     preparedTree: [...projectFiles, ...metadataFiles],
+    // The shareable, PUBLIC-SAFE preparation report (aggregate numbers only) —
+    // drives the "Repository Ready" card with copy/export.
+    preparationReport: buildSafePreparedRunSummary(report).preparationReport,
     // PDFs still queued for background inspection: "in progress", not failed.
     backgroundDocumentsPending: report.files.filter(
       (file) =>
@@ -1881,6 +1890,48 @@ async function launchPreparedReportFromReview(
   }
 }
 
+/**
+ * Copy the shareable, PUBLIC-SAFE preparation report (Markdown) to the clipboard.
+ * Only ever emits aggregate numbers — never a source path, filename, or content.
+ */
+async function copyPublicPreparationReport(report: PrepareReport): Promise<void> {
+  const summary = buildSafePreparedRunSummary(report);
+  const markdown = repositoryReadyClipboardText(summary.preparationReport);
+  await vscode.env.clipboard.writeText(markdown);
+  void vscode.window.showInformationMessage(
+    "Yuhi: public preparation report copied (public-safe — aggregate numbers only, no paths or content).",
+  );
+}
+
+/**
+ * Export the PUBLIC-SAFE preparation report as Markdown / JSON / SVG. The user
+ * picks a format, then a save location; only aggregate numbers are ever written.
+ */
+async function exportPublicPreparationReport(root: string, report: PrepareReport): Promise<void> {
+  const picked = await vscode.window.showQuickPick(
+    REPOSITORY_READY_EXPORT_FORMATS.map((option) => ({ label: option.label, option })),
+    {
+      title: "Export public preparation report",
+      placeHolder: "Choose a format (public-safe — aggregate numbers only)",
+    },
+  );
+  if (!picked) return;
+  const summary = buildSafePreparedRunSummary(report);
+  const content = repositoryReadyExportText(summary.preparationReport, picked.option.format);
+  const target = await vscode.window.showSaveDialog({
+    saveLabel: "Export report",
+    defaultUri: vscode.Uri.file(
+      path.join(root, `yuhi-repository-ready.${picked.option.extension}`),
+    ),
+    filters: { [picked.option.label]: [picked.option.extension] },
+  });
+  if (!target) return;
+  await writeFile(target.fsPath, content, "utf8");
+  void vscode.window.showInformationMessage(
+    "Yuhi: public preparation report exported (public-safe — aggregate numbers only).",
+  );
+}
+
 async function commandReview(awaitDecision = false): Promise<"open" | "cancel" | void> {
   if (!lastReport || !lastReportRoot) {
     const choice = await vscode.window.showInformationMessage(
@@ -1934,6 +1985,12 @@ async function commandReview(awaitDecision = false): Promise<"open" | "cancel" |
       }
       if (msg?.type === "chooseSource") {
         void vscode.commands.executeCommand("yuhi.restartFlow");
+      }
+      if (msg?.type === "copyPublicReport") {
+        void copyPublicPreparationReport(report);
+      }
+      if (msg?.type === "exportPublicReport") {
+        void exportPublicPreparationReport(root, report);
       }
       if (msg?.type === "retryProtection") {
         void (async () => {

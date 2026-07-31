@@ -1,4 +1,5 @@
-import type { PreparedMetrics, PreparedRuntimeBoundary } from "@yuhi/core";
+import type { PreparedMetrics, PreparedRuntimeBoundary, PreparationReport } from "@yuhi/core";
+import { renderRepositoryReadyCard } from "./repository-ready.js";
 
 export interface ReviewFile {
   path: string;
@@ -94,6 +95,12 @@ export interface ReviewData {
   metadataFiles: string[];
   preparedTree: string[];
   /**
+   * The shareable, PUBLIC-SAFE Yuhi Preparation Report (aggregate numbers only).
+   * When present, the review webview renders the "Repository Ready" card with
+   * copy/export actions. Optional so existing callers and older runs are unchanged.
+   */
+  preparationReport?: PreparationReport;
+  /**
    * Documents queued for background inspection that have not completed yet.
    * The review panel is a point-in-time snapshot rendered right after the fast
    * blocking phase, while PDF inspection continues in the background — so a
@@ -137,6 +144,10 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
   const recoveryActions = data.outcome === "Partial"
     ? '<button class="button primary" id="retryProtection">Retry protection</button>'
     : "";
+  // The shareable, public-safe "Repository Ready" card (aggregate numbers only).
+  const repositoryReadyCard = data.preparationReport
+    ? renderRepositoryReadyCard(data.preparationReport)
+    : "";
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';script-src 'nonce-${nonce}'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -167,6 +178,7 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
  <div class="actions">${launch}${recoveryActions}<button class="button" id="review">Show details</button><button class="link" id="cancel">${cancelLabel}</button></div>
  <p class="sub">${data.outcome === "Partial" ? "Claude Code cannot start yet. Choose a recovery action below." : "Nothing has been sent yet."}</p>
 </section>
+${repositoryReadyCard}
 <details class="card advanced" id="whatYuhiDid"><summary>What Yuhi did</summary><div class="inside"><p class="sub">A plain-language summary of preparation before Claude Code starts.</p><div class="advanced-grid" id="workSummary"></div></div></details>
 <details class="card advanced" id="contextPreparation"><summary>Context preparation</summary><div class="inside"><p class="sub">Yuhi creates a local map of inspected documents before Claude Code starts.</p><div class="advanced-grid" id="contextSummary"></div><p class="note">Token counts are estimates only. Actual Claude usage may differ.</p></div></details>
 <details class="card advanced" id="localAiActivity"><summary>Yuhi processing activity</summary><div class="inside"><p class="sub">Measured local preparation activity for this run only. Input content and generated responses are not stored in these metrics.</p><div class="advanced-grid" id="localAiSummary"></div></div></details>
@@ -304,7 +316,7 @@ document.getElementById("advanced").innerHTML=facts([["Preparation result",DATA.
 const noFindings=m.sensitiveFindings===0?"No sensitive findings detected":m.sensitiveFindings+" sensitive findings detected";
 const noWithheld=m.filesExcluded===0&&m.filesKeptLocal===0?"No files were withheld":m.filesExcluded+" excluded · "+m.filesKeptLocal+" kept local";
 document.getElementById("scanner").innerHTML='<p>'+esc(noFindings)+'</p><p>'+esc(noWithheld)+'</p>'+facts([["Files containing findings",String(m.filesWithSensitiveFindings)],["Files containing masked values",String(m.filesWithMaskedValues)],["Unresolved high-risk findings",String(m.unresolvedHighRiskFindings)]]);
-const send=t=>vscode.postMessage({type:t});document.querySelectorAll(".launchAction").forEach(b=>b.addEventListener("click",()=>send("launch")));document.querySelectorAll(".openClaudeHere").forEach(b=>b.addEventListener("click",()=>send("openClaudeHere")));document.querySelectorAll("#cancel,#cancelSticky").forEach(b=>b.addEventListener("click",()=>send("cancel")));document.getElementById("review").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});document.getElementById("backToFiles").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});
+const send=t=>vscode.postMessage({type:t});["copyPublicReport","exportPublicReport"].forEach(id=>{const b=document.getElementById(id);if(b)b.addEventListener("click",()=>send(id))});document.querySelectorAll(".launchAction").forEach(b=>b.addEventListener("click",()=>send("launch")));document.querySelectorAll(".openClaudeHere").forEach(b=>b.addEventListener("click",()=>send("openClaudeHere")));document.querySelectorAll("#cancel,#cancelSticky").forEach(b=>b.addEventListener("click",()=>send("cancel")));document.getElementById("review").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});document.getElementById("backToFiles").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});
 const showWithheldFiles=()=>{const s=document.getElementById("filter");if(s)s.value="withheld";render("withheld");const d=document.getElementById("fileDecisions");if(d){d.open=true;d.scrollIntoView()}};const swBtn=document.getElementById("showWithheld");if(swBtn){swBtn.addEventListener("click",showWithheldFiles);swBtn.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();showWithheldFiles()}})}
 document.getElementById("retryProtection")?.addEventListener("click",()=>send("retryProtection"));
 </script></body></html>`;
