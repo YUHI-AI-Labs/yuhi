@@ -828,6 +828,15 @@ async function prepareWorkspaceForLaunch(
             ...(compress ? { compress: true } : {}),
             ...(compress && tokenBudget !== null ? { tokenBudget } : {}),
             deferDocumentInspection: true,
+            // v0.3.3 — the foreground (launch) prepare makes ZERO local-model
+            // summarize calls: Ollama never runs on the critical path, so a slow or
+            // stalled model can't delay Yuhi Mode. Files that would need local
+            // summarization are kept LOCAL (reason: local-summary-deferred) and NOT
+            // shared — they are not auto-processed later in this version. Connecting
+            // these to a background worker is the first task of v0.3.4. The per-file
+            // timeout / budget / circuit-breaker in core are the reliability machinery
+            // that background work will reuse.
+            deferLocalSummary: true,
             signal: controller.signal,
             onProgress: (msg) => {
               currentPhase = msg;
@@ -2587,7 +2596,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (state.kind === "recovery-required") enterRecovery(state.reason, state.message);
     });
   };
-  activityProvider = new YuhiActivityProvider(context.workspaceState, reconcileOnReveal);
+  activityProvider = new YuhiActivityProvider(
+    context.workspaceState,
+    typeof context.extension.packageJSON?.version === "string"
+      ? context.extension.packageJSON.version
+      : "",
+    reconcileOnReveal,
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(YUHI_ACTIVITY_VIEW_ID, activityProvider, {
       webviewOptions: { retainContextWhenHidden: true },

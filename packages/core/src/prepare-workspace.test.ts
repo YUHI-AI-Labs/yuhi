@@ -50,6 +50,21 @@ function put(rel: string, content: string) {
   writeFileSync(abs, content);
 }
 
+/** Concatenated text of every file actually delivered under a prepared workspace,
+ *  for scanning that no known raw secret/PII value survives anywhere. */
+function deliveredText(outDir: string): string {
+  const parts: string[] = [];
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else { try { parts.push(readFileSync(p, "utf8")); } catch { /* binary — ignore */ } }
+    }
+  };
+  walk(outDir);
+  return parts.join("\n");
+}
+
 describe("preparation performance defaults", () => {
   it("uses conservative adaptive local-processing parallelism", () => {
     const gib = 1024 ** 3;
@@ -1495,3 +1510,365 @@ function readFileNames(root: string): string[] {
   walk(root);
   return output;
 }
+
+// ===========================================================================
+// v0.3.3 LOCAL-MODEL RELIABILITY: per-file timeout + circuit breaker + budget.
+// All timeouts are driven by an INJECTABLE fake clock — no real sleeps anywhere.
+// ===========================================================================
+
+/** Injectable clock/timer whose timers fire ONLY when the test explicitly asks. */
+function makeFakeScheduler() {
+  let current = 0;
+  let seq = 0;
+  const timers = new Map<number, { cb: () => void; at: number }>();
+  return {
+    now: () => current,
+    setTimer(cb: () => void, ms: number): () => void {
+      const id = seq++;
+      timers.set(id, { cb, at: current + ms });
+      return () => {
+        timers.delete(id);
+      };
+    },
+    /** Advance virtual time (used to exercise the cumulative time budget). */
+    advance(ms: number) {
+      current += ms;
+    },
+    /** Fire every timer whose deadline is due at the current virtual time. */
+    fireDue() {
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= current) {
+          timers.delete(id);
+          timer.cb();
+        }
+      }
+    },
+    pendingCount() {
+      return timers.size;
+    },
+  };
+}
+
+type FakeScheduler = ReturnType<typeof makeFakeScheduler>;
+
+/** Await a prepare that may be blocked on a hung provider: between event-loop turns,
+ *  fire any pending per-file timeout timer so the loop advances. Real hangs (a
+ *  never-resolving provider) resolve via the fired timer; fast calls cancel their own
+ *  timers before we ever fire, so they are never falsely timed out. */
+async function driveToCompletion<T>(promise: Promise<T>, scheduler: FakeScheduler): Promise<T> {
+  let settled = false;
+  const tracked = promise.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (error) => {
+      settled = true;
+      throw error;
+    },
+  );
+  for (let i = 0; i < 200_000 && !settled; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    if (settled) break;
+    if (scheduler.pendingCount() > 0) {
+      scheduler.advance(1_000_000);
+      scheduler.fireDue();
+    }
+  }
+  return tracked;
+}
+
+/** A provider whose `generate()` NEVER resolves (a wedged Ollama). Counts calls so a
+ *  test can prove the timeout wrap is on the REAL provider call path. */
+function hangingProvider(counter: { calls: number }): LocalModelProvider {
+  return {
+    id: "hang",
+    endpoint: "",
+    defaultModel: "m",
+    async health() {
+      return { ok: true, detail: "", endpoint: "" };
+    },
+    async listModels() {
+      return ["m"];
+    },
+    generate() {
+      counter.calls += 1;
+      return new Promise<string>(() => {});
+    },
+  };
+}
+
+/** A provider that resolves instantly (a merely-slow model, modelled by call count). */
+function countingProvider(
+  counter: { calls: number },
+  onCall?: () => void,
+): LocalModelProvider {
+  return {
+    id: "count",
+    endpoint: "",
+    defaultModel: "m",
+    async health() {
+      return { ok: true, detail: "", endpoint: "" };
+    },
+    async listModels() {
+      return ["m"];
+    },
+    async generate() {
+      counter.calls += 1;
+      onCall?.();
+      return "Summary: clean synthetic summary.";
+    },
+  };
+}
+
+/** yuhi.yaml that routes every *.md file through the local-model summarize pipeline,
+ *  so these tests actually exercise the inline `summarize-local` call. */
+const SUMMARIZE_MD_CONFIG = [
+  'version: "1"',
+  "defaults:",
+  "  action: allow",
+  "rules:",
+  "  - name: summarize-markdown",
+  "    match:",
+  "      paths:",
+  '        - "**/*.md"',
+  "    action: prepare-locally",
+  "    processors: [summarize-local, safety-check]",
+  '    reason: "route markdown through local summarization for reliability tests"',
+  "",
+].join("\n");
+
+/** SHA-256 of the whole source tree (paths + bytes) to prove SOURCE IS NEVER MODIFIED. */
+function sourceTreeHash(root: string): string {
+  const hash = createHash("sha256");
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
+      const p = path.join(d, entry.name);
+      const rel = path.relative(root, p);
+      if (entry.isDirectory()) {
+        hash.update(`D:${rel}\n`);
+        walk(p);
+      } else {
+        hash.update(`F:${rel}\n`);
+        hash.update(readFileSync(p));
+      }
+    }
+  };
+  walk(root);
+  return hash.digest("hex");
+}
+
+function keptLocalCount(files: { omitted?: boolean; action: string }[]): number {
+  return files.filter((f) => f.omitted && f.action === "local-only").length;
+}
+
+describe("local-model reliability: timeout, circuit breaker, and budget", () => {
+  it("keeps a file local (never delivered) when its summarize-local call never resolves, and COMPLETES", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    put("notes.md", `# Notes\n${"synthetic project prose. ".repeat(30)}`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await driveToCompletion(
+      prepareWorkspace(dir, {
+        provider: hangingProvider(counter),
+        deadlineScheduler: scheduler,
+        localModelTimeoutMs: 5,
+      }),
+      scheduler,
+    );
+    // The provider WAS called (proves the timeout wraps the real call path) — once.
+    expect(counter.calls).toBe(1);
+    const entry = report.files.find(
+      (f) => f.relpath === "notes.md" || f.originalRelpath === "notes.md",
+    );
+    expect(entry?.omitted).toBe(true);
+    expect(entry?.action).toBe("local-only");
+    // Never written to the delivered workspace.
+    expect(existsSync(path.join(report.outDir, "notes.md"))).toBe(false);
+    // Success-with-warnings: launch still allowed, degradation surfaced.
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(report.degraded?.localModelDisabled).toBe(true);
+    expect(report.degraded?.filesKeptLocalAfterTimeout).toBeGreaterThanOrEqual(1);
+    expect(report.degraded?.circuitBreakerReason).toBe("per-file-timeout");
+    expect(report.degraded?.warnings.some((w) => w.reason === "local-summary-timeout")).toBe(true);
+  });
+
+  it("after the first timeout the circuit opens: subsequent files are kept-local with ZERO further provider calls", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 12; i += 1) {
+      put(`docs/f${String(i).padStart(3, "0")}.md`, `# Doc ${i}\nshort synthetic prose ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await driveToCompletion(
+      prepareWorkspace(dir, {
+        provider: hangingProvider(counter),
+        deadlineScheduler: scheduler,
+        localModelTimeoutMs: 5,
+      }),
+      scheduler,
+    );
+    expect(counter.calls).toBe(1); // one hang, then circuit open — no more calls
+    expect(keptLocalCount(report.files)).toBe(12); // every summarize target kept local
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("opens the circuit on the CALL-COUNT budget (slow-but-not-hung model), then stops calling", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 40; i += 1) {
+      put(`docs/n${String(i).padStart(3, "0")}.md`, `# Note ${i}\nshort synthetic prose ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: countingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelMaxCalls: 10,
+    });
+    expect(counter.calls).toBe(10); // capped at the call budget
+    expect(report.degraded?.localModelDisabled).toBe(true);
+    expect(report.degraded?.circuitBreakerReason).toBe("call-count-exceeded");
+    expect(keptLocalCount(report.files)).toBeGreaterThanOrEqual(30);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("opens the circuit on the cumulative TIME budget", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 20; i += 1) {
+      put(`docs/t${String(i).padStart(3, "0")}.md`, `# T ${i}\nsynthetic prose ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    // Each call "consumes" 8s of virtual local-model time; the 20s budget trips after 3.
+    const report = await prepareWorkspace(dir, {
+      provider: countingProvider(counter, () => scheduler.advance(8_000)),
+      deadlineScheduler: scheduler,
+      localModelTimeoutMs: 1_000_000, // never trips per-file
+      localModelTotalBudgetMs: 20_000,
+      localModelMaxCalls: 1000, // don't let the call-count cap interfere
+    });
+    expect(counter.calls).toBe(3);
+    expect(report.degraded?.circuitBreakerReason).toBe("time-budget-exceeded");
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("foreground-budget-ZERO (deferLocalSummary): makes ZERO provider calls, all summarize targets kept-local", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 30; i += 1) put(`docs/z${i}.md`, `# Z ${i}\nprose\n`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: hangingProvider(counter), // would hang if ever called
+      deadlineScheduler: scheduler,
+      deferLocalSummary: true,
+    });
+    expect(counter.calls).toBe(0);
+    expect(report.degraded?.circuitBreakerReason).toBe("deferred");
+    expect(keptLocalCount(report.files)).toBe(30);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("localModelMaxCalls:0 is equivalent to deferred (zero provider calls)", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 5; i += 1) put(`docs/q${i}.md`, `# Q ${i}\nprose\n`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: hangingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelMaxCalls: 0,
+    });
+    expect(counter.calls).toBe(0);
+    expect(keptLocalCount(report.files)).toBe(5);
+  });
+
+  it("a global Cancel during an in-flight summarize call still rejects with AbortError", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    put("notes.md", `# Notes\n${"prose ".repeat(30)}`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const ac = new AbortController();
+    const promise = prepareWorkspace(dir, {
+      provider: hangingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelTimeoutMs: 1_000_000, // per-file timeout will not trip first
+      signal: ac.signal,
+    });
+    let settled = false;
+    void promise.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (let i = 0; i < 20_000 && counter.calls === 0 && !settled; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(counter.calls).toBe(1); // the call is genuinely in flight
+    ac.abort();
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it(
+    "SCALE: a 5,000+ file summarize repo with a HUNG model completes in bounded time; source + secrets untouched",
+    async () => {
+      put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+      const total = 5_200;
+      for (let i = 0; i < total; i += 1) {
+        put(`src/f${String(i).padStart(5, "0")}.md`, `# File ${i}\nsynthetic body ${i}\n`);
+      }
+      // One summarize file carries a distinctive secret — it must never be delivered.
+      const secret = "SUPERSECRETVALUE_UNIQUE_1a2b3c4d5e";
+      put("src/f00001.md", `# secret file\nSECRET_TOKEN=${secret}\n`);
+      const beforeHash = sourceTreeHash(dir);
+
+      const counter = { calls: 0 };
+      const scheduler = makeFakeScheduler();
+      const startedAt = Date.now();
+      const report = await driveToCompletion(
+        prepareWorkspace(dir, {
+          provider: hangingProvider(counter),
+          deadlineScheduler: scheduler,
+          localModelTimeoutMs: 3,
+        }),
+        scheduler,
+      );
+      const elapsedMs = Date.now() - startedAt;
+
+      // Terminates fast (real reproduction would run ~30 min): circuit opens after the
+      // FIRST hang, so the provider is called exactly ONCE for 5,200 summarize files.
+      expect(counter.calls).toBe(1);
+      expect(report.degraded?.localModelDisabled).toBe(true);
+      // Every summarize target kept-local (never delivered un-inspected).
+      expect(keptLocalCount(report.files)).toBe(total);
+      const delivered = deliveredText(report.outDir);
+      expect(delivered).not.toContain(secret); // secrets exposed = 0
+      expect(delivered).not.toContain("SECRET_TOKEN=");
+      // SOURCE IS NEVER MODIFIED.
+      expect(sourceTreeHash(dir)).toBe(beforeHash);
+      // Success-with-warnings; launch still allowed.
+      expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+      // Bounded: generous ceiling — the point is it finishes, not 30 minutes.
+      expect(elapsedMs).toBeLessThan(90_000);
+    },
+    120_000,
+  );
+
+  it("SCALE: a 5,000+ file repo with a SLOW model stops at the call budget and finishes fast", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    const total = 5_100;
+    for (let i = 0; i < total; i += 1) {
+      put(`src/g${String(i).padStart(5, "0")}.md`, `# G ${i}\nbody ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: countingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelMaxCalls: 25,
+    });
+    expect(counter.calls).toBe(25); // provider NOT called for the remaining ~5,075 files
+    expect(report.degraded?.circuitBreakerReason).toBe("call-count-exceeded");
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  }, 120_000);
+});

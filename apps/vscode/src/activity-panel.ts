@@ -15,9 +15,25 @@
 /** Lifecycle of the background document job, shown verbatim while it runs. */
 export type BackgroundLifecycle = "queued" | "inspecting" | "summarizing" | "verifying";
 
+/** The three real @yuhi/core Safety Mode presets (mirrors the `yuhi.safetyMode` enum). */
+export type SafetyModeValue = "balanced" | "strict" | "maximum-privacy";
+
+/**
+ * The prepare-time settings shown BEFORE the first prepare. These are the current
+ * values of the `yuhi.safetyMode` / `yuhi.compress` / `yuhi.tokenBudget` settings —
+ * editing a control persists the SAME setting the prepare path already reads, so the
+ * first Prepare uses the chosen values with no separate plumbing. `tokenBudget` is 0
+ * for "no target".
+ */
+export interface PrepareSettings {
+  safetyMode: SafetyModeValue;
+  compress: boolean;
+  tokenBudget: number;
+}
+
 export type ActivityPanelData =
   | { phase: "no-workspace" }
-  | { phase: "not-prepared" }
+  | { phase: "not-prepared"; settings?: PrepareSettings }
   | {
       /** The window IS the Prepared Workspace — Claude Code (extension) is working here. */
       phase: "yuhi-mode";
@@ -102,6 +118,46 @@ function button(id: string, label: string, opts: { primary?: boolean; disabled?:
   return `<button type="button" id="${id}" class="${cls}"${dis}>${esc(label)}</button>`;
 }
 
+/** Human labels for the three Safety Mode presets (values mirror `yuhi.safetyMode`). */
+const SAFETY_MODE_CHOICES: ReadonlyArray<readonly [SafetyModeValue, string]> = [
+  ["balanced", "Balanced"],
+  ["strict", "Strict"],
+  ["maximum-privacy", "Maximum Privacy"],
+];
+
+/**
+ * The pre-Prepare controls shown in the `not-prepared` state so Safety Mode /
+ * Compression / Token Budget can be chosen BEFORE the first prepare. Each control
+ * persists the same `yuhi.*` setting the prepare path reads; there is no dirty /
+ * Re-prepare affordance here (nothing has been prepared yet). Token Budget is enabled
+ * only while Compression is on.
+ */
+function prepareControls(s: PrepareSettings): string {
+  const options = SAFETY_MODE_CHOICES.map(
+    ([value, label]) =>
+      `<option value="${value}"${value === s.safetyMode ? " selected" : ""}>${esc(label)}</option>`,
+  ).join("");
+  const budgetValue = s.tokenBudget > 0 ? String(s.tokenBudget) : "";
+  return (
+    `<div class="cfg">` +
+    `<div class="ctl">` +
+    `<label for="cfgSafety">Safety Mode</label>` +
+    `<select id="cfgSafety" class="sel">${options}</select>` +
+    `</div>` +
+    `<div class="ctl">` +
+    `<label for="cfgCompress">Context Compression</label>` +
+    `<label class="tog"><input type="checkbox" id="cfgCompress"${s.compress ? " checked" : ""}>` +
+    `<span>${s.compress ? "On" : "Off"}</span></label>` +
+    `</div>` +
+    `<div class="ctl">` +
+    `<label for="cfgBudget">Token Budget</label>` +
+    `<input type="number" id="cfgBudget" class="num" min="0" step="1000" placeholder="No target"` +
+    ` value="${esc(budgetValue)}"${s.compress ? "" : " disabled"}>` +
+    `</div>` +
+    `</div>`
+  );
+}
+
 /** Render the panel body for a given state. Pure — no VS Code, no DOM globals. */
 function renderBody(data: ActivityPanelData): { badge: string; badgeClass: string; body: string } {
   switch (data.phase) {
@@ -118,6 +174,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badgeClass: "idle",
         body:
           `<p class="empty">Prepare this workspace to generate local context.</p>` +
+          prepareControls(data.settings ?? { safetyMode: "balanced", compress: false, tokenBudget: 0 }) +
           button("prepare", "Prepare with Yuhi", { primary: true }),
       };
     case "yuhi-mode": {
@@ -270,8 +327,10 @@ export function renderActivityPanel(
   data: ActivityPanelData,
   cspSource: string,
   nonce: string,
+  version?: string,
 ): string {
   const { badge, badgeClass, body } = renderBody(data);
+  const versionLine = version ? `<div class="ver">Yuhi v${esc(version)}</div>` : "";
   return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -382,12 +441,37 @@ export function renderActivityPanel(
   @keyframes slide { 0% { margin-left: -42%; } 100% { margin-left: 100%; } }
   .prep-meta { font-size: 12px; color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
   .prep-note { margin-top: 7px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  /* Pre-Prepare settings (Safety Mode / Compression / Token Budget). */
+  .cfg { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 12px; }
+  .ctl { display: flex; flex-direction: column; gap: 4px; }
+  .ctl > label:first-child {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+  }
+  .sel, .num {
+    width: 100%; padding: 4px 6px; font-family: inherit; font-size: 12.5px;
+    color: var(--vscode-input-foreground, var(--vscode-foreground));
+    background: var(--vscode-input-background, var(--vscode-editorWidget-background));
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,.35)));
+    border-radius: 4px;
+  }
+  .num:disabled { opacity: .5; }
+  .sel:focus-visible, .num:focus-visible, .tog input:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px;
+  }
+  .tog { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+  .tog input { accent-color: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); }
+  .ver {
+    margin-top: 8px; text-align: right; font-size: 10px; letter-spacing: .04em;
+    color: var(--vscode-descriptionForeground); opacity: .8;
+  }
 </style>
 </head>
 <body>
   <div class="panel" role="region" aria-label="Yuhi preparation status">
     <div class="ph"><span class="brand">YUHI · Preparation</span><span class="badge ${badgeClass}">${esc(badge)}</span></div>
     ${body}
+    ${versionLine}
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -395,6 +479,13 @@ export function renderActivityPanel(
       const el = document.getElementById(id);
       if (el && !el.disabled) el.addEventListener("click", () => vscode.postMessage({ type: id }));
     }
+    // Pre-Prepare settings — persist the same yuhi.* config the prepare path reads.
+    const safety = document.getElementById("cfgSafety");
+    if (safety) safety.addEventListener("change", () => vscode.postMessage({ type: "setSafetyMode", value: safety.value }));
+    const compress = document.getElementById("cfgCompress");
+    if (compress) compress.addEventListener("change", () => vscode.postMessage({ type: "setCompress", value: compress.checked }));
+    const budget = document.getElementById("cfgBudget");
+    if (budget) budget.addEventListener("change", () => vscode.postMessage({ type: "setTokenBudget", value: Number(budget.value) || 0 }));
   </script>
 </body></html>`;
 }

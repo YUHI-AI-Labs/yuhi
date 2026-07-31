@@ -8,6 +8,18 @@ export const OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES = 128 * 1024 * 1024;
 
 export type DocumentSourceType = "pdf" | "docx" | "pptx" | "docm" | "pptm";
 
+/**
+ * Stable, machine-readable reason a document was kept local instead of shared.
+ * Distinct from the human-readable `reason` line in the placeholder markdown, and
+ * from the delivery state (`local-only`): this says WHY, not WHAT-happened-to-it.
+ */
+export type DocumentReasonCode =
+  | "document-extraction-failed"
+  | "document-unsupported"
+  | "document-encrypted"
+  | "document-empty"
+  | "document-oversize";
+
 export interface DocumentArtifact {
   /** What was actually written to the Prepared Workspace. */
   kind: "companion" | "placeholder";
@@ -15,6 +27,8 @@ export interface DocumentArtifact {
   sourceType: DocumentSourceType;
   extractionMethod: string;
   extractionStatus: "extracted" | "unsupported" | "failed" | "skipped-oversize";
+  /** Set only on placeholders (kept-local documents); absent when extracted. */
+  reasonCode?: DocumentReasonCode;
   redactionCount: number;
   residualNameRisk: boolean;
   macroDetected: boolean;
@@ -33,15 +47,23 @@ export type PdfTextExtractor = (
   absPath: string,
 ) => Promise<{ text: string; method: "pdf-text" | "ocr" | "none"; pageCount?: number }>;
 
-function mbLabel(bytes: number): string {
+/**
+ * Human-readable original size. Reports bytes/KB so a small file is never rounded
+ * to a misleading "0.0 MB"; only genuinely-large files are shown in MB.
+ */
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "unknown";
+  if (bytes < 1000) return `${bytes} bytes`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1000)} KB`;
   const mb = bytes / 1_000_000;
-  return mb >= 10 ? String(Math.round(mb)) : mb.toFixed(1);
+  return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
 }
 
 /** Base for a document that is intentionally NOT shared with the agent. */
 function placeholder(
   sourceType: DocumentSourceType,
   reason: string,
+  reasonCode: DocumentReasonCode,
   sizeBytes: number,
   extra: Partial<DocumentArtifact> = {},
 ): DocumentArtifact {
@@ -49,21 +71,24 @@ function placeholder(
   const markdown = [
     `# ${label} kept local`,
     "",
-    `Yuhi did not share the original ${label} with the AI agent.`,
+    `Yuhi did not share the original ${label} file with the AI agent.`,
     "",
-    `- Source type: ${sourceType}`,
+    `- Source type: ${label}`,
     "- Inspection status: unverified",
     `- Reason: ${reason}`,
     "- Original file shared with agent: no",
-    `- Original size: ${mbLabel(sizeBytes)} MB`,
+    `- Original size: ${formatSize(sizeBytes)}`,
     "",
-    "Ask the user for a summary or a smaller/exported version if this document is needed.",
+    "The document may contain information relevant to the task, but its contents were not verified or exposed.",
+    "",
+    "Ask the user for a summary, plain-text export, PDF export, or smaller version if the document is required.",
     "",
   ].join("\n");
   return {
     kind: "placeholder",
     markdown,
     sourceType,
+    reasonCode,
     extractionMethod: "none",
     extractionStatus: extra.extractionStatus ?? "failed",
     redactionCount: 0,
@@ -125,7 +150,7 @@ export async function buildDocumentArtifact(opts: {
   const limitLabel = isPdf ? "64 MB PDF inspection limit" : "128 MB document inspection limit";
 
   if (sizeBytes > limit) {
-    return placeholder(sourceType, `${sourceType.toUpperCase()} exceeds the ${limitLabel}`, sizeBytes, {
+    return placeholder(sourceType, `Over the ${limitLabel}; not inspected`, "document-oversize", sizeBytes, {
       extractionStatus: "skipped-oversize",
       warnings: [`Over the ${limitLabel}; not inspected.`],
     });
@@ -136,7 +161,9 @@ export async function buildDocumentArtifact(opts: {
       const buf = await opts.readBuffer();
       const ex = await extractDocx(buf);
       if (ex.status !== "extracted") {
-        return placeholder(sourceType, `Could not extract ${sourceType.toUpperCase()} (${ex.status})`, sizeBytes, {
+        const { reason, code } = extractionFailure(sourceType, ex.status);
+        return placeholder(sourceType, reason, code, sizeBytes, {
+          extractionStatus: ex.status,
           macroDetected: ex.macroDetected,
           warnings: ex.warnings,
         });
@@ -174,7 +201,9 @@ export async function buildDocumentArtifact(opts: {
       const buf = await opts.readBuffer();
       const ex = await extractPptx(buf);
       if (ex.status !== "extracted") {
-        return placeholder(sourceType, `Could not extract ${sourceType.toUpperCase()} (${ex.status})`, sizeBytes, {
+        const { reason, code } = extractionFailure(sourceType, ex.status);
+        return placeholder(sourceType, reason, code, sizeBytes, {
+          extractionStatus: ex.status,
           macroDetected: ex.macroDetected,
           warnings: ex.warnings,
         });
@@ -215,13 +244,13 @@ export async function buildDocumentArtifact(opts: {
 
     // PDF
     if (!opts.extractPdfText) {
-      return placeholder("pdf", "Local PDF text extraction is unavailable (pdftotext not found)", sizeBytes, {
+      return placeholder("pdf", "Local PDF text extraction is unavailable (pdftotext not found)", "document-unsupported", sizeBytes, {
         extractionStatus: "unsupported",
       });
     }
     const { text, method, pageCount } = await opts.extractPdfText(opts.absPath);
     if (method === "none" || text.trim().length === 0) {
-      return placeholder("pdf", "Could not extract text from the PDF (empty, encrypted, or image-only with no OCR)", sizeBytes, {
+      return placeholder("pdf", "No extractable text (empty, encrypted, or image-only with no OCR)", "document-empty", sizeBytes, {
         extractionStatus: "failed",
       });
     }
@@ -245,8 +274,23 @@ export async function buildDocumentArtifact(opts: {
   } catch (error) {
     return placeholder(
       sourceType,
-      `Extraction failed (${error instanceof Error ? error.name : "error"})`,
+      `Text extraction failed (${error instanceof Error ? error.name : "error"})`,
+      "document-extraction-failed",
       sizeBytes,
     );
   }
+}
+
+/** Map an extractor status to a human reason + stable machine reason code. */
+function extractionFailure(
+  sourceType: DocumentSourceType,
+  status: "unsupported" | "failed",
+): { reason: string; code: DocumentReasonCode } {
+  if (status === "unsupported") {
+    return {
+      reason: `Unsupported or malformed ${sourceType.toUpperCase()} (not a readable Office document)`,
+      code: "document-unsupported",
+    };
+  }
+  return { reason: "Text extraction failed", code: "document-extraction-failed" };
 }

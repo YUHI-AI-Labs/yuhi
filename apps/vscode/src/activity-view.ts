@@ -6,6 +6,8 @@ import {
   renderActivityPanel,
   type ActivityPanelData,
   type BackgroundLifecycle,
+  type PrepareSettings,
+  type SafetyModeValue,
 } from "./activity-panel.js";
 
 export const YUHI_ACTIVITY_VIEW_ID = "yuhi.workspace";
@@ -28,11 +30,33 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private data: ActivityPanelData;
 
+  private readonly disposables: vscode.Disposable[] = [];
+
   constructor(
     private readonly memento: vscode.Memento,
+    private readonly version: string,
     private readonly onReveal?: () => void,
   ) {
     this.data = memento.get<ActivityPanelData>(STATE_KEY) ?? { phase: "not-prepared" };
+    // Reflect Settings edits (yuhi.safetyMode / compress / tokenBudget) into the
+    // pre-Prepare controls so the panel and VS Code Settings stay in sync.
+    this.disposables.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (
+          this.data.phase === "not-prepared" &&
+          (e.affectsConfiguration("yuhi.safetyMode") ||
+            e.affectsConfiguration("yuhi.compress") ||
+            e.affectsConfiguration("yuhi.tokenBudget"))
+        ) {
+          this.setNotPrepared();
+        }
+      }),
+    );
+  }
+
+  dispose(): void {
+    for (const d of this.disposables) d.dispose();
+    this.disposables.length = 0;
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -48,7 +72,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     this.render(); // restore persisted state after reload
   }
 
-  private onMessage(message: { type?: string }): void {
+  private onMessage(message: { type?: string; value?: unknown }): void {
     switch (message?.type) {
       case "prepare":
         void vscode.commands.executeCommand("yuhi.prepareAndStartClaude");
@@ -63,7 +87,33 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       case "details":
         void vscode.commands.executeCommand("yuhi.reviewPrepared");
         break;
+      // Pre-Prepare settings. Persist the SAME yuhi.* config the prepare path reads
+      // (no separate plumbing), then re-render so the panel reflects the new value.
+      case "setSafetyMode": {
+        const v = message.value;
+        if (v === "balanced" || v === "strict" || v === "maximum-privacy") {
+          void this.updateConfig("safetyMode", v);
+        }
+        break;
+      }
+      case "setCompress":
+        void this.updateConfig("compress", message.value === true);
+        break;
+      case "setTokenBudget": {
+        const n = typeof message.value === "number" ? message.value : Number(message.value);
+        void this.updateConfig("tokenBudget", Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
+        break;
+      }
     }
+  }
+
+  private async updateConfig(key: string, value: unknown): Promise<void> {
+    await vscode.workspace
+      .getConfiguration("yuhi")
+      .update(key, value, vscode.ConfigurationTarget.Workspace);
+    // The onDidChangeConfiguration listener re-renders; call directly too so the
+    // panel updates even when the effective value did not change target scope.
+    if (this.data.phase === "not-prepared") this.setNotPrepared();
   }
 
   private set(data: ActivityPanelData): void {
@@ -74,7 +124,12 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
 
   private render(): void {
     if (!this.view) return;
-    this.view.webview.html = renderActivityPanel(this.data, this.view.webview.cspSource, nonce());
+    this.view.webview.html = renderActivityPanel(
+      this.data,
+      this.view.webview.cspSource,
+      nonce(),
+      this.version,
+    );
   }
 
   // ---- public state transitions (called from extension.ts) ----
@@ -84,7 +139,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   }
 
   setNotPrepared(): void {
-    this.set({ phase: "not-prepared" });
+    this.set({ phase: "not-prepared", settings: readPrepareSettings() });
   }
 
   /** Initial BLOCKING preparation is running; Start Claude Code stays disabled. */
@@ -209,6 +264,18 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   setAgentChangesDetected(): void {
     /* no panel change; handled by the Review flow */
   }
+}
+
+/** Read the current pre-Prepare settings from the `yuhi.*` configuration. */
+function readPrepareSettings(): PrepareSettings {
+  const cfg = vscode.workspace.getConfiguration("yuhi");
+  const rawMode = cfg.get<string>("safetyMode");
+  const safetyMode: SafetyModeValue =
+    rawMode === "strict" || rawMode === "maximum-privacy" ? rawMode : "balanced";
+  const compress = cfg.get<boolean>("compress") === true;
+  const rawBudget = cfg.get<number>("tokenBudget");
+  const tokenBudget = typeof rawBudget === "number" && rawBudget > 0 ? Math.floor(rawBudget) : 0;
+  return { safetyMode, compress, tokenBudget };
 }
 
 function nonce(): string {

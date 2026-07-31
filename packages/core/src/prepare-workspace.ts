@@ -51,6 +51,123 @@ import { runLocalPreparation } from "./route-executor.js";
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
 
 /**
+ * Default hard per-file wall-clock cap on the inline local-model (`summarize-local` /
+ * Ollama) call. A stalled local model must NEVER trap the "Preparing safe copies"
+ * loop: after this many ms the in-flight request is aborted and the file is routed
+ * to kept-local (never delivered un-inspected) so Yuhi Mode still launches.
+ */
+export const DEFAULT_LOCAL_MODEL_TIMEOUT_MS = 10_000;
+
+/**
+ * Injectable clock + timer so the per-file local-model timeout can be driven by a
+ * fake clock in tests (no real sleeps). The default uses the system clock and an
+ * unref'd `setTimeout` (it never keeps the process alive on its own).
+ */
+export interface DeadlineScheduler {
+  /** Monotonic-ish wall clock in ms. */
+  now(): number;
+  /** Schedule `callback` after `ms`; returns a function that cancels it. */
+  setTimer(callback: () => void, ms: number): () => void;
+}
+
+/** Real-time scheduler used in production. */
+export const systemDeadlineScheduler: DeadlineScheduler = {
+  now: () => Date.now(),
+  setTimer: (callback, ms) => {
+    const timer = setTimeout(callback, ms);
+    (timer as { unref?: () => void }).unref?.();
+    return () => clearTimeout(timer);
+  },
+};
+
+/**
+ * Stable, privacy-safe warning vocabulary for the local-model reliability fix. Each
+ * record carries the repo-relative path only (never an absolute path or any secret /
+ * source content) and lives in the manifest / degraded-completion surface — NOT the
+ * public aggregate report.
+ */
+export interface PreparationWarning {
+  relpath: string;
+  stage: "summarize-local";
+  reason:
+    | "local-summary-timeout"
+    | "local-model-unavailable"
+    | "local-model-disabled"
+    | "local-summary-deferred";
+  /** "kept-local" — the FILE was withheld; "summary-skipped" — an already-delivered
+   *  file's optional context summary was skipped (the file itself stays delivered). */
+  action: "kept-local" | "summary-skipped";
+  /** Wall-clock ms the timed-out call consumed before it was aborted. */
+  elapsedMs?: number;
+}
+
+/** Result of a time-bounded local-model call. `elapsedMs` (measured on the injected
+ *  clock) feeds the cumulative run budget for BOTH outcomes. */
+type TimedLocalModelResult<T> =
+  | { status: "ok"; value: T; elapsedMs: number }
+  | { status: "timeout"; elapsedMs: number };
+
+/**
+ * Run a single inline local-model call under a HARD per-file timeout.
+ *
+ * A fresh `AbortController` is created for this call; when the timeout fires the
+ * controller is aborted (so a signal-aware provider cancels its request) and the
+ * result resolves as `{ status: "timeout" }` — the loop continues, and if the
+ * provider ignores the abort its late result is simply ignored (never awaited, never
+ * piled up). The GLOBAL `parentSignal` (user Cancel) still rejects with `AbortError`
+ * exactly as before, so intentional cancellation stays fatal while a per-file timeout
+ * does not. Only one such call is ever in flight at a time (the loop is sequential).
+ */
+async function runLocalModelCall<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  scheduler: DeadlineScheduler,
+  parentSignal: AbortSignal | undefined,
+): Promise<TimedLocalModelResult<T>> {
+  if (parentSignal?.aborted) throw new DOMException("prepareWorkspace aborted", "AbortError");
+  const controller = new AbortController();
+  const start = scheduler.now();
+  let cancelTimer: () => void = () => {};
+  let onParentAbort: (() => void) | undefined;
+  const detach = (): void => {
+    cancelTimer();
+    if (onParentAbort && parentSignal) parentSignal.removeEventListener("abort", onParentAbort);
+  };
+  try {
+    return await new Promise<TimedLocalModelResult<T>>((resolve, reject) => {
+      let settled = false;
+      cancelTimer = scheduler.setTimer(() => {
+        if (settled) return;
+        settled = true;
+        controller.abort(); // cancel the wedged provider request (best-effort)
+        resolve({ status: "timeout", elapsedMs: Math.max(0, scheduler.now() - start) });
+      }, ms);
+      onParentAbort = () => {
+        if (settled) return;
+        settled = true;
+        controller.abort();
+        reject(new DOMException("prepareWorkspace aborted", "AbortError"));
+      };
+      parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+      work(controller.signal).then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          resolve({ status: "ok", value, elapsedMs: Math.max(0, scheduler.now() - start) });
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        },
+      );
+    });
+  } finally {
+    detach();
+  }
+}
+
+/**
  * Per-format inspection limits (isolated constants — easy to make configurable).
  * There is deliberately NO single all-format 2 MB gate: text and spreadsheets are
  * de-identified regardless of size.
@@ -398,6 +515,26 @@ export interface PrepareReport {
   sourceModified: number;
   /** The resolved effective Safety Mode this run was prepared with. */
   safetyMode: SafetyMode;
+  /**
+   * v0.3.3 local-model reliability: present when the inline `summarize-local` model
+   * timed out or was disabled by the circuit breaker / budget. Lets the CLI / VS Code
+   * reach "Ready … with warnings" instead of hanging in "Preparing…". Public-safe:
+   * warnings carry repo-relative paths only, never absolute paths or content.
+   */
+  degraded?: {
+    localModelDisabled: boolean;
+    /** Files withheld (kept local) because the local model timed out / was disabled. */
+    filesKeptLocalAfterTimeout: number;
+    /** How many summarize-local calls actually hit the per-file timeout. */
+    localModelTimeouts: number;
+    /** Why the circuit opened, when it did. */
+    circuitBreakerReason?:
+      | "per-file-timeout"
+      | "time-budget-exceeded"
+      | "call-count-exceeded"
+      | "deferred";
+    warnings: PreparationWarning[];
+  };
   /** v0.3.3 structure-compression summary; present ONLY when `compress: true`. */
   compression?: CompressionReport;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
@@ -483,7 +620,42 @@ export interface PrepareWorkspaceOptions {
   tokenBudget?: number | null;
   /** Files at/under this many tokens stay full (too small to be worth compressing). */
   compressionThresholdTokens?: number;
+  /**
+   * Hard per-file wall-clock cap (ms) on the inline local-model (`summarize-local` /
+   * Ollama) call. A single stalled call must never trap the loop. Default
+   * `DEFAULT_LOCAL_MODEL_TIMEOUT_MS` (10 000). On exceed, the file is kept local and
+   * the circuit opens (see below).
+   */
+  localModelTimeoutMs?: number;
+  /**
+   * Cumulative local-model wall-time budget (ms) for the WHOLE run. When the local
+   * model is not hung but merely slow across thousands of files, exceeding this cap
+   * opens the circuit so the run still finishes fast. Default 60 000. Measured on
+   * `deadlineScheduler` so it is deterministic in tests.
+   */
+  localModelTotalBudgetMs?: number;
+  /**
+   * Max provider-backed `summarize-local` calls per run. Exceeding it opens the
+   * circuit (belt-and-braces with the time budget). Default 50. `0` opens the circuit
+   * from the START — no provider call is ever made (see `deferLocalSummary`).
+   */
+  localModelMaxCalls?: number;
+  /**
+   * Foreground-budget-zero: when true (or `localModelMaxCalls === 0`) the circuit is
+   * OPEN FROM THE START — every summarize target is immediately kept local with ZERO
+   * provider calls and zero waiting. Used by VS Code's foreground prepare so Yuhi Mode
+   * launches instantly; the local summaries run later in the background. Kept-local
+   * files are never delivered un-inspected.
+   */
+  deferLocalSummary?: boolean;
+  /** Injectable clock + timer for the local-model timeout / budget (tests use a fake
+   *  clock so timeouts fire with no real sleeps). Defaults to the system clock. */
+  deadlineScheduler?: DeadlineScheduler;
 }
+
+/** Defaults for the local-model reliability caps (all overridable via options). */
+export const DEFAULT_LOCAL_MODEL_TOTAL_BUDGET_MS = 60_000;
+export const DEFAULT_LOCAL_MODEL_MAX_CALLS = 50;
 
 export type PreparationCheckpoint = "workspace-created";
 
@@ -909,6 +1081,78 @@ export async function prepareWorkspace(
     1,
     Math.floor(options.localModelParallelism ?? recommendedLocalModelParallelism()),
   );
+  // ===== LOCAL-MODEL RELIABILITY (v0.3.3) =====
+  // Injectable clock + the three caps that keep the inline summarize-local (Ollama)
+  // step from trapping the run — whether it HANGS on one file (per-file timeout) or is
+  // merely SLOW across thousands (cumulative time / call-count budget).
+  const scheduler = options.deadlineScheduler ?? systemDeadlineScheduler;
+  const localModelTimeoutMs = Math.max(
+    1,
+    Math.floor(options.localModelTimeoutMs ?? DEFAULT_LOCAL_MODEL_TIMEOUT_MS),
+  );
+  const localModelTotalBudgetMs = Math.max(
+    1,
+    Math.floor(options.localModelTotalBudgetMs ?? DEFAULT_LOCAL_MODEL_TOTAL_BUDGET_MS),
+  );
+  const localModelMaxCalls = Math.max(
+    0,
+    Math.floor(options.localModelMaxCalls ?? DEFAULT_LOCAL_MODEL_MAX_CALLS),
+  );
+  // Foreground-budget-zero: circuit open from the start, no provider call ever.
+  const deferLocalSummary = options.deferLocalSummary === true || localModelMaxCalls === 0;
+  // Circuit-breaker + budget state (all measured on `scheduler`, so tests are
+  // deterministic). Once `localModelDisabled` is set, NO further provider call is made.
+  let localModelDisabled = deferLocalSummary;
+  let circuitBreakerReason:
+    | "per-file-timeout"
+    | "time-budget-exceeded"
+    | "call-count-exceeded"
+    | "deferred"
+    | undefined = deferLocalSummary ? "deferred" : undefined;
+  let localModelBudgetSpentMs = 0;
+  let localModelCallsMade = 0;
+  let filesKeptLocalAfterTimeout = 0;
+  const degradedWarnings: PreparationWarning[] = [];
+  const recordLocalModelWarning = (
+    relpath: string,
+    reason: PreparationWarning["reason"],
+    action: PreparationWarning["action"],
+    elapsedMs?: number,
+  ): void => {
+    degradedWarnings.push({
+      relpath,
+      stage: "summarize-local",
+      reason,
+      action,
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+    });
+  };
+  /**
+   * Should the local model be skipped for THIS summarize target? Opens the circuit
+   * (once) when the cumulative time budget or call-count cap is already exceeded, so
+   * every remaining call is skipped with zero further provider work. Returns a reason
+   * when the model must be skipped; `undefined` when a call may proceed.
+   */
+  const localModelGateClosed = (): boolean => {
+    if (localModelDisabled) return true;
+    if (localModelCallsMade >= localModelMaxCalls) {
+      localModelDisabled = true;
+      circuitBreakerReason ??= "call-count-exceeded";
+      progress(
+        `Local model disabled for this run: ${localModelCallsMade} summarize call(s) reached the ${localModelMaxCalls}-call budget. Remaining files kept local; launch continues.`,
+      );
+      return true;
+    }
+    if (localModelBudgetSpentMs >= localModelTotalBudgetMs) {
+      localModelDisabled = true;
+      circuitBreakerReason ??= "time-budget-exceeded";
+      progress(
+        `Local model disabled for this run: cumulative local-model time reached the ${localModelTotalBudgetMs}ms budget. Remaining files kept local; launch continues.`,
+      );
+      return true;
+    }
+    return false;
+  };
   detail("discover", "Files discovered", plan.scan.files.length, plan.scan.files.length);
   let localModelRequests = 0;
   let localModelSucceeded = 0;
@@ -1038,25 +1282,63 @@ export async function prepareWorkspace(
       ...(pages !== undefined ? { pages } : {}),
     };
     progress(`Generating local document context · ${documentIndex.length + 1}`);
+    // Circuit / budget gate: once the local model is disabled (a prior per-file
+    // timeout, or the cumulative time / call-count budget), skip the optional summary
+    // immediately — no provider call, no 10s wait. The DOCUMENT itself was already
+    // delivered on its own inspection above; only this enrichment summary is skipped.
+    if (localModelGateClosed()) {
+      // Distinguish an INTENTIONAL foreground deferral (deferLocalSummary) from a
+      // timeout/budget shutdown, so the manifest reads honestly and never implies the
+      // summary will be produced later. Background connection is a future version.
+      const gateReason = circuitBreakerReason === "deferred" ? "local-summary-deferred" : "local-model-disabled";
+      recordLocalModelWarning(relpath, gateReason, "summary-skipped");
+      documentSummariesRejected += 1;
+      documentIndex.push({ ...metadata, status: "rejected" });
+      return { status: "rejected" };
+    }
     const summaryProvider = getMeasuredProvider();
     if (!summaryProvider) {
       progress("Generating local context: skipped (no local model configured)");
+      recordLocalModelWarning(relpath, "local-model-unavailable", "summary-skipped");
       documentIndex.push({ ...metadata, status: "unavailable" });
       return { status: "unavailable" };
     }
 
     let prepared: Awaited<ReturnType<typeof runLocalPreparation>>;
     try {
-      prepared = await runLocalPreparation(
-        extractedText,
-        ["summarize-local", "safety-check"],
-        {
-          provider: summaryProvider,
-          mode: effectiveMode,
-          localModelParallelism,
-          ...(signal !== undefined ? { signal } : {}),
-        },
+      // The per-file timeout + AbortController wrap the REAL provider call: the work
+      // callback below is what invokes `summarize-local` → `summaryProvider.generate()`
+      // (via createSummarizer). If generate never resolves, the timer fires, aborts the
+      // request, and this resolves as a timeout — the loop advances instead of hanging.
+      progress(`Local context ${relpath}: summarize-local started`);
+      localModelCallsMade += 1;
+      const outcome = await runLocalModelCall(
+        (childSignal) =>
+          runLocalPreparation(extractedText, ["summarize-local", "safety-check"], {
+            provider: summaryProvider,
+            mode: effectiveMode,
+            localModelParallelism,
+            signal: childSignal,
+          }),
+        localModelTimeoutMs,
+        scheduler,
+        signal,
       );
+      localModelBudgetSpentMs += outcome.elapsedMs;
+      if (outcome.status === "timeout") {
+        // Open the circuit on the FIRST per-file timeout: every subsequent summarize
+        // target is skipped/kept-local with no further wait. The document stays delivered.
+        localModelDisabled = true;
+        circuitBreakerReason ??= "per-file-timeout";
+        recordLocalModelWarning(relpath, "local-summary-timeout", "summary-skipped", outcome.elapsedMs);
+        progress(
+          `Local context ${relpath}: summarize-local timed out after ${outcome.elapsedMs}ms → summary skipped; circuit breaker opened (local model disabled for this run); continuing.`,
+        );
+        documentSummariesRejected += 1;
+        documentIndex.push({ ...metadata, status: "rejected" });
+        return { status: "rejected" };
+      }
+      prepared = outcome.value;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       documentSummariesRejected += 1;
@@ -1116,6 +1398,43 @@ export async function prepareWorkspace(
     }
   };
   let documentsWithoutOriginal = 0;
+
+  /**
+   * Route a summarize target to KEPT-LOCAL because the local model timed out or was
+   * disabled (circuit open / budget). The file's de-identification pipeline never
+   * completed, so it is withheld (omitted, `action: "local-only"`) — NEVER delivered
+   * un-inspected — and nothing is written to `outDir` for it. Records a privacy-safe
+   * warning (relpath only) and counts it for degraded-completion reporting.
+   */
+  const keepFileLocalAfterLocalModel = (
+    relpath: string,
+    content: string,
+    reason: PreparationWarning["reason"],
+    publicError: string,
+    elapsedMs?: number,
+  ): void => {
+    recordLocalModelWarning(relpath, reason, "kept-local", elapsedMs);
+    const tok = tokenEstimate(content);
+    beforeTokens += tok.tokens;
+    approx = approx || tok.approx;
+    filesExcluded += 1;
+    filesKeptLocalAfterTimeout += 1;
+    files.push({
+      relpath,
+      action: "local-only",
+      status: "skipped",
+      outcome: "local-only-transformation-failed",
+      transmission: "blocked",
+      beforeChars: content.length,
+      afterChars: 0,
+      transformed: false,
+      omitted: true,
+      limitation: "transformation-unavailable",
+      // A timeout is an operational limit, NOT a safety verdict — categorize as unknown.
+      failureCategory: "unknown",
+      error: publicError,
+    });
+  };
 
   let decisionsProcessed = 0;
   for (const decision of plan.evaluation.decisions) {
@@ -1564,16 +1883,88 @@ export async function prepareWorkspace(
       const needsLocalModel = pipeline.some(
         (processor) => processorId(processor) === "summarize-local",
       );
-      const pipelineProvider = needsLocalModel ? getMeasuredProvider() : undefined;
       const fileAliases = cloneStudentAliases(studentAliases);
-      const prep = await runLocalPreparation(content, pipeline, {
-        ...(pipelineProvider !== undefined ? { provider: pipelineProvider } : {}),
-        salt,
-        mode: effectiveMode,
-        localModelParallelism,
-        studentAliases: fileAliases,
-        ...(signal !== undefined ? { signal } : {}),
-      });
+
+      // ── LOCAL-MODEL HANG / SLOWNESS PROTECTION ──────────────────────────────
+      // Only files that actually invoke `summarize-local` (Ollama) can hang here.
+      // When the circuit is already open (an earlier per-file timeout, or the run's
+      // cumulative time / call-count budget was reached), keep this file LOCAL right
+      // away — its de-identification pipeline never ran, so it must NEVER be delivered
+      // un-inspected. Yuhi Mode still launches with the safe files.
+      let prep: Awaited<ReturnType<typeof runLocalPreparation>>;
+      if (needsLocalModel && localModelGateClosed()) {
+        // Two honest cases. INTENTIONAL deferral (deferLocalSummary — e.g. VS Code's
+        // foreground prepare runs zero local-model calls): the file is kept local now
+        // and is NOT auto-processed later in this version — reason local-summary-deferred.
+        // Otherwise the local model was shut down by a timeout/budget — local-model-disabled.
+        const deferred = circuitBreakerReason === "deferred";
+        keepFileLocalAfterLocalModel(
+          relpath,
+          content,
+          deferred ? "local-summary-deferred" : "local-model-disabled",
+          deferred
+            ? "This file needs local summarization to be de-identified, which was not run during " +
+                "preparation, so it was kept on this computer and not shared. Review or include it later."
+            : "Local model was disabled for this run (timeout or budget); this file needs local " +
+                "summarization to be de-identified, so it was kept on this computer. Review or include it later.",
+        );
+        decisionsProcessed += 1;
+        detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+        continue;
+      }
+      if (needsLocalModel) {
+        const pipelineProvider = getMeasuredProvider();
+        // The timeout + AbortController below wrap the REAL provider call: the work
+        // callback invokes `runLocalPreparation` whose `summarize-local` step calls
+        // `pipelineProvider.generate()`. A never-resolving generate() trips the timer.
+        progress(`Preparing ${relpath}: summarize-local started`);
+        localModelCallsMade += 1;
+        const outcome = await runLocalModelCall(
+          (childSignal) =>
+            runLocalPreparation(content, pipeline, {
+              ...(pipelineProvider !== undefined ? { provider: pipelineProvider } : {}),
+              salt,
+              mode: effectiveMode,
+              localModelParallelism,
+              studentAliases: fileAliases,
+              signal: childSignal,
+            }),
+          localModelTimeoutMs,
+          scheduler,
+          signal,
+        );
+        localModelBudgetSpentMs += outcome.elapsedMs;
+        if (outcome.status === "timeout") {
+          // FIRST per-file timeout opens the circuit for the rest of the run.
+          localModelDisabled = true;
+          circuitBreakerReason ??= "per-file-timeout";
+          progress(
+            `Preparing ${relpath}: summarize-local timed out after ${outcome.elapsedMs}ms → kept local; circuit breaker opened (local model disabled for this run); continuing.`,
+          );
+          keepFileLocalAfterLocalModel(
+            relpath,
+            content,
+            "local-summary-timeout",
+            "Local preparation timed out on this computer; the file was kept local so Yuhi Mode " +
+              "could launch. Review or include it later.",
+            outcome.elapsedMs,
+          );
+          decisionsProcessed += 1;
+          detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+          continue;
+        }
+        prep = outcome.value;
+      } else {
+        // No local model in this file's pipeline (e.g. redact: pseudonymize +
+        // safety-check) — fully deterministic, cannot hang. Run it directly.
+        prep = await runLocalPreparation(content, pipeline, {
+          salt,
+          mode: effectiveMode,
+          localModelParallelism,
+          studentAliases: fileAliases,
+          ...(signal !== undefined ? { signal } : {}),
+        });
+      }
 
       const entry: PreparedFileEntry = {
         relpath,
@@ -2619,6 +3010,23 @@ export async function prepareWorkspace(
   }
   await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", safeHandoff);
 
+  // Degraded-completion summary for the local-model reliability fix. Present when the
+  // inline model timed out / was disabled, so the CLI / VS Code reach "Ready … with
+  // warnings" instead of hanging. Public-safe: relpaths only, no absolute paths/content.
+  const localModelTimeouts = degradedWarnings.filter(
+    (warning) => warning.reason === "local-summary-timeout",
+  ).length;
+  const degraded =
+    degradedWarnings.length > 0 || localModelDisabled
+      ? {
+          localModelDisabled,
+          filesKeptLocalAfterTimeout,
+          localModelTimeouts,
+          ...(circuitBreakerReason ? { circuitBreakerReason } : {}),
+          warnings: degradedWarnings,
+        }
+      : undefined;
+
   const manifest = {
     schemaVersion: 2,
     ...(createdAt !== undefined ? { createdAt } : {}),
@@ -2710,6 +3118,7 @@ export async function prepareWorkspace(
       hasLimitations:
         unsupportedOrUnverifiedFiles > 0 ||
         unverifiedTransformations > 0 ||
+        filesKeptLocalAfterTimeout > 0 ||
         plan.evaluation.decisions.some(
           (decision) => decision.ruleName === "document:personal-information-warning",
         ),
@@ -2754,6 +3163,10 @@ export async function prepareWorkspace(
         (file) => file.outcome === "included-unverified" && !file.omitted,
       ).length,
     },
+    // Local-model reliability degradation (relpaths only — never absolute paths /
+    // content). Present only when the inline model timed out / was disabled, so the
+    // manifest of a normal run is byte-for-byte unchanged.
+    ...(degraded ? { degraded } : {}),
     security: {
       transformedFiles: files.filter(
         (file) => file.status === "ok" && !file.omitted && file.transformed,
@@ -2821,6 +3234,7 @@ export async function prepareWorkspace(
     decisions: plan.evaluation.decisions,
     sourceModified: originalSourceFilesModified,
     safetyMode,
+    ...(degraded ? { degraded } : {}),
     ...(compressionReport ? { compression: compressionReport } : {}),
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
@@ -2838,6 +3252,7 @@ export async function prepareWorkspace(
       hasLimitations:
         unsupportedOrUnverifiedFiles > 0 ||
         unverifiedTransformations > 0 ||
+        filesKeptLocalAfterTimeout > 0 ||
         plan.evaluation.decisions.some(
           (decision) => decision.ruleName === "document:personal-information-warning",
         ),
