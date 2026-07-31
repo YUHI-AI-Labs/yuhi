@@ -5,6 +5,70 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.3]
+
+Theme: **safe, lightweight, and explainable context preparation** — get into Yuhi Mode
+fast, keep the prepared context small, and always be able to explain why.
+
+### Context Compression (opt-in)
+
+- **Structure compression** for TypeScript/JavaScript: keeps imports, exports, class /
+  interface / type / enum declarations, function and method **signatures**, decorators,
+  and doc-comments, and drops implementation bodies (replaced with `{ /* ... */ }`) to
+  shrink the context sent to the agent. Enable with the **Context Compression** toggle
+  or `yuhi.compress`; set an optional **Token Budget** (`yuhi.tokenBudget`).
+- **Arrow-function bodies** are now compressed too: `const fn = () => { … }` collapses to
+  its signature, which markedly improves reduction on function- and test-heavy files.
+  Expression-body arrows are kept in full on purpose — `() => ({ … })` (config objects)
+  and `() => <div/>` (JSX) preserve structure a coding agent needs.
+- Every file's outcome is explainable: kept full, structurally compressed, or excluded —
+  each with a stable reason (e.g. `structural-compression`, `parse-failed`,
+  `compression-not-smaller`). Unsupported languages and any parser/parse failure fall
+  back to the full file — never a partial or silently dropped one. The original source is
+  never modified.
+- Declaration (`.d.ts`) files and files below the size threshold are kept full. Context
+  Compression is **OFF by default** — opt in per run. Reduction is content-dependent and
+  honest: method- and arrow-heavy files compress a lot (a ~190k-token repo → ~41%, with
+  body-heavy test files ~85%), while small or declaration-only repositories stay near 0%.
+
+### Faster, never-stuck preparation
+
+- Preparation no longer waits on the local summarization model on the launch path, so
+  **Yuhi Mode opens quickly** even on large repositories and even when a local model is
+  slow or unavailable. Files that would need local summarization to be de-identified are
+  kept **local** and clearly reported (they are not shared with the agent). Reliability
+  guards — per-file timeout, cancellation, and a circuit breaker — keep a single slow file
+  from stalling the whole run.
+
+### Choose settings before the first prepare
+
+- The Yuhi panel now offers **Safety Mode**, **Context Compression**, and **Token Budget**
+  before the first prepare — no need to prepare once to reach the selector. Choices are the
+  same `yuhi.*` workspace settings used everywhere, and stay in sync with VS Code Settings.
+- A small **`Yuhi v…`** badge in the panel shows the installed extension version.
+
+### Clearer kept-local documents
+
+- When a PDF/DOCX/PPTX can't be inspected, the local placeholder now reports an accurate
+  original size (bytes/KB, not a misleading `0.0 MB`) and a specific reason.
+
+## [0.3.3]
+
+### Context Compression (opt-in)
+
+- **Structure compression** of the delivered context — the **Context Compression** toggle
+  in VS Code, or `yuhi prepare --compress`. Produces a deterministic, body-omitted,
+  syntactically valid view: imports, exports, declarations, class/interface/type and
+  function/method signatures (with their doc comments) are preserved; implementation
+  bodies — including **block-body arrow functions** — are replaced by `{ /* ... */ }`.
+- Kept **full** by design: expression-body arrows (`x => x * 2`, `() => ({ ... })`,
+  `() => <div/>`), declaration (`.d.ts`) files, and files below the size threshold.
+- Reduction is content-dependent and honest: method- and arrow-heavy files compress a
+  lot (a ~190k-token repo → ~41%, with body-heavy test files ~85%), while small or
+  declaration-only repositories stay near 0%. The original source is never modified, and
+  an unparsable file safely falls back to its full form.
+- Default **OFF**; opt in per run.
+
 ## [0.3.2]
 
 ### Safety Mode
