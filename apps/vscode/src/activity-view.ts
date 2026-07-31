@@ -245,6 +245,8 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     maskedValues?: number;
     reductionPercent?: number;
     filesTransformed?: number;
+    /** v0.3.4 agent picker reconstructed from the on-disk manifest (Context ID). */
+    picker?: AgentPickerData;
   }): void {
     this.set({
       phase: "yuhi-mode",
@@ -260,6 +262,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       ...(detail.maskedValues !== undefined ? { maskedValues: detail.maskedValues } : {}),
       ...(detail.reductionPercent !== undefined ? { reductionPercent: detail.reductionPercent } : {}),
       ...(detail.filesTransformed !== undefined ? { filesTransformed: detail.filesTransformed } : {}),
+      ...(detail.picker ? { picker: detail.picker } : {}),
     });
   }
 

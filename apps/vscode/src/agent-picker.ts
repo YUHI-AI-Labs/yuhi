@@ -277,6 +277,38 @@ export function preparedContextFromRun(run: PreparedRunLike): PreparedAgentConte
   };
 }
 
+/** A well-formed deterministic Context ID (`sha256:<64 hex>`). Mirrors core's
+ *  `isContextId`, kept local so this UI module stays free of a core import. */
+export function isValidContextId(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+/** Minimal shape of an on-disk Context Manifest the picker reconstructs from. */
+export interface ManifestLike {
+  contextId?: unknown;
+  runId?: unknown;
+}
+
+/**
+ * Reconstruct the shared {@link PreparedAgentContext} for an OPENED Prepared Workspace
+ * from its on-disk manifest — so the Yuhi-Mode window can offer the SAME picker with no
+ * core change. The working directory is the CURRENT prepared workspace path (never an
+ * absolute source path). Returns `undefined` for a legacy/invalid manifest (missing or
+ * malformed `contextId`), so the caller falls back to the single launch button — never
+ * throws.
+ */
+export function preparedContextFromManifest(
+  manifest: ManifestLike,
+  preparedWorkspacePath: string,
+): PreparedAgentContext | undefined {
+  if (!isValidContextId(manifest.contextId)) return undefined;
+  return {
+    workingDirectory: preparedWorkspacePath,
+    contextId: manifest.contextId,
+    runId: typeof manifest.runId === "string" ? manifest.runId : "",
+  };
+}
+
 export interface LaunchPreparedAgentOptions {
   /** Injected child runner — for VS Code this drives a terminal; tests pass a fake. */
   runner: (command: AgentCommand) => Promise<AgentRunOutcome>;

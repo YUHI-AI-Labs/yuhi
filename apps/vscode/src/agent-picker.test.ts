@@ -6,7 +6,9 @@ import {
   buildAgentPickerData,
   detectAgentAvailability,
   detectAgents,
+  isValidContextId,
   launchPreparedAgent,
+  preparedContextFromManifest,
   preparedContextFromRun,
   readLastAgentId,
   rememberLastAgentId,
@@ -300,6 +302,91 @@ describe("launchPreparedAgent + reuse of one prepared context", () => {
     await expect(
       launchPreparedAgent(registry, "gemini", context, { runner: okRunner }),
     ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Yuhi-Mode window: picker reconstructed from the on-disk manifest.
+// ---------------------------------------------------------------------------
+
+describe("preparedContextFromManifest (opened Prepared Workspace / Yuhi-Mode)", () => {
+  const PREPARED_ROOT = "/managed/workspaces/run-42";
+
+  it("(1) builds a picker context from the on-disk manifest Context ID", () => {
+    const ctx = preparedContextFromManifest({ contextId: CTX_ID, runId: "run-42" }, PREPARED_ROOT);
+    expect(ctx).toBeDefined();
+    expect(ctx!.contextId).toBe(CTX_ID);
+  });
+
+  it("(3) uses the prepared workspace root as the working directory (this window)", () => {
+    const ctx = preparedContextFromManifest({ contextId: CTX_ID, runId: "run-42" }, PREPARED_ROOT);
+    expect(ctx!.workingDirectory).toBe(PREPARED_ROOT);
+  });
+
+  it("(2)+(4) Claude & Codex receive the SAME contextId with NO re-prepare (plan assembly only)", async () => {
+    const claude = createFakeAgentAdapter({ id: "claude", displayName: "Claude Code" });
+    const codex = createFakeAgentAdapter({ id: "codex", displayName: "Codex" });
+    const claudePrepare = vi.spyOn(claude, "prepare");
+    const codexPrepare = vi.spyOn(codex, "prepare");
+    const registry = fakeRegistry({ claude, codex });
+
+    const ctx = preparedContextFromManifest({ contextId: CTX_ID, runId: "run-42" }, PREPARED_ROOT)!;
+    const first = await launchPreparedAgent(registry, "claude", ctx, { runner: okRunner });
+    const second = await launchPreparedAgent(registry, "codex", ctx, { runner: okRunner });
+
+    expect(first.contextId).toBe(CTX_ID);
+    expect(second.contextId).toBe(CTX_ID);
+    // "prepare" here is adapter plan-assembly, NOT the Yuhi-core prepare pipeline — and
+    // each adapter saw the SAME reconstructed context object (one prepared run reused).
+    expect(claudePrepare).toHaveBeenCalledTimes(1);
+    expect(codexPrepare).toHaveBeenCalledTimes(1);
+    expect(claudePrepare.mock.calls[0]![0]).toBe(ctx);
+    expect(codexPrepare.mock.calls[0]![0]).toBe(ctx);
+    // The working directory launched is this window's prepared workspace root.
+    expect(first.workingDirectory).toBe(PREPARED_ROOT);
+    expect(second.workingDirectory).toBe(PREPARED_ROOT);
+  });
+
+  it("(5) a legacy run with NO contextId yields no picker context (fall back to single button)", () => {
+    expect(preparedContextFromManifest({ runId: "old" }, PREPARED_ROOT)).toBeUndefined();
+    expect(preparedContextFromManifest({ contextId: undefined, runId: "old" }, PREPARED_ROOT)).toBeUndefined();
+  });
+
+  it("(6) an INVALID contextId yields no picker context — never throws", () => {
+    expect(preparedContextFromManifest({ contextId: "not-a-hash" }, PREPARED_ROOT)).toBeUndefined();
+    expect(preparedContextFromManifest({ contextId: "sha256:zzzz" }, PREPARED_ROOT)).toBeUndefined();
+    expect(preparedContextFromManifest({ contextId: 12345 }, PREPARED_ROOT)).toBeUndefined();
+    expect(isValidContextId(CTX_ID)).toBe(true);
+    expect(isValidContextId("sha256:short")).toBe(false);
+  });
+
+  it("(7) an uninstalled agent is disabled in the reconstructed Yuhi-Mode picker", () => {
+    const data = buildAgentPickerData({
+      contextId: CTX_ID,
+      availabilities: [
+        { id: "claude", available: true },
+        { id: "codex", available: false, installHint: "Codex CLI was not found." },
+      ],
+    });
+    const out = renderAgentPicker(data);
+    expect(out).toMatch(/data-agent="codex"[^>]*disabled/);
+    expect(out).toContain("Codex CLI was not found.");
+  });
+
+  it("(8) the reconstructed picker UI shows only the sha256 Context ID — no absolute path", () => {
+    const data = buildAgentPickerData({
+      contextId: CTX_ID,
+      availabilities: [
+        { id: "claude", available: true },
+        { id: "codex", available: true },
+      ],
+      lastAgentId: "claude",
+    });
+    const out = renderAgentPicker(data);
+    // The prepared workspace path must NEVER appear in the panel markup.
+    expect(out).not.toContain(PREPARED_ROOT);
+    expect(out).not.toMatch(/\/managed\/workspaces/);
+    expect(out).toContain(shortContextId(CTX_ID));
   });
 });
 

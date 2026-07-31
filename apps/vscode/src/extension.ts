@@ -22,6 +22,7 @@ import {
   DEFAULT_CONTEXT_DETAIL,
   DEFAULT_PREPARE_SAFETY_MODE,
   isSafetyMode,
+  isContextId,
   safetyModeLabel,
   checkSafetyModeFreshness,
   type SafetyMode,
@@ -90,6 +91,7 @@ import {
   PICKER_AGENT_DISPLAY_NAMES,
   PICKER_DETECT_TIMEOUT_MS,
   type PickerAgentId,
+  type AgentPickerData,
 } from "./agent-picker.js";
 
 const OLLAMA_DOWNLOAD = "https://ollama.com/download";
@@ -197,44 +199,79 @@ function preparedRunIsDirty(report: PrepareReport): boolean {
   return !checkSafetyModeFreshness(report.safetyMode, currentSafetyMode()).fresh;
 }
 
-/**
- * Resolve per-agent availability (short timeout — never hangs) and push the agent
- * picker onto the current Ready / Yuhi-Mode surface: two launch actions (Claude Code /
- * Codex), the run's Context ID, the last-used agent as the default, and the DIRTY gate.
- * Best-effort: any failure just leaves the panel without a picker (single button).
- */
-async function refreshAgentPicker(report: PrepareReport | undefined, launchingAgentId: string | null = null): Promise<void> {
-  if (!activityProvider || !report?.contextId) return;
+/** The shared prepared context the picker launches into, plus whether the DIRTY gate
+ *  applies. One resolver for BOTH surfaces:
+ *   - the source window's Ready surface (freshly prepared run) → DIRTY gate applies;
+ *   - an OPENED Prepared Workspace (Yuhi-Mode) → the context is immutable/completed,
+ *     so the source-vs-selected dirty gate is NOT applied (picker stays enabled).
+ *  Returns undefined when there is no valid `sha256:` Context ID (e.g. a legacy run),
+ *  so the caller falls back to the single launch button. */
+interface AgentPickerSource {
+  contextId: string;
+  outDir: string;
+  runId: string;
+  dirty: boolean;
+}
+function currentPickerSource(): AgentPickerSource | undefined {
+  const report = lastReport;
+  if (!report?.contextId || !isContextId(report.contextId)) return undefined;
+  return {
+    contextId: report.contextId,
+    outDir: report.outDir,
+    runId: report.runId,
+    // An opened Prepared Workspace is an immutable, completed context.
+    dirty: reviewingOpenedPreparedWorkspace ? false : preparedRunIsDirty(report),
+  };
+}
+
+/** Detect availability (short timeout — never hangs) and build the picker for a source.
+ *  Best-effort: returns undefined on any failure so the panel just shows the single
+ *  launch button. Nothing here surfaces an absolute path — only the `sha256:` id. */
+async function buildAgentPickerFor(
+  source: AgentPickerSource,
+  launchingAgentId: string | null = null,
+): Promise<AgentPickerData | undefined> {
   try {
     const availabilities = await detectAgents(agentRegistry, [...PICKER_AGENT_IDS], {
       timeoutMs: PICKER_DETECT_TIMEOUT_MS,
     });
     const lastAgentId = extensionContext ? readLastAgentId(extensionContext.globalState) : undefined;
-    activityProvider.applyAgentPicker(
-      buildAgentPickerData({
-        contextId: report.contextId,
-        availabilities,
-        ...(lastAgentId ? { lastAgentId } : {}),
-        dirty: preparedRunIsDirty(report),
-        launchingAgentId,
-      }),
-    );
+    return buildAgentPickerData({
+      contextId: source.contextId,
+      availabilities,
+      ...(lastAgentId ? { lastAgentId } : {}),
+      dirty: source.dirty,
+      launchingAgentId,
+    });
   } catch {
-    /* the picker is an enhancement — never let it destabilize the panel */
+    return undefined;
   }
+}
+
+/**
+ * Push the agent picker onto the current Ready / Yuhi-Mode surface: two launch actions
+ * (Claude Code / Codex), the run's Context ID, the last-used agent as the default, and
+ * the DIRTY gate where it applies. Best-effort — never destabilizes the panel.
+ */
+async function refreshAgentPicker(launchingAgentId: string | null = null): Promise<void> {
+  const source = currentPickerSource();
+  if (!activityProvider || !source) return;
+  const picker = await buildAgentPickerFor(source, launchingAgentId);
+  if (picker) activityProvider.applyAgentPicker(picker);
 }
 
 /**
  * Launch the chosen agent into the SAME prepared run — reusing one prepared repository
  * across agents. Routed entirely through the registry adapter (detect → prepare →
- * launch); an unknown id can't be launched. Honors the DIRTY gate for BOTH agents,
+ * launch); an unknown id can't be launched. Honors the DIRTY gate where it applies,
  * remembers the last-used agent, and ALWAYS returns the UI to a usable state (a failed
- * or blocked launch is never left stuck in "Launching…").
+ * or blocked launch is never left stuck in "Launching…"). The working directory is the
+ * prepared repository (source window: the prepared run's outDir; Yuhi-Mode: this window).
  */
 async function commandLaunchAgent(agentId: string): Promise<void> {
   if (agentLaunchRunning) return;
-  const report = lastReport;
-  if (!report?.contextId) {
+  const source = currentPickerSource();
+  if (!source) {
     void vscode.window.showWarningMessage("Yuhi: prepare a repository before launching an agent.");
     return;
   }
@@ -254,11 +291,11 @@ async function commandLaunchAgent(agentId: string): Promise<void> {
       registry: agentRegistry,
       id,
       context: preparedContextFromRun({
-        contextId: report.contextId,
-        outDir: report.outDir,
-        runId: report.runId,
+        contextId: source.contextId,
+        outDir: source.outDir,
+        runId: source.runId,
       }),
-      dirty: preparedRunIsDirty(report),
+      dirty: source.dirty,
       ...(availability ? { availability } : {}),
       runner: agentTerminalRunner(displayName),
       forwardedArgs: [],
@@ -268,10 +305,10 @@ async function commandLaunchAgent(agentId: string): Promise<void> {
         const lastAgentId = extensionContext ? readLastAgentId(extensionContext.globalState) : undefined;
         activityProvider?.applyAgentPicker(
           buildAgentPickerData({
-            contextId: report.contextId!,
+            contextId: source.contextId,
             availabilities,
             ...(lastAgentId ? { lastAgentId } : {}),
-            dirty: preparedRunIsDirty(report),
+            dirty: source.dirty,
             launchingAgentId: launchingId,
           }),
         );
@@ -298,7 +335,7 @@ async function commandLaunchAgent(agentId: string): Promise<void> {
   } finally {
     agentLaunchRunning = false;
     // Re-resolve availability + clear any launching flag (last-used may have changed).
-    await refreshAgentPicker(lastReport);
+    await refreshAgentPicker();
   }
 }
 
@@ -1260,7 +1297,7 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
     setStatus(outcome === "Failed" ? "failed" : "ready-for-review");
     // v0.3.4 — offer the agent picker (Claude Code / Codex) on the Ready surface,
     // reusing this one prepared run. Availability is resolved with a short timeout.
-    if (outcome !== "Failed") void refreshAgentPicker(report);
+    if (outcome !== "Failed") void refreshAgentPicker();
 
     if (outcome === "Failed") {
       void vscode.window
@@ -2386,6 +2423,8 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       })[];
       sourceModified: number;
       safetyMode?: SafetyMode;
+      /** v0.3.4 deterministic Context ID; absent on legacy runs → no picker. */
+      contextId?: unknown;
       tabularAcceptance?: PrepareReport["tabularAcceptance"];
     };
     const metadataFindings = (file: (typeof manifest.files)[number]) => {
@@ -2431,6 +2470,10 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       })),
       sourceModified: manifest.sourceModified,
       safetyMode: isSafetyMode(manifest.safetyMode) ? manifest.safetyMode : currentSafetyMode(),
+      // v0.3.4 — carry the deterministic Context ID so THIS opened Prepared Workspace
+      // window can offer the same agent picker (reused across agents). Legacy or invalid
+      // ids are dropped, so `currentPickerSource()` falls back to the single button.
+      ...(isContextId(manifest.contextId) ? { contextId: manifest.contextId } : {}),
       ...(manifest.tabularAcceptance
         ? { tabularAcceptance: manifest.tabularAcceptance }
         : {}),
@@ -2484,6 +2527,12 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       const pending = lastReport.files.filter(
         (f) => !f.omitted && f.inspection?.fileType === "pdf" && !f.inspection.documentStatus,
       ).length;
+      // v0.3.4 — reconstruct the agent picker from the on-disk manifest's Context ID so
+      // this opened Prepared Workspace offers the SAME "Launch with [Claude Code] [Codex]"
+      // surface, reusing this window's prepared repo (no re-prepare). A legacy/invalid
+      // manifest (no valid contextId) yields no source → the single button is kept.
+      const pickerSource = currentPickerSource();
+      const yuhiModePicker = pickerSource ? await buildAgentPickerFor(pickerSource) : undefined;
       activityProvider?.setYuhiMode({
         filesAvailable: available,
         filesExcluded: excluded,
@@ -2492,6 +2541,7 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         maskedValues: m.sensitiveValuesMasked,
         reductionPercent: m.estimatedReductionPercent,
         filesTransformed: m.preparedFilesModified,
+        ...(yuhiModePicker ? { picker: yuhiModePicker } : {}),
       });
     } else {
       activityProvider?.setPrepared(m, "Launch blocked", false);
