@@ -2,7 +2,7 @@
 
 ## Summary
 
-0.3.0 shipped the **Repository Ready** card and the read-only **"What the AI Can
+0.3.1 shipped the **Repository Ready** card and the read-only **"What the AI Can
 See"** review. In that release, Safety Mode and Context Detail are **display-only
 labels**, and file decisions are **not** editable. Phase 2b-2b makes the review
 **actionable**: choose a Safety Mode, choose a Context Detail level, override

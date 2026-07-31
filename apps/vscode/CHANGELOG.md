@@ -5,7 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
-## [0.3.0]
+## [0.3.1]
+
+First published 0.3.x release. Folds in the 0.3.0 work below plus a concise, softened
+Marketplace overview and the 0.2.6 / 0.2.8 reliability and privacy hotfixes. Safety Mode
+and per-file overrides are in progress for a following release.
 
 ### Repository Ready — the shareable preparation report
 

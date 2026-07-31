@@ -1,4 +1,4 @@
-# Yuhi 0.3.0 — release notes
+# Yuhi 0.3.1 — release notes
 
 **Turn any repository into an AI-ready repository.** One command:
 
@@ -6,13 +6,13 @@
 npx @yuhi-ai-labs/yuhi prepare
 ```
 
-0.3.0 is the **shareable-report** release. Yuhi already prepared a smaller,
+0.3.1 is the **shareable-report** release. Yuhi already prepared a smaller,
 cleaner, safer workspace before your coding agent saw it — now it hands you a
 **public-safe Repository Report** of exactly what it did, and a read-only view of
 **what the AI can and can't see**.
 
-- **CLI (npm):** `@yuhi-ai-labs/yuhi` **0.3.0**
-- **VS Code (Marketplace):** `yuhi-vscode` **0.3.0** — displayName **"Yuhi — AI-Ready Repositories"**
+- **CLI (npm):** `@yuhi-ai-labs/yuhi` **0.3.1**
+- **VS Code (Marketplace):** `yuhi-vscode` **0.3.1** — displayName **"Yuhi — AI-Ready Repositories"**
 
 ---
 
@@ -86,7 +86,7 @@ cleaner, safer workspace before your coding agent saw it — now it hands you a
 
 PDF / DOCX / DOCM / PPTX / PPTM documents are converted **locally** to sanitized
 Markdown companions; the **original binary is never shared** with the agent and
-the source file is never modified. This capability shipped in **0.2.9** — 0.3.0
+the source file is never modified. This capability shipped in **0.2.9** — 0.3.1
 documents it correctly. The earlier "PDF not supported" limitation was **false**
 and has been removed from the READMEs.
 
@@ -94,7 +94,7 @@ and has been removed from the READMEs.
 
 ## Folded-in main hotfixes
 
-0.3.0 also carries forward earlier reliability and privacy fixes from `main`:
+0.3.1 also carries forward earlier reliability and privacy fixes from `main`:
 
 - **0.2.6 — reliability & privacy hardening.** A single problematic file never
   fails the whole preparation: each file is processed in isolation, and if one
@@ -111,9 +111,9 @@ and has been removed from the READMEs.
 
 ## Not in this release / coming next
 
-These are **not done** in 0.3.0 — do not read them as shipped:
+These are **not done** in 0.3.1 — do not read them as shipped:
 
-- **Safety Mode / Context Detail selectors.** In 0.3.0 these are **display-only
+- **Safety Mode / Context Detail selectors.** In 0.3.1 these are **display-only
   labels**; you cannot yet change them.
 - **Per-file Include / Exclude** decisions from the review.
 - **Apply and re-prepare** from the review.

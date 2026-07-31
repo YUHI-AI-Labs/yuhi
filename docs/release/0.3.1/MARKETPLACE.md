@@ -1,4 +1,4 @@
-# VS Code Marketplace copy — Yuhi 0.3.0
+# VS Code Marketplace copy — Yuhi 0.3.1
 
 Extension displayName: **Yuhi — AI-Ready Repositories**
 
@@ -8,7 +8,7 @@ Extension displayName: **Yuhi — AI-Ready Repositories**
 > safer workspace locally, then share a public-safe report of exactly what the AI
 > can see.
 
-## (b) What's new in 0.3.0
+## (b) What's new in 0.3.1
 
 - **Repository Ready card** — after a successful prepare, see concrete, measurable
   outcomes: source files, prepared artifacts, documents prepared, secrets blocked,

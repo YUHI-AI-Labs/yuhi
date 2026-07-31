@@ -1,14 +1,14 @@
-# Release: Yuhi 0.3.0 — AI-ready repositories + shareable Repository Report
+# Release: Yuhi 0.3.1 — AI-ready repositories + shareable Repository Report
 
-Merges the 0.3.0 release branch into `main`. This is the record of the release;
+Merges the 0.3.1 release branch into `main`. This is the record of the release;
 `main` was **fast-forwarded** to the release branch (no merge commit).
 
 Positioning: **"Turn any repository into an AI-ready repository."** One command:
-`npx @yuhi-ai-labs/yuhi prepare`. 0.3.0 adds a **public-safe Repository Report**
+`npx @yuhi-ai-labs/yuhi prepare`. 0.3.1 adds a **public-safe Repository Report**
 and a read-only **"What the AI Can See"** review.
 
-- CLI (`@yuhi-ai-labs/yuhi`): **0.3.0**
-- VS Code extension (`yuhi-vscode`): **0.3.0** — displayName **"Yuhi — AI-Ready Repositories"**
+- CLI (`@yuhi-ai-labs/yuhi`): **0.3.1**
+- VS Code extension (`yuhi-vscode`): **0.3.1** — displayName **"Yuhi — AI-Ready Repositories"**
 
 ## What changed by area
 
@@ -46,7 +46,7 @@ and a read-only **"What the AI Can See"** review.
   converted to sanitized Markdown companions (originals never shared) — shipped in
   0.2.9, now documented correctly. The old "PDF not supported" limitation was
   false and has been removed.
-- CHANGELOG `[0.3.0]` entry added.
+- CHANGELOG `[0.3.1]` entry added.
 
 ### Folded-in main hotfixes
 
@@ -78,7 +78,7 @@ All passed prior to merge:
 
 ## Not in this release
 
-Safety Mode / Context Detail **selectors** (display-only labels in 0.3.0), per-file
+Safety Mode / Context Detail **selectors** (display-only labels in 0.3.1), per-file
 Include / Exclude, and Apply-and-re-prepare are **not** included — tracked in
 **Phase 2b-2b: Repository Ready controls**. `yuhi run` / `yuhi open` remain
 disabled (use the VS Code handoff). Local AI (Ollama summaries) is optional;

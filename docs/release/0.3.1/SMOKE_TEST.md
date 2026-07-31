@@ -1,6 +1,6 @@
-# Yuhi 0.3.0 — post-release smoke test
+# Yuhi 0.3.1 — post-release smoke test
 
-Run this **after publishing** 0.3.0 (npm + Marketplace + the Action), to confirm
+Run this **after publishing** 0.3.1 (npm + Marketplace + the Action), to confirm
 the live artifacts behave as documented. Every step lists an **action**, an
 **expected result**, and a **public-safety check** (the shared report must never
 contain a filename, path, secret value, or identity).
@@ -20,7 +20,7 @@ printf 'name,email\nAlice,alice@example.com\n' > people.csv
 
 ### 1.1 Prepare from a scratch repo
 
-- **Action:** `npx @yuhi-ai-labs/yuhi@0.3.0 prepare` in `/tmp/yuhi-030-smoke`.
+- **Action:** `npx @yuhi-ai-labs/yuhi@0.3.1 prepare` in `/tmp/yuhi-030-smoke`.
 - **Expected:** exits successfully and prints the **Repository Ready** block —
   Source files / Prepared artifacts / Documents prepared / Secrets blocked /
   Identifiers transformed and an **Estimated accessible-content reduction: N%**,
@@ -32,7 +32,7 @@ printf 'name,email\nAlice,alice@example.com\n' > people.csv
 Capture the run id for the next step — `prepare --json` prints it as `runId`:
 
 ```bash
-RUN=$(npx @yuhi-ai-labs/yuhi@0.3.0 prepare --json | \
+RUN=$(npx @yuhi-ai-labs/yuhi@0.3.1 prepare --json | \
   node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).runId||""))')
 echo "$RUN"
 ```
@@ -42,10 +42,10 @@ echo "$RUN"
 - **Action:** run each format:
 
   ```bash
-  npx @yuhi-ai-labs/yuhi@0.3.0 report "$RUN" --format terminal
-  npx @yuhi-ai-labs/yuhi@0.3.0 report "$RUN" --format markdown
-  npx @yuhi-ai-labs/yuhi@0.3.0 report "$RUN" --format json
-  npx @yuhi-ai-labs/yuhi@0.3.0 report "$RUN" --format svg
+  npx @yuhi-ai-labs/yuhi@0.3.1 report "$RUN" --format terminal
+  npx @yuhi-ai-labs/yuhi@0.3.1 report "$RUN" --format markdown
+  npx @yuhi-ai-labs/yuhi@0.3.1 report "$RUN" --format json
+  npx @yuhi-ai-labs/yuhi@0.3.1 report "$RUN" --format svg
   ```
 
 - **Expected:**
@@ -58,7 +58,7 @@ echo "$RUN"
 - **Public-safety:** grep each output — nothing leaks:
 
   ```bash
-  npx @yuhi-ai-labs/yuhi@0.3.0 report "$RUN" --format json | \
+  npx @yuhi-ai-labs/yuhi@0.3.1 report "$RUN" --format json | \
     grep -Ei 'AKIA|@example\.com|/tmp/|\.env|people\.csv' && echo "LEAK" || echo "clean"
   ```
 
@@ -66,14 +66,14 @@ echo "$RUN"
 
 ## 2. VS Code extension
 
-### 2.1 Install the 0.3.0 VSIX
+### 2.1 Install the 0.3.1 VSIX
 
 - **Action:** install into a clean profile:
 
   ```bash
   TMP=$(mktemp -d)
   code --user-data-dir "$TMP/user" --extensions-dir "$TMP/ext" \
-    --install-extension yuhi-vscode-0.3.0.vsix
+    --install-extension yuhi-vscode-0.3.1.vsix
   code --user-data-dir "$TMP/user" --extensions-dir "$TMP/ext" /tmp/yuhi-030-smoke
   ```
 
@@ -104,7 +104,7 @@ echo "$RUN"
   policy, kept local because verification failed). The `.env` appears under a
   withheld/kept-local bucket; the CSV under prepared/transformed with an
   Original ↔ Prepared diff. Safety Mode and Context Detail appear as
-  **display-only labels** (not selectable in 0.3.0). The filter narrows the list.
+  **display-only labels** (not selectable in 0.3.1). The filter narrows the list.
 - **Public-safety:** file paths shown here are review-only — confirm they are
   **not** present in the report copied/exported in 2.3.
 
