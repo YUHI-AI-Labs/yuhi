@@ -32,3 +32,4 @@ export * from "./stream-text.js";
 export * from "./workspace-marker.js";
 export * from "./document-artifact.js";
 export * from "./disclosure.js";
+export * from "./disclosure-config.js";

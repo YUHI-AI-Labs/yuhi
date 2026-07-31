@@ -31,3 +31,4 @@ HANDOFF.md
 
 # Local working brief — never commit (contains local notes)
 WEBSITE_RENEWAL_INSTRUCTION.md
+apps/vscode/*.vsix
