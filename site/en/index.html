@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en" class=""><head>
+<html lang="ja" class=""><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yuhi — Don't send everything to Claude</title>
-<meta name="description" id="m-desc" content="Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.">
+<title>Yuhi — Claudeに、全部を渡さない。</title>
+<meta name="description" id="m-desc" content="Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。">
 
-<link rel="canonical" id="m-canonical" href="https://yuhi-iota.vercel.app/en">
+<link rel="canonical" id="m-canonical" href="https://yuhi-iota.vercel.app/">
 <link rel="alternate" hreflang="ja" href="https://yuhi-iota.vercel.app/">
 <link rel="alternate" hreflang="en" href="https://yuhi-iota.vercel.app/en">
 <link rel="alternate" hreflang="zh-Hans" href="https://yuhi-iota.vercel.app/zh-cn">
@@ -20,9 +20,9 @@
 <!-- Open Graph -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Yuhi">
-<meta property="og:title" id="m-ogtitle" content="Yuhi — Don't send everything to Claude">
-<meta property="og:description" id="m-ogdesc" content="Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.">
-<meta property="og:url" id="m-ogurl" content="https://yuhi-iota.vercel.app/en">
+<meta property="og:title" id="m-ogtitle" content="Yuhi — Claudeに、全部を渡さない。">
+<meta property="og:description" id="m-ogdesc" content="Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。">
+<meta property="og:url" id="m-ogurl" content="https://yuhi-iota.vercel.app/">
 <meta property="og:image" content="https://yuhi-iota.vercel.app/og.png">
 <meta property="og:image:width" content="1280">
 <meta property="og:image:height" content="640">
@@ -30,8 +30,8 @@
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" id="m-twtitle" content="Yuhi — Don't send everything to Claude">
-<meta name="twitter:description" id="m-twdesc" content="Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.">
+<meta name="twitter:title" id="m-twtitle" content="Yuhi — Claudeに、全部を渡さない。">
+<meta name="twitter:description" id="m-twdesc" content="Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。">
 <meta name="twitter:image" content="https://yuhi-iota.vercel.app/og.png">
 <style>
   :root{
@@ -288,6 +288,29 @@
   .vsc-btn{margin-top:14px;display:inline-flex;align-items:center;gap:8px;background:linear-gradient(90deg,#2E6AD1,#63C3F2);color:#0b1017;font-weight:700;font-size:13px;border-radius:9px;padding:9px 16px}
   .vsc-cap{margin-top:14px;font-size:13px;color:var(--ink-faint)}
   @media(max-width:720px){.vsc-body{grid-template-columns:1fr}.vsc-act,.vsc-side{display:none}}
+  /* repository ready (v0.3) */
+  .rep-wrap{display:grid;grid-template-columns:1.05fr .95fr;gap:28px;align-items:start;margin-top:30px}
+  @media (max-width:760px){.rep-wrap{grid-template-columns:1fr}}
+  .rep-card{border:1px solid var(--border);border-radius:16px;padding:24px;background:var(--surface);box-shadow:var(--shadow);font-family:var(--mono)}
+  .rep-h{display:flex;align-items:center;gap:10px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:12px}
+  .rep-h .tag{margin-left:auto;font-size:10px;color:var(--accent);border:1px solid var(--border-strong);border-radius:999px;padding:2px 9px;text-transform:none;letter-spacing:.04em}
+  .rep-score{display:flex;align-items:baseline;gap:8px;border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:10px}
+  .rep-score b{font-size:2.6rem;line-height:1;color:var(--ink);font-weight:800}
+  .rep-score span{font-size:14px;color:var(--ink-faint)}
+  .rep-score em{margin-left:auto;font-style:normal;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft)}
+  .rep-r{display:flex;justify-content:space-between;gap:16px;font-size:13.5px;color:var(--ink-soft);padding:5px 0}
+  .rep-r b{color:var(--ink)}
+  .rep-r .stars{color:#e0a83b;letter-spacing:2px}
+  .rep-base{font-size:11px;color:var(--ink-faint);border-top:1px solid var(--border);margin-top:10px;padding-top:10px}
+  .rep-stat{margin-top:8px;font-size:12.5px;color:#3fae7a}
+  .rep-side .chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);background:var(--surface-2)}
+  .rep-side .chip .l{background:var(--ink);color:var(--bg);border-radius:4px;padding:1px 7px}
+  .rep-side .chip .r{color:var(--accent)}
+  .rep-side .fmt{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+  .rep-side .fmt span{font-family:var(--mono);font-size:11px;color:var(--ink-faint);border:1px solid var(--border);border-radius:6px;padding:3px 9px}
+  .rep-side .gha{margin-top:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:var(--ink-soft);line-height:1.7;overflow-x:auto}
+  .rep-side .gha .k{color:var(--accent)}
+  .rep-side .gha .c{color:var(--ink-faint)}
 </style>
 </head>
 <body>
@@ -295,12 +318,12 @@
   <div class="wrap nav">
     <div class="brand"><span class="glyph" aria-hidden="true"></span> yuhi</div>
     <nav class="nav-right">
-      <a class="nav-hide" href="#start" data-i18n="nav_install">Install</a>
+      <a class="nav-hide" href="#start" data-i18n="nav_install">インストール</a>
       <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" aria-label="GitHub repository">GitHub</a>
-      <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="nav_docs">Documentation</a>
+      <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="nav_docs">ドキュメント</a>
       <span class="lang-sel" role="group" aria-label="Language">
-        <a href="/" data-loc="ja" hreflang="ja">日本語</a>
-        <a href="/en" data-loc="en" hreflang="en" class="active" aria-current="true">EN</a>
+        <a href="/" data-loc="ja" hreflang="ja" class="active" aria-current="true">日本語</a>
+        <a href="/en" data-loc="en" hreflang="en">EN</a>
         <a href="/zh-cn" data-loc="zh-cn" hreflang="zh-Hans">简体中文</a>
       </span>
       <button class="theme-toggle" id="themeBtn" title="Toggle theme" aria-label="Toggle color theme">◐</button>
@@ -312,22 +335,22 @@
   <!-- HERO -->
   <section class="hero">
     <div class="wrap">
-      <p class="eyebrow"><b>local-first</b><span class="dot-sep"></span>Apache-2.0<span class="dot-sep"></span><span data-i18n="ey_tel">no telemetry</span><span class="dot-sep"></span><span data-i18n="ey_off">works offline</span></p>
+      <p class="eyebrow"><b>local-first</b><span class="dot-sep"></span>Apache-2.0<span class="dot-sep"></span><span data-i18n="ey_tel">テレメトリなし</span><span class="dot-sep"></span><span data-i18n="ey_off">オフライン動作</span></p>
       <h1 data-i18n="hero_h1">Claude Code with <span class="swap">Yuhi</span></h1>
-      <p class="sub" data-i18n="hero_sub">Yuhi prepares your workspace before AI agents start working — it understands your project locally, builds the right context, and helps Claude Code work more effectively.</p>
+      <p class="sub" data-i18n="hero_sub">Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。</p>
       <p class="tag" data-i18n="hero_tag">Prepare your workspace. Let AI agents work better.</p>
       <div class="cta">
-        <a class="btn btn-primary" href="#start" data-i18n="hero_start">Get started</a>
-        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">View on GitHub →</a>
-        <span class="install"><span class="p">$</span> npx @yuhi-ai-labs/yuhi@beta preview <button class="copy" id="copyHero" title="Copy" data-i18n="copy">copy</button></span>
+        <a class="btn btn-primary" href="#start" data-i18n="hero_start">使ってみる</a>
+        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">GitHubを見る →</a>
+        <span class="install"><span class="p">$</span> npx @yuhi-ai-labs/yuhi@beta preview <button class="copy" id="copyHero" title="Copy" data-i18n="copy">コピー</button></span>
       </div>
 
       <div class="flow" aria-label="Repository, prepared locally, then the agent">
-        <div class="node"><div class="k" data-i18n="flow_n1k">Your repository</div><div class="v" data-i18n="flow_n1v">files, secrets, data</div></div>
+        <div class="node"><div class="k" data-i18n="flow_n1k">あなたのリポジトリ</div><div class="v" data-i18n="flow_n1v">ファイル・秘密情報・データ</div></div>
         <div class="arr">→</div>
-        <div class="node mid"><div class="k">Yuhi</div><div class="v" data-i18n="flow_midv">prepared locally</div></div>
+        <div class="node mid"><div class="k">Yuhi</div><div class="v" data-i18n="flow_midv">ローカルで準備</div></div>
         <div class="arr">→</div>
-        <div class="node"><div class="k" data-i18n="flow_n3k">Your agent</div><div class="v" data-i18n="flow_n3v">a clean context</div></div>
+        <div class="node"><div class="k" data-i18n="flow_n3k">あなたのエージェント</div><div class="v" data-i18n="flow_n3v">整えられた文脈</div></div>
       </div>
     </div>
   </section>
@@ -336,9 +359,9 @@
   <section id="demo">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="demo_ey">30-second demo</p>
-        <h2 data-i18n="demo_h2">See exactly what the agent will — and won't — receive.</h2>
-        <p data-i18n="demo_p">One command previews every file's route. Files marked <em>Prepare locally</em> are transformed on your machine <strong>before</strong> anything is sent — here, real student records become stable pseudonyms.</p>
+        <p class="eyebrow" data-i18n="demo_ey">30秒デモ</p>
+        <h2 data-i18n="demo_h2">エージェントが受け取るもの、受け取らないものを、正確に確認。</h2>
+        <p data-i18n="demo_p">1つのコマンドで、各ファイルの経路をプレビューします。<em>Prepare locally</em> のファイルは、送信前に<strong>お使いの端末で</strong>変換されます。ここでは、実際の生徒記録が安定した仮名に置き換わります。</p>
       </div>
 
       <div class="demo-shell">
@@ -355,19 +378,19 @@
             <ul class="t-prep"><li><b>data/student_scores.csv</b>, config/app.ts, docs/internal/roadmap.md</li></ul>
           </div>
           <div class="grp reveal" id="g-keep">
-            <div class="h"><span class="swatch s-keep"></span><span class="tag" style="color:var(--keep)" data-i18n="demo_keep">Kept on your machine</span><span class="n">(4)</span></div>
+            <div class="h"><span class="swatch s-keep"></span><span class="tag" style="color:var(--keep)" data-i18n="demo_keep">端末内に保持</span><span class="n">(4)</span></div>
             <ul class="t-keep"><li><b>customer-data/list.csv</b>, .env, build/app.min.js, package-lock.json</li></ul>
           </div>
 
           <div class="xform reveal" id="g-xform">
-            <div class="file">↳ data/student_scores.csv &nbsp;<span style="color:var(--ink-faint)" data-i18n="demo_prepared">prepared locally</span></div>
-            <div class="row"><div class="lab" data-i18n="demo_original">Original</div><div class="val was"><span data-i18n="demo_orig_val">Tanaka Aoi · S-10241 · 42 · struggles with fractions</span></div></div>
-            <div class="thread"><span class="bar"></span><span data-i18n="demo_thread">pseudonymize → safety check  (on your machine)</span></div>
-            <div class="row"><div class="lab" data-i18n="demo_sees">Claude sees</div><div class="val now"><span data-i18n="demo_sees_val">Subject-B412F3 · Subject-847470 · 42 · struggles with fractions</span></div></div>
-            <div class="lands"><span class="chk">✓</span> <span data-i18n="demo_lands">the original CSV on disk is untouched — only the pseudonymized copy is sent</span></div>
+            <div class="file">↳ data/student_scores.csv &nbsp;<span style="color:var(--ink-faint)" data-i18n="demo_prepared">ローカルで準備</span></div>
+            <div class="row"><div class="lab" data-i18n="demo_original">元の値</div><div class="val was"><span data-i18n="demo_orig_val">田中あおい · S-10241 · 42 · 分数が苦手</span></div></div>
+            <div class="thread"><span class="bar"></span><span data-i18n="demo_thread">仮名化 → 安全性チェック（お使いの端末で）</span></div>
+            <div class="row"><div class="lab" data-i18n="demo_sees">Claudeが見る</div><div class="val now"><span data-i18n="demo_sees_val">Subject-B412F3 · Subject-847470 · 42 · 分数が苦手</span></div></div>
+            <div class="lands"><span class="chk">✓</span> <span data-i18n="demo_lands">ディスク上の元のCSVは変更されません。送信されるのは仮名化されたコピーだけです。</span></div>
           </div>
 
-          <button class="replay" id="replay" hidden="" data-i18n="replay">↻ Replay</button>
+          <button class="replay" id="replay" hidden="" data-i18n="replay">↻ リプレイ</button>
         </div>
       </div>
     </div>
@@ -377,9 +400,9 @@
   <section id="vscode">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="vsc_ey">In your editor</p>
-        <h2 data-i18n="vsc_h2">Prepare and launch — inside VS Code.</h2>
-        <p data-i18n="vsc_sub">Run Yuhi from the extension, review the prepared context, then start Claude Code.</p>
+        <p class="eyebrow" data-i18n="vsc_ey">エディタの中で</p>
+        <h2 data-i18n="vsc_h2">準備して起動 — VS Code の中で。</h2>
+        <p data-i18n="vsc_sub">拡張から Yuhi を実行し、準備された文脈を確認して、Claude Code を開始。</p>
       </div>
       <div class="vsc">
         <div class="vsc-bar"><i></i><i></i><i></i><span class="t">Visual Studio Code — my-project</span></div>
@@ -405,7 +428,7 @@
           </div>
         </div>
       </div>
-      <p class="vsc-cap" data-i18n="vsc_cap">The extension is Available — Beta on the VS Code Marketplace.</p>
+      <p class="vsc-cap" data-i18n="vsc_cap">拡張は VS Code Marketplace で Available — Beta。</p>
       <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:18px;align-items:center">
         <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode" target="_blank" rel="noopener">Install VS Code Extension</a>
         <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" target="_blank" rel="noopener">View on GitHub</a>
@@ -417,17 +440,17 @@
   <section id="routes">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="routes_ey">The whole vocabulary</p>
-        <h2 data-i18n="routes_h2">Every file takes one route.</h2>
-        <p data-i18n="routes_p">No dashboards to learn. Four routes describe everything Yuhi does — the same words in the CLI, the VS Code extension, and here.</p>
+        <p class="eyebrow" data-i18n="routes_ey">これがすべての語彙</p>
+        <h2 data-i18n="routes_h2">すべてのファイルは、1つの経路をたどる。</h2>
+        <p data-i18n="routes_p">覚えるダッシュボードはありません。4つの経路が、Yuhiのすべてを表します。CLI、VS Code拡張、そしてこのページで、同じ言葉を使います。</p>
       </div>
       <div class="routes">
-        <div class="route"><span class="pin" style="background:var(--sent)"></span><div class="rk" data-i18n="r1_rk">unchanged</div><h3>Sent to Claude</h3><p data-i18n="r1_p">The original file, sent as-is. Nothing to prepare.</p></div>
-        <div class="route star"><div class="rk" data-i18n="r2_rk">transformed first</div><h3>Prepared locally</h3><p data-i18n="r2_p">Pseudonymized or secret-masked on your machine, then the safe copy is sent.</p></div>
-        <div class="route"><span class="pin" style="background:var(--runtime)"></span><div class="rk" data-i18n="r3_rk">process only</div><h3>Runtime only</h3><p data-i18n="r3_p">Values like <span class="mono">.env</span> reach the process at launch — never the context the agent reads.</p></div>
-        <div class="route"><span class="pin" style="background:var(--keep)"></span><div class="rk" data-i18n="r4_rk">stays home</div><h3>Keep local</h3><p data-i18n="r4_p">Customer data and private files never enter the agent's view at all.</p></div>
+        <div class="route"><span class="pin" style="background:var(--sent)"></span><div class="rk" data-i18n="r1_rk">そのまま</div><h3>Sent to Claude</h3><p data-i18n="r1_p">元のファイルをそのまま送信します。準備は不要です。</p></div>
+        <div class="route star"><div class="rk" data-i18n="r2_rk">先に変換</div><h3>Prepared locally</h3><p data-i18n="r2_p">お使いの端末で仮名化・秘密情報のマスクを行い、安全なコピーを送信します。</p></div>
+        <div class="route"><span class="pin" style="background:var(--runtime)"></span><div class="rk" data-i18n="r3_rk">プロセスのみ</div><h3>Runtime only</h3><p data-i18n="r3_p"><span class="mono">.env</span> などの値は起動時にプロセスへ渡りますが、エージェントが読む文脈には入りません。</p></div>
+        <div class="route"><span class="pin" style="background:var(--keep)"></span><div class="rk" data-i18n="r4_rk">外に出さない</div><h3>Keep local</h3><p data-i18n="r4_p">顧客データや非公開ファイルは、エージェントの視界に一切入りません。</p></div>
       </div>
-      <p class="vocab" data-i18n="vocab">Sent to Claude · Prepare locally · Runtime only · Keep local &nbsp;— that's it.</p>
+      <p class="vocab" data-i18n="vocab">Sent to Claude · Prepare locally · Runtime only · Keep local &nbsp;— これだけです。</p>
     </div>
   </section>
 
@@ -435,25 +458,55 @@
   <section id="savings">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="sv_ey">Context Savings</p>
-        <h2 data-i18n="sv_h2">See the input you didn't send.</h2>
-        <p data-i18n="sv_p">After each preparation run, Yuhi estimates the context you avoided sending. The same summary appears in the CLI and the VS Code extension.</p>
+        <p class="eyebrow" data-i18n="sv_ey">コンテキスト削減</p>
+        <h2 data-i18n="sv_h2">送らなかった入力を、可視化する。</h2>
+        <p data-i18n="sv_p">準備のたびに、Yuhiは送らずに済んだコンテキストを推定します。同じ要約は、CLIとVS Code拡張に表示されます。</p>
       </div>
       <div class="sv-card">
-        <span class="sv-tag" data-i18n="sv_estimated">Example · estimated</span>
+        <span class="sv-tag" data-i18n="sv_estimated">例・推定値</span>
         <div class="sv-rows">
-          <div class="sv-row"><span data-i18n="sv_before">Estimated input before</span><b class="mono">48,320</b></div>
-          <div class="sv-row"><span data-i18n="sv_after">Estimated input after</span><b class="mono">9,840</b></div>
-          <div class="sv-row avoided"><span data-i18n="sv_avoided">Estimated Claude input avoided</span><b class="mono">38,480</b></div>
-          <div class="sv-row reduc"><span data-i18n="sv_reduction">Reduction</span><b class="mono">79.6%</b></div>
+          <div class="sv-row"><span data-i18n="sv_before">整理前の推定入力</span><b class="mono">48,320</b></div>
+          <div class="sv-row"><span data-i18n="sv_after">整理後の推定入力</span><b class="mono">9,840</b></div>
+          <div class="sv-row avoided"><span data-i18n="sv_avoided">削減できたと推定されるClaude入力</span><b class="mono">38,480</b></div>
+          <div class="sv-row reduc"><span data-i18n="sv_reduction">削減率</span><b class="mono">79.6%</b></div>
         </div>
         <div class="sv-grid">
-          <div><b class="mono">42</b><span data-i18n="sv_excluded">Files excluded</span></div>
-          <div><b class="mono">17</b><span data-i18n="sv_summarized">Files summarized</span></div>
-          <div><b class="mono">6</b><span data-i18n="sv_sensitive">Sensitive items kept local</span></div>
-          <div><b class="mono">0</b><span data-i18n="sv_modified">Original files modified</span></div>
+          <div><b class="mono">42</b><span data-i18n="sv_excluded">除外したファイル</span></div>
+          <div><b class="mono">17</b><span data-i18n="sv_summarized">ローカル要約したファイル</span></div>
+          <div><b class="mono">6</b><span data-i18n="sv_sensitive">端末内に保持した機微情報</span></div>
+          <div><b class="mono">0</b><span data-i18n="sv_modified">変更した元ファイル</span></div>
         </div>
-        <p class="sv-disc" data-i18n="sv_disc">Actual usage and billing depend on the selected AI product, provider behavior, caching, and pricing.</p>
+        <p class="sv-disc" data-i18n="sv_disc">実際の使用量と料金は、利用するAI製品、プロバイダーの動作、キャッシュ、料金体系によって異なります。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- REPOSITORY READY · v0.3 -->
+  <section id="report">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow" data-i18n="rep_ey">Repository Ready · v0.3</p>
+        <h2 data-i18n="rep_h2">Repository Ready — Claude Code が、速くなる。</h2>
+        <p data-i18n="rep_p">See how much of your repository your AI actually needs. — v0.3 は準備の結果を「AI Readiness Score」にします。README・PR・SNS に貼れて、Claude Code はより速く走り出します。</p>
+      </div>
+      <div class="rep-wrap">
+        <div class="rep-card">
+          <div class="rep-h">Repository Ready <span class="tag">example</span></div>
+          <div class="rep-score"><b>91</b><span>/ 100</span><em>AI Readiness Score</em></div>
+          <div class="rep-r"><span>✓ Secrets blocked</span><b class="stars">★★★★★</b></div>
+          <div class="rep-r"><span>✓ Documents prepared</span><b class="stars">★★★★☆</b></div>
+          <div class="rep-r"><span>✓ Repository structure</span><b class="stars">★★★★★</b></div>
+          <div class="rep-r"><span>✓ Context reduction</span><b>94%</b></div>
+          <div class="rep-base">5,224 files → 317 AI-ready artifacts · 18 secrets blocked · 42 documents prepared</div>
+          <div class="rep-stat">✓ Claude Code Ready</div>
+        </div>
+        <div class="rep-side">
+          <p style="font-size:14px;color:var(--ink-soft);line-height:1.9" data-i18n="rep_side">v0.3 では、準備のたびに「Repository Ready」スコアが残ります。GitHub・VS Code・npm のどこで見ても価値が一目で伝わり、そのまま共有できます。</p>
+          <div style="margin-top:14px"><span class="chip"><span class="l">AI Ready</span><span class="r">92 / 100</span></span></div>
+          <div class="fmt"><span>terminal</span><span>--format markdown</span><span>--format json</span><span>--format svg</span></div>
+          <div class="gha"><span class="c"># .github/workflows — PR ごとに Repository Ready をコメント</span><br>- uses: <span class="k">yuhi-ai-labs/prepare@v1</span><br><span class="c"># → Repository Ready 88/100</span></div>
+          <p class="mono" style="font-size:11px;color:var(--ink-faint);margin-top:16px" data-i18n="rep_disc">スコア・数値・バッジは表示例です。public-safe（匿名）エクスポートは v0.3 で提供予定 — ファイル名・パス・機微情報は共有レポートに含めません。</p>
+        </div>
       </div>
     </div>
   </section>
@@ -462,26 +515,26 @@
   <section id="honest">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="honest_ey">No fear, no false promises</p>
-        <h2 data-i18n="honest_h2">What Yuhi is — and is not.</h2>
-        <p data-i18n="honest_p">Yuhi controls the <em>inputs</em> an agent starts from. We'd rather state the boundary plainly than sell you a guarantee we can't keep.</p>
+        <p class="eyebrow" data-i18n="honest_ey">誇張せず、できない約束はしない</p>
+        <h2 data-i18n="honest_h2">Yuhiであること、そうでないこと。</h2>
+        <p data-i18n="honest_p">Yuhiは、エージェントが出発点とする<em>入力</em>を制御します。守れない保証を売るより、境界をはっきり示します。</p>
       </div>
       <div class="honest">
         <div class="card is">
-          <h3 data-i18n="is_h">＃ yuhi is</h3>
+          <h3 data-i18n="is_h">＃ Yuhiであること</h3>
           <ul>
-            <li data-i18n="is_1">A preview of exactly what an agent will and won't see, before it runs.</li>
-            <li data-i18n="is_2">Deterministic, on-device transforms — pseudonymize, mask secrets — with the original left untouched.</li>
-            <li data-i18n="is_3">One policy (<span class="mono">yuhi.yaml</span>) shared by the CLI and the editor.</li>
-            <li data-i18n="is_4">Local-first: no account, no telemetry, works offline.</li>
+            <li data-i18n="is_1">実行前に、エージェントが見るもの・見ないものを正確にプレビューします。</li>
+            <li data-i18n="is_2">端末内で行う決定的な変換（仮名化・秘密情報のマスク）。元のファイルは変更しません。</li>
+            <li data-i18n="is_3">1つのポリシー（<span class="mono">yuhi.yaml</span>）を、CLIとエディタで共有します。</li>
+            <li data-i18n="is_4">ローカルファースト。アカウント不要、テレメトリなし、オフラインで動作します。</li>
           </ul>
         </div>
         <div class="card isnot">
-          <h3 data-i18n="isnot_h">＃ yuhi is not</h3>
+          <h3 data-i18n="isnot_h">＃ Yuhiでないもの</h3>
           <ul>
-            <li data-i18n="isnot_1">Workspace boundary: advisory. Initial context prepared by Yuhi; OS sandbox and filesystem enforcement are not enabled. The agent may access files outside the Prepared Workspace if the runtime or user permits it.</li>
-            <li data-i18n="isnot_2">A guarantee of "zero leakage." A determined process can still reach beyond the prepared copy.</li>
-            <li data-i18n="isnot_3">A cloud service. Nothing is uploaded to Yuhi — there is no Yuhi server.</li>
+            <li data-i18n="isnot_1">ワークスペース境界は勧告です。初期コンテキストは Yuhi が準備しますが、OS サンドボックスとファイルシステム強制は有効ではありません。ランタイムまたはユーザーが許可すれば、エージェントは Prepared Workspace 外のファイルへアクセスできます。</li>
+            <li data-i18n="isnot_2">「ゼロ漏洩」の保証ではありません。意図を持ったプロセスは、準備済みコピーの外にも到達し得ます。</li>
+            <li data-i18n="isnot_3">クラウドサービスではありません。Yuhiへのアップロードはなく、Yuhiのサーバーは存在しません。</li>
           </ul>
         </div>
       </div>
@@ -492,16 +545,16 @@
   <section id="start">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="start_ey">≈ 2 minutes</p>
-        <h2 data-i18n="start_h2">Get started.</h2>
-        <p data-i18n="start_p">Node.js 20+. Yuhi copies into a workspace it owns; your repository is read-only to it.</p>
+        <p class="eyebrow" data-i18n="start_ey">約2分</p>
+        <h2 data-i18n="start_h2">使ってみる。</h2>
+        <p data-i18n="start_p">Node.js 20以上。Yuhiは自身が管理するワークスペースにコピーを作り、あなたのリポジトリは読み取り専用として扱います。</p>
       </div>
       <div class="steps">
-        <div class="step"><div class="num">01</div><code><span class="p">npx</span> yuhi init</code><p data-i18n="step1">Writes <span class="mono">yuhi.yaml</span>, honoring your <span class="mono">.gitignore</span>.</p></div>
-        <div class="step"><div class="num">02</div><code><span class="p">npx</span> yuhi preview</code><p data-i18n="step2">See every file's route before anything runs.</p></div>
-        <div class="step"><div class="num">03</div><code><span class="p">npx</span> yuhi run claude</code><p data-i18n="step3">Launch the agent inside the prepared context.</p></div>
+        <div class="step"><div class="num">01</div><code><span class="p">npx</span> yuhi init</code><p data-i18n="step1"><span class="mono">.gitignore</span> を尊重して <span class="mono">yuhi.yaml</span> を作成します。</p></div>
+        <div class="step"><div class="num">02</div><code><span class="p">npx</span> yuhi preview</code><p data-i18n="step2">実行前に、各ファイルの経路を確認します。</p></div>
+        <div class="step"><div class="num">03</div><code><span class="p">npx</span> yuhi run claude</code><p data-i18n="step3">整えられた文脈の中でエージェントを起動します。</p></div>
       </div>
-      <p class="tag" style="margin-top:24px"><span data-i18n="avail">Available now — Beta</span> &nbsp;·&nbsp; <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi/v/0.2.0-beta.2" target="_blank" rel="noopener" style="color:var(--accent)">npm 0.2.0-beta.2</a> &nbsp;·&nbsp; <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode" target="_blank" rel="noopener" style="color:var(--accent)">VS Code 0.2.1</a> &nbsp;·&nbsp; <a href="https://github.com/YUHI-AI-Labs/yuhi" target="_blank" rel="noopener" style="color:var(--accent)">GitHub</a> &nbsp;·&nbsp; <a href="https://github.com/YUHI-AI-Labs/yuhi/releases/tag/v0.2.0-beta.2" target="_blank" rel="noopener" style="color:var(--accent)">Release notes</a></p>
+      <p class="tag" style="margin-top:24px"><span data-i18n="avail">提供中 — Beta</span> &nbsp;·&nbsp; <span data-i18n="rep_soon" style="color:var(--accent);font-weight:600">v0.3 近日公開</span> &nbsp;·&nbsp; <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi" target="_blank" rel="noopener" style="color:var(--accent)">npm</a> &nbsp;·&nbsp; <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode" target="_blank" rel="noopener" style="color:var(--accent)">VS Code Marketplace</a> &nbsp;·&nbsp; <a href="https://github.com/YUHI-AI-Labs/yuhi" target="_blank" rel="noopener" style="color:var(--accent)">GitHub</a> &nbsp;·&nbsp; <a href="https://github.com/YUHI-AI-Labs/yuhi/releases" target="_blank" rel="noopener" style="color:var(--accent)">Release notes</a></p>
     </div>
   </section>
 
@@ -509,13 +562,13 @@
   <section id="contribute">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow" data-i18n="ct_ey">Open source</p>
-        <h2 data-i18n="ct_h2">Help build the preparation layer before frontier AI.</h2>
-        <p data-i18n="ct_p">Yuhi is Apache-2.0 and vendor-neutral. Issues, discussions, and pull requests are welcome.</p>
+        <p class="eyebrow" data-i18n="ct_ey">オープンソース</p>
+        <h2 data-i18n="ct_h2">外部AIへ渡す前の「準備の層」を、一緒につくる。</h2>
+        <p data-i18n="ct_p">YuhiはApache-2.0、ベンダー非依存です。Issue・Discussion・Pull Requestを歓迎します。</p>
       </div>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="ct_gh">Contribute on GitHub</a>
-        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi/issues" data-i18n="ct_guide">Browse issues</a>
+        <a class="btn btn-primary" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="ct_gh">GitHubで参加する</a>
+        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi/issues" data-i18n="ct_guide">Issueを見る</a>
       </div>
     </div>
   </section>
@@ -523,12 +576,12 @@
 
 <footer>
   <div class="wrap foot">
-    <div class="meta"><span class="glyph" style="width:16px;height:16px" aria-hidden="true"></span> yuhi <span class="dot-sep"></span> Apache-2.0 <span class="dot-sep"></span> local-first <span class="dot-sep"></span><span data-i18n="foot_neutral">vendor-neutral</span></div>
+    <div class="meta"><span class="glyph" style="width:16px;height:16px" aria-hidden="true"></span> yuhi <span class="dot-sep"></span> Apache-2.0 <span class="dot-sep"></span> local-first <span class="dot-sep"></span><span data-i18n="foot_neutral">ベンダー非依存</span></div>
     <div class="links">
       <a href="https://github.com/YUHI-AI-Labs/yuhi">GitHub</a>
-      <a href="#demo" data-i18n="foot_demo">Demo</a>
-      <a href="#routes" data-i18n="foot_routes">Routes</a>
-      <a href="#start" data-i18n="foot_start">Get started</a>
+      <a href="#demo" data-i18n="foot_demo">デモ</a>
+      <a href="#routes" data-i18n="foot_routes">経路</a>
+      <a href="#start" data-i18n="foot_start">使ってみる</a>
     </div>
   </div>
 </footer>
@@ -590,6 +643,11 @@
       sv_avoided:"Estimated Claude input avoided", sv_reduction:"Reduction",
       sv_excluded:"Files excluded", sv_summarized:"Files summarized", sv_sensitive:"Sensitive items kept local", sv_modified:"Original files modified",
       sv_disc:"Actual usage and billing depend on the selected AI product, provider behavior, caching, and pricing.",
+      rep_ey:"Repository Ready · v0.3", rep_h2:"Repository Ready — Claude Code becomes faster.",
+      rep_p:"See how much of your repository your AI actually needs. In v0.3, Yuhi turns the result of preparation into an AI Readiness Score — paste it into a README, a PR, or a post, so Claude Code starts faster.",
+      rep_side:"In v0.3, every preparation run leaves a Repository Ready score. Wherever it shows — GitHub, VS Code, npm — the value reads at a glance, and it's easy to share.",
+      rep_disc:"Score, numbers, and badge shown are an example. A public-safe (anonymized) export is planned for v0.3 — file names, paths, and sensitive details are never included in a shared report.",
+      rep_soon:"v0.3 coming soon",
       ct_ey:"Open source", ct_h2:"Help build the preparation layer before frontier AI.",
       ct_p:"Yuhi is Apache-2.0 and vendor-neutral. Issues, discussions, and pull requests are welcome.",
       ct_gh:"Contribute on GitHub", ct_guide:"Browse issues",
@@ -643,6 +701,11 @@
       sv_avoided:"削減できたと推定されるClaude入力", sv_reduction:"削減率",
       sv_excluded:"除外したファイル", sv_summarized:"ローカル要約したファイル", sv_sensitive:"端末内に保持した機微情報", sv_modified:"変更した元ファイル",
       sv_disc:"実際の使用量と料金は、利用するAI製品、プロバイダーの動作、キャッシュ、料金体系によって異なります。",
+      rep_ey:"Repository Ready · v0.3", rep_h2:"Repository Ready — Claude Code が、速くなる。",
+      rep_p:"See how much of your repository your AI actually needs. — v0.3 は準備の結果を「AI Readiness Score」にします。README・PR・SNS に貼れて、Claude Code はより速く走り出します。",
+      rep_side:"v0.3 では、準備のたびに「Repository Ready」スコアが残ります。GitHub・VS Code・npm のどこで見ても価値が一目で伝わり、そのまま共有できます。",
+      rep_disc:"スコア・数値・バッジは表示例です。public-safe（匿名）エクスポートは v0.3 で提供予定 — ファイル名・パス・機微情報は共有レポートに含めません。",
+      rep_soon:"v0.3 近日公開",
       ct_ey:"オープンソース", ct_h2:"外部AIへ渡す前の「準備の層」を、一緒につくる。",
       ct_p:"YuhiはApache-2.0、ベンダー非依存です。Issue・Discussion・Pull Requestを歓迎します。",
       ct_gh:"GitHubで参加する", ct_guide:"Issueを見る",
@@ -696,6 +759,11 @@
       sv_avoided:"预计减少的 Claude 输入", sv_reduction:"减少比例",
       sv_excluded:"已排除文件", sv_summarized:"已在本地摘要的文件", sv_sensitive:"保留在本机的敏感信息", sv_modified:"已修改的原始文件",
       sv_disc:"实际使用量和费用取决于所选 AI 产品、提供商行为、缓存和定价方式。",
+      rep_ey:"Repository Ready · v0.3", rep_h2:"Repository Ready —— Claude Code 更快。",
+      rep_p:"See how much of your repository your AI actually needs. — v0.3 把准备的结果变成「AI Readiness Score」，可直接贴进 README、PR 或分享，让 Claude Code 更快启动。",
+      rep_side:"在 v0.3 中，每次准备都会留下一个 Repository Ready 分数。无论在 GitHub、VS Code 还是 npm，一眼即可看懂价值，也便于分享。",
+      rep_disc:"图中分数、数值与徽章仅为示例。public-safe（匿名）导出计划在 v0.3 提供 — 共享报告中不包含文件名、路径与敏感信息。",
+      rep_soon:"v0.3 即将推出",
       ct_ey:"开源", ct_h2:"一起构建前沿 AI 之前的“上下文准备层”。",
       ct_p:"Yuhi 采用 Apache-2.0，厂商中立。欢迎提交 Issue、Discussion 和 Pull Request。",
       ct_gh:"在 GitHub 参与", ct_guide:"贡献指南",
