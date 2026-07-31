@@ -1,0 +1,31 @@
+# Example workflow for the Yuhi Repository Report action (report-only).
+#
+# This file is named `.example.yml` on purpose so it does NOT auto-run in this
+# repository. Copy it to `yuhi-report.yml` in a consuming repo to enable it.
+#
+# It runs on pull requests and manual dispatch, and needs only read access.
+name: Yuhi Repository Report
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Report-only: no write permissions required.
+permissions:
+  contents: read
+
+jobs:
+  yuhi-report:
+    name: Yuhi Repository Report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # In a standalone consumer, reference the mirrored action:
+      #   uses: YUHI-AI-Labs/yuhi-action@v0
+      # Inside this monorepo, reference the local path:
+      - name: Yuhi Repository Report
+        uses: ./actions/yuhi-report
+        with:
+          mode: report

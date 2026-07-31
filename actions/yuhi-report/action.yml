@@ -1,0 +1,45 @@
+name: "Yuhi Repository Report"
+description: >-
+  Report-only. Surfaces the public-safe Yuhi Repository Report (aggregate
+  numbers only) in the GitHub Actions Job Summary and uploads it as a JSON
+  artifact. Never fails the build by default; never posts PR comments.
+author: "YUHI-AI-Labs"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  path:
+    description: "Repository directory to prepare."
+    required: false
+    default: "."
+  mode:
+    description: "Action mode. Only 'report' is supported in v0 (name reserved)."
+    required: false
+    default: "report"
+  fail-on-error:
+    description: >-
+      When 'false' (default), a Yuhi preparation warning is reported but never
+      fails the job. When 'true', such a warning fails the step.
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Generate Yuhi Repository Report"
+      shell: sh
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: sh "$GITHUB_ACTION_PATH/run.sh"
+
+    - name: "Upload Yuhi report artifact"
+      if: ${{ hashFiles('yuhi-report.json') != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: "yuhi-report"
+        path: "yuhi-report.json"
+        if-no-files-found: "ignore"
