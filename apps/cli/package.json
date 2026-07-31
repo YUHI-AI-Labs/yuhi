@@ -57,6 +57,9 @@
     "picomatch": "^4.0.2",
     "ignore": "^6.0.2"
   },
+  "optionalDependencies": {
+    "typescript": "^5.7.2"
+  },
   "devDependencies": {
     "@yuhi/shared": "workspace:*",
     "@yuhi/config": "workspace:*",

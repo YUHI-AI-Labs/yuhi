@@ -20,7 +20,9 @@
     "@yuhi/processors": "workspace:*",
     "@yuhi/scanner": "workspace:*",
     "@yuhi/shared": "workspace:*",
-    "@yuhi/workspace": "workspace:*",
+    "@yuhi/workspace": "workspace:*"
+  },
+  "optionalDependencies": {
     "typescript": "^5.7.2"
   },
   "devDependencies": {

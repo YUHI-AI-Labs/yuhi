@@ -1,9 +1,20 @@
 /**
- * v0.3.3 Importance ranking + token-budget selection.
+ * v0.3.3 Three-tier token-budget selection.
  *
- * Given a token budget and a set of source files (each already carrying deterministic
- * importance signals and pre-computed full/compressed token estimates), decide which
+ * Given a token budget and a set of source files (each carrying deterministic
+ * signals and pre-computed full/compressed token estimates), decide which
  * `ContextRepresentation` every file gets: kept FULL, COMPRESSED, or EXCLUDED to fit.
+ *
+ * The decision uses THREE explicit, independent tiers:
+ *
+ *   1. MustKeep      — files the budget must NEVER touch. Always FULL; never excluded
+ *                      and never force-compressed. (user intent, entry points, manifests,
+ *                      config, agent instructions, important fixtures, un-parseable files,
+ *                      and files too small to bother compressing.)
+ *   2. Importance    — a numeric rank used ONLY to decide DROP ORDER among the
+ *                      NON-MustKeep files when over budget (lowest dropped first).
+ *   3. Compressibility — whether a non-MustKeep file has a genuinely smaller compressed
+ *                      form (`compressedTokens < fullTokens` and `fullTokens > threshold`).
  *
  * This module is purely arithmetic and DETERMINISTIC:
  *   - it never parses code (that is the SourceCompressors' job),
@@ -11,8 +22,8 @@
  *     flagged via `alreadyExcluded`),
  *   - the same inputs — in ANY order — always yield the same decisions.
  *
- * The token budget is BEST-EFFORT. Essential (forced-FULL) files are never dropped to
- * fit a budget; if the essentials alone exceed the budget we keep them and warn.
+ * The token budget is BEST-EFFORT. MustKeep files are never dropped and never broken to
+ * fit a budget; if the MustKeep set alone exceeds the budget we keep it all and warn.
  */
 
 import type { ContextRepresentation } from "./types.js";
@@ -23,7 +34,7 @@ export interface BudgetFileInput {
   fullTokens: number;
   /** Estimated tokens if compressed (absent = not compressible). */
   compressedTokens?: number;
-  // deterministic importance signals (all optional booleans):
+  // deterministic signals (all optional booleans):
   /** User explicitly kept this file full. */
   userIncluded?: boolean;
   /** Currently open in the editor / named on the CLI. */
@@ -52,8 +63,12 @@ export interface BudgetOptions {
 export interface RepresentationDecision {
   relpath: string;
   representation: ContextRepresentation;
-  /** Short deterministic reason for the decision. */
+  /** Report-ready deterministic reason (see the reason vocabulary below). */
   reason: string;
+  /** Tier 1: this file is MustKeep — the budget never excludes or compresses it. */
+  mustKeep: boolean;
+  /** Tier 2: numeric importance rank (drop order among non-MustKeep files). */
+  importanceRank: number;
   fullTokens: number;
   /** Tokens actually contributed (0 if excluded). */
   finalTokens: number;
@@ -80,21 +95,28 @@ export interface BudgetResult {
     withinBudget: boolean;
     status: "within-budget" | "best-effort" | "no-budget";
     warnings: string[];
+    // --- Report layer (Target / Actual / Reason) ---
+    /** The budget we aimed at (= tokenBudget). null when there is no budget. */
+    targetBudget: number | null;
+    /** The tokens we actually delivered (= preparedTokens). */
+    actualTokens: number;
+    /** Short reason shown when the budget could not be met; omitted otherwise. */
+    budgetReason?: string;
   };
 }
 
 /**
  * Importance rank, high number = more important (kept longest, dropped last).
  *
- *   6  userIncluded / openOrSpecified   (user intent — never sacrificed for budget)
- *   5  entryPoint
- *   4  packageManifest / agentInstruction / configFile
- *   3  importantTestFixture
- *   2  compressible source
- *   1  other (plain full source, too-small, parse-failed, un-shrinkable)
+ * MustKeep files (see below) are NEVER dropped, so their rank is informational only.
+ * Ranking decides drop order strictly among the NON-MustKeep files, where in practice
+ * only two ranks occur:
  *
- * The value is used both to name the winning "essential" reason and, for the
- * non-essential files, to decide drop order when trimming to a budget.
+ *   2  compressible source
+ *   1  other (plain full source that cannot be usefully compressed)
+ *
+ * The higher ranks are retained so a decision's `importanceRank` still reflects why a
+ * MustKeep file is important, and so the ordering constant stays stable.
  */
 export const IMPORTANCE_RANK = {
   userOrOpen: 6,
@@ -114,29 +136,32 @@ interface WorkItem {
   representation: Representation;
   reason: string;
   finalTokens: number;
-  rank: number;
-  /** Forced FULL — an essential file that is never excluded to fit a budget. */
-  essential: boolean;
+  importanceRank: number;
+  /** Tier 1 — MustKeep: the budget never excludes or compresses this file. */
+  mustKeep: boolean;
   /** Excluded upstream as junk — not counted toward originalTokens. */
   junk: boolean;
 }
 
-/** The first matching signal names the essential reason, in importance order. */
-function essentialReason(f: BudgetFileInput, threshold: number): string | null {
+/**
+ * Tier 1 — MustKeep detection. The first matching signal names the reason, in the
+ * canonical MustKeep order. Returns null when the file is not MustKeep.
+ */
+function mustKeepReason(f: BudgetFileInput, threshold: number): string | null {
   if (f.userIncluded) return "user-included";
   if (f.openOrSpecified) return "open-or-specified";
   if (f.entryPoint) return "entry-point";
   if (f.packageManifest) return "package-manifest";
+  if (f.configFile) return "config";
   if (f.agentInstruction) return "agent-instruction";
-  if (f.configFile) return "config-file";
   if (f.importantTestFixture) return "test-fixture";
   if (f.parseFailed) return "parse-failed";
   if (f.fullTokens <= threshold) return "too-small";
   return null;
 }
 
-/** Importance rank derived purely from signals + compressibility. */
-function importanceRank(f: BudgetFileInput, compressible: boolean): number {
+/** Tier 2 — importance rank derived purely from signals + compressibility. */
+function importanceRankFor(f: BudgetFileInput, compressible: boolean): number {
   if (f.userIncluded || f.openOrSpecified) return IMPORTANCE_RANK.userOrOpen;
   if (f.entryPoint) return IMPORTANCE_RANK.entryPoint;
   if (f.packageManifest || f.agentInstruction || f.configFile)
@@ -159,7 +184,7 @@ export function selectRepresentations(
   const budget = hasBudget ? (opts.tokenBudget as number) : null;
 
   const items: WorkItem[] = files.map((input) => {
-    // 1. Junk excluded upstream — always excluded, contributes 0, uncounted.
+    // (a) Junk excluded upstream — always excluded, contributes 0, uncounted.
     if (input.alreadyExcluded) {
       return {
         input,
@@ -168,36 +193,37 @@ export function selectRepresentations(
         representation: "excluded",
         reason: "excluded-upstream",
         finalTokens: 0,
-        rank: IMPORTANCE_RANK.other,
-        essential: false,
+        importanceRank: IMPORTANCE_RANK.other,
+        mustKeep: false,
         junk: true,
       };
     }
 
-    // 2. Classify: essential (forced FULL), compressible, or plain full.
-    const forcedReason = essentialReason(input, threshold);
+    // Tier 3 — compressibility (genuinely smaller compressed form).
     const canCompress =
       input.compressedTokens !== undefined &&
       input.compressedTokens < input.fullTokens &&
       input.fullTokens > threshold;
-    const compressible = forcedReason === null && canCompress;
-    const rank = importanceRank(input, compressible);
 
-    if (forcedReason !== null) {
+    // (b) Tier 1 — MustKeep: always FULL, never a drop candidate.
+    const keepReason = mustKeepReason(input, threshold);
+    if (keepReason !== null) {
       return {
         input,
         relpath: input.relpath,
         fullTokens: input.fullTokens,
         representation: "full",
-        reason: forcedReason,
+        reason: keepReason,
         finalTokens: input.fullTokens,
-        rank,
-        essential: true,
+        importanceRank: importanceRankFor(input, canCompress),
+        mustKeep: true,
         junk: false,
       };
     }
 
-    if (compressible) {
+    // (c) Non-MustKeep: compressible → compressed; otherwise full (not compressible).
+    const importanceRank = importanceRankFor(input, canCompress);
+    if (canCompress) {
       return {
         input,
         relpath: input.relpath,
@@ -205,40 +231,38 @@ export function selectRepresentations(
         representation: "compressed",
         reason: "compressed",
         finalTokens: input.compressedTokens as number,
-        rank,
-        essential: false,
+        importanceRank,
+        mustKeep: false,
         junk: false,
       };
     }
 
-    // Full because it cannot be usefully compressed, but not essential.
-    const reason =
-      input.compressedTokens === undefined ? "not-compressible" : "compression-not-smaller";
     return {
       input,
       relpath: input.relpath,
       fullTokens: input.fullTokens,
       representation: "full",
-      reason,
+      reason: "not-compressible",
       finalTokens: input.fullTokens,
-      rank,
-      essential: false,
+      importanceRank,
+      mustKeep: false,
       junk: false,
     };
   });
 
-  // 3. Everything is reserved: essentials full, compressibles compressed. Compute total.
+  // Everything is reserved: MustKeep full, compressibles compressed. Compute total.
   let preparedTokens = items.reduce((sum, it) => sum + it.finalTokens, 0);
 
   const warnings: string[] = [];
+  let budgetReason: string | undefined;
 
-  // 4. Trim to the budget by dropping the lowest-importance non-essential files first.
+  // (d) Trim to the budget by dropping the lowest-importance NON-MustKeep files first.
   if (hasBudget && budget !== null && preparedTokens > budget) {
     const candidates = items
-      .filter((it) => !it.essential && !it.junk && it.representation !== "excluded")
+      .filter((it) => !it.mustKeep && !it.junk && it.representation !== "excluded")
       .sort(
         (a, b) =>
-          a.rank - b.rank || // lowest importance first
+          a.importanceRank - b.importanceRank || // lowest importance first
           b.fullTokens - a.fullTokens || // then largest full size first
           compareRelpath(a.relpath, b.relpath),
       );
@@ -251,13 +275,15 @@ export function selectRepresentations(
       it.finalTokens = 0;
     }
 
-    // 5. Best-effort: essentials alone may still exceed the budget — keep them, warn.
+    // (e) Best-effort: MustKeep files alone may still exceed the budget — keep them, warn.
     if (preparedTokens > budget) {
-      const essentialTokens = items
-        .filter((it) => it.essential)
+      const mustKeepTokens = items
+        .filter((it) => it.mustKeep)
         .reduce((sum, it) => sum + it.finalTokens, 0);
+      budgetReason = "Essential files exceed budget";
       warnings.push(
-        `Essential files require ${essentialTokens} tokens, which exceeds the token budget of ${budget}. Keeping essential files; budget is best-effort.`,
+        `Essential (must-keep) files require ${mustKeepTokens} tokens, which exceeds the ` +
+          `token budget of ${budget}. Keeping them full; budget is best-effort.`,
       );
     }
   }
@@ -268,6 +294,8 @@ export function selectRepresentations(
       relpath: it.relpath,
       representation: it.representation,
       reason: it.reason,
+      mustKeep: it.mustKeep,
+      importanceRank: it.importanceRank,
       fullTokens: it.fullTokens,
       finalTokens: it.finalTokens,
     }))
@@ -320,6 +348,9 @@ export function selectRepresentations(
       withinBudget,
       status,
       warnings,
+      targetBudget: budget,
+      actualTokens: preparedTokens,
+      ...(budgetReason !== undefined ? { budgetReason } : {}),
     },
   };
 }

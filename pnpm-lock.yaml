@@ -102,6 +102,10 @@ importers:
       '@yuhi/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+    optionalDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   apps/vscode:
     dependencies:
@@ -133,6 +137,10 @@ importers:
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2
+    optionalDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   packages/agents:
     dependencies:
@@ -187,13 +195,14 @@ importers:
       '@yuhi/workspace':
         specifier: workspace:*
         version: link:../workspace
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
     devDependencies:
       exceljs:
         specifier: 4.4.0
         version: 4.4.0
+    optionalDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   packages/local:
     dependencies:

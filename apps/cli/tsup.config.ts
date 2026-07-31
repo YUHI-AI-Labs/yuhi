@@ -6,6 +6,10 @@ export default defineConfig({
   clean: true,
   sourcemap: false,
   noExternal: [/^@yuhi\//],
+  // `typescript` (12 MB, CJS) is loaded only when a file is actually compressed, via a
+  // cached dynamic import in the structure compressor. Keep it external so it is never
+  // inlined into the ESM CLI bundle; it is an optional dependency and gracefully absent.
+  external: ["typescript"],
   // The shebang must stay first. The createRequire line makes esbuild's ESM
   // `__require` shim resolve to a real `require` (it checks `typeof require`),
   // so bundled CJS deps that `require()` Node builtins (e.g. ExcelJS →

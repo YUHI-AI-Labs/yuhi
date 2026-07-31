@@ -234,6 +234,9 @@
     "@yuhi/config": "workspace:*",
     "yaml": "^2.6.1"
   },
+  "optionalDependencies": {
+    "typescript": "^5.7.2"
+  },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
     "@types/node": "^20.17.9",

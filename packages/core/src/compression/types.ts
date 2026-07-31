@@ -46,7 +46,18 @@ export interface ExtractedSymbol {
 }
 
 export interface CompressionWarning {
-  code: "parse-failed" | "unsupported-language" | "empty-output" | "partial" | "too-small";
+  /**
+   * `parse-failed` = the parser loaded but the source has syntax errors.
+   * `compressor-unavailable` = the language compressor (e.g. the TypeScript parser)
+   * could not be loaded at all — a DIFFERENT cause with a different remedy.
+   */
+  code:
+    | "parse-failed"
+    | "compressor-unavailable"
+    | "unsupported-language"
+    | "empty-output"
+    | "partial"
+    | "too-small";
   message: string;
 }
 
