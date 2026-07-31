@@ -17,6 +17,7 @@ export * from "./prepared-metrics.js";
 export * from "./agent-changes.js";
 export * from "./workflow-state.js";
 export * from "./background-documents.js";
+export * from "./background/index.js";
 
 // Convenience re-exports so the CLI/VS Code can depend on just @yuhi/core.
 export {
