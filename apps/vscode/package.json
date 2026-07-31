@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi — AI-Ready Repositories",
   "description": "Scan, sanitize, convert, and reduce your repository before opening it with an AI coding agent. Local-first, no telemetry.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -197,6 +197,27 @@
           "group": "yuhi@1"
         }
       ]
+    },
+    "configuration": {
+      "title": "Yuhi",
+      "properties": {
+        "yuhi.safetyMode": {
+          "type": "string",
+          "enum": [
+            "balanced",
+            "strict",
+            "maximum-privacy"
+          ],
+          "enumDescriptions": [
+            "Recommended for most repositories.",
+            "More conservative handling for business repositories.",
+            "Shares the minimum context allowed by current Yuhi policies."
+          ],
+          "default": "balanced",
+          "scope": "resource",
+          "description": "Safety Mode preset applied when Yuhi prepares this workspace. Changing it takes effect the next time you prepare (re-prepare) the workspace."
+        }
+      }
     }
   },
   "scripts": {

@@ -545,6 +545,7 @@ describe("renderSavingsHtml (product workflow)", () => {
           largeFilesExcluded: 0,
           estimatedReductionPercent: 94,
           status: "ready",
+          safetyMode: "balanced",
         },
       },
       "vscode-resource:",
@@ -761,7 +762,7 @@ describe("What the AI Can See (read-only review)", () => {
     fixture.preparationReport = {
       sourceFiles: 12, preparedArtifacts: 12, documentsPrepared: 0,
       secretsBlocked: 2, identifiersTransformed: 0, largeFilesExcluded: 0,
-      estimatedReductionPercent: 40, status: "ready",
+      estimatedReductionPercent: 40, status: "ready", safetyMode: "balanced",
     };
     fixture.files = [
       file({ path: secretPath, included: false, omitted: true, action: "local-only",
@@ -779,6 +780,79 @@ describe("What the AI Can See (read-only review)", () => {
     for (const { format } of REPOSITORY_READY_EXPORT_FORMATS) {
       const out = repositoryReadyExportText(fixture.preparationReport!, format);
       for (const bad of forbidden) expect(out).not.toContain(bad);
+    }
+  });
+});
+
+describe("Safety Mode selector (v0.3.2)", () => {
+  const render = (over: Partial<ReviewData> = {}) =>
+    renderSavingsHtml({ ...data(), ...over }, "vscode-resource:", "NONCE123");
+
+  it("renders a selector with the three modes and selects the prepared run's mode", () => {
+    const html = render({ preparedSafetyMode: "strict", selectedSafetyMode: "strict" });
+    expect(html).toContain('id="safetyModeSelect"');
+    expect(html).toContain('value="balanced"');
+    expect(html).toContain('value="strict"');
+    expect(html).toContain('value="maximum-privacy"');
+    // The prepared mode is the selected <option>.
+    expect(html).toContain('value="strict" selected');
+    expect(html).not.toContain('value="balanced" selected');
+    // Non-overclaiming descriptions accompany the options.
+    expect(html).toContain("Recommended for most repositories.");
+    expect(html).toContain("More conservative handling for business repositories.");
+    expect(html).toContain("Shares the minimum context allowed by current Yuhi policies.");
+  });
+
+  it("shows a clean readiness + enabled launch when selected matches prepared", () => {
+    const html = render({ preparedSafetyMode: "balanced", selectedSafetyMode: "balanced" });
+    expect(html).not.toContain('id="safetyModeDirty"');
+    expect(html).not.toContain("Re-prepare required");
+    // Launch action is the live, clickable button (not disabled).
+    expect(html).toContain('class="button primary launchAction"');
+    expect(html).not.toContain('class="button primary" disabled');
+  });
+
+  it("shows the Re-prepare required banner and disables launch when modes differ", () => {
+    const html = render({ preparedSafetyMode: "balanced", selectedSafetyMode: "strict" });
+    expect(html).toContain('id="safetyModeDirty"');
+    expect(html).toContain("Re-prepare required");
+    expect(html).toContain("Prepared with: Balanced");
+    expect(html).toContain("Selected: Strict");
+    // The launch action is disabled and never wired to fire a launch.
+    expect(html).toContain('class="button primary" disabled');
+    expect(html).not.toContain('class="button primary launchAction"');
+    // A Re-prepare action is offered.
+    expect(html).toContain('id="reprepare"');
+  });
+
+  it("wires the selector to postMessage(setSafetyMode) and Re-prepare to reprepare", () => {
+    const html = render({ preparedSafetyMode: "balanced", selectedSafetyMode: "strict" });
+    // Structural wiring: the select posts setSafetyMode with its value.
+    expect(html).toContain('getElementById("safetyModeSelect")');
+    expect(html).toContain('type:"setSafetyMode"');
+    // The Re-prepare button posts the reprepare message.
+    expect(html).toContain('getElementById("reprepare")');
+    expect(html).toContain('send("reprepare")');
+  });
+
+  it("does not route selector/dirty UI into the public report copy/export bytes", () => {
+    const fixture: ReviewData = {
+      ...data(),
+      preparedSafetyMode: "balanced",
+      selectedSafetyMode: "maximum-privacy",
+      preparationReport: {
+        sourceFiles: 3, preparedArtifacts: 3, documentsPrepared: 0,
+        secretsBlocked: 0, identifiersTransformed: 0, largeFilesExcluded: 0,
+        estimatedReductionPercent: 10, status: "ready", safetyMode: "balanced",
+      },
+    };
+    // Sanity: the dirty banner exists in the local webview surface…
+    const html = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    expect(html).toContain("Re-prepare required");
+    // …but the PUBLIC copy/export bytes never carry the dirty/selector strings.
+    const copy = repositoryReadyClipboardText(fixture.preparationReport!);
+    for (const bad of ["Re-prepare required", "Selected:", "setSafetyMode", "reprepare"]) {
+      expect(copy).not.toContain(bad);
     }
   });
 });

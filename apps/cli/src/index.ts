@@ -40,7 +40,7 @@ import {
   type SafetyMode,
   type AgentChangeBaseline,
 } from "@yuhi/core";
-import { loadConfig } from "@yuhi/config";
+import { loadConfig, resolveSafetyMode } from "@yuhi/config";
 import { createLocalModelProvider } from "@yuhi/local";
 import { lookupOnPath } from "@yuhi/agents";
 import { createTranslator, resolveLang, type Translator } from "./i18n.js";
@@ -605,15 +605,22 @@ async function main(): Promise<void> {
           providerConfigFromSettings(loaded.config.local_model),
         );
 
-        if (!g.json && safetyMode !== undefined && safetyMode !== "balanced") {
-          console.log(`Safety Mode: ${safetyModeLabel(safetyMode)}`);
+        // Effective Safety Mode: CLI flag > yuhi.yaml `safetyMode` > balanced.
+        // (Previously only the CLI flag was honored, so a `safetyMode:` written in
+        //  yuhi.yaml by `yuhi init` was silently ignored.)
+        const effectiveSafetyMode = resolveSafetyMode({
+          cli: safetyMode,
+          repo: loaded.config.safetyMode,
+        });
+        if (!g.json && effectiveSafetyMode !== "balanced") {
+          console.log(`Safety Mode: ${safetyModeLabel(effectiveSafetyMode)}`);
         }
 
         const mode = loaded.config.budget?.reduction_mode;
         const res = await prepareWorkspace(target, {
           providerFactory,
           ...(mode !== undefined ? { mode } : {}),
-          ...(safetyMode !== undefined ? { safetyMode } : {}),
+          safetyMode: effectiveSafetyMode,
         });
         await writePreparedRunSession(res);
 

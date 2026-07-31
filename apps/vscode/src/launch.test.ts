@@ -105,6 +105,7 @@ async function fixture(): Promise<{ root: string; outDir: string; report: Prepar
         },
       ],
       sourceModified: 0,
+      safetyMode: "balanced",
     },
   };
 }

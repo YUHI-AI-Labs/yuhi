@@ -7,6 +7,48 @@ import { buildPreparedMetrics } from "./prepared-metrics.js";
 import { deriveWorkflowState, type YuhiWorkflowState } from "./workflow-state.js";
 import { buildAiReadinessReport } from "./ai-readiness-report.js";
 import { buildPreparationReport, type PreparationReport } from "./preparation-report.js";
+import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
+
+/** Why a Prepared Workspace is stale relative to the current inputs. */
+export type PreparationFreshnessReason =
+  | "source-changed"
+  | "config-changed"
+  | "safety-mode-changed"
+  | "policy-changed"
+  | "missing-manifest";
+
+export interface PreparationFreshness {
+  fresh: boolean;
+  reason?: PreparationFreshnessReason;
+}
+
+/**
+ * Freshness check for the Safety Mode: a run prepared with one mode is STALE when a
+ * different mode is now selected. Shared by the CLI and VS Code launch paths so the
+ * gating logic is never re-implemented in the UI. An older manifest without a saved
+ * mode is treated as Balanced (backward compatible), so it stays fresh under Balanced.
+ */
+export function checkSafetyModeFreshness(
+  preparedSafetyMode: SafetyMode | undefined,
+  selectedSafetyMode: SafetyMode,
+): PreparationFreshness {
+  const prepared = preparedSafetyMode ?? DEFAULT_PREPARE_SAFETY_MODE;
+  return prepared === selectedSafetyMode
+    ? { fresh: true }
+    : { fresh: false, reason: "safety-mode-changed" };
+}
+
+/** Read the Safety Mode a Prepared Workspace was created with (Balanced if absent/old). */
+export function readPreparedSafetyMode(manifest: unknown): SafetyMode {
+  const m = manifest as { safetyMode?: unknown } | null | undefined;
+  return m && typeof m.safetyMode === "string" && isSafetyModeValue(m.safetyMode)
+    ? (m.safetyMode as SafetyMode)
+    : DEFAULT_PREPARE_SAFETY_MODE;
+}
+
+function isSafetyModeValue(v: string): boolean {
+  return v === "balanced" || v === "strict" || v === "maximum-privacy";
+}
 
 export type PreparedRunStatus = "Success" | "Partial" | "Failed";
 
@@ -114,9 +156,13 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
 function buildPreparationReportSafely(report: PrepareReport, warning: boolean): PreparationReport {
   try {
     const readiness = buildAiReadinessReport(report.files);
-    return buildPreparationReport(readiness, report.files.length, { warning });
+    return buildPreparationReport(readiness, report.files.length, {
+      warning,
+      safetyMode: report.safetyMode,
+    });
   } catch {
     return {
+      safetyMode: report.safetyMode,
       sourceFiles: report.files.length,
       preparedArtifacts: 0,
       documentsPrepared: 0,

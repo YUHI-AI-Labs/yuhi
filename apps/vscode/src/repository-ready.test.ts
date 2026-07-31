@@ -16,6 +16,7 @@ const report = (over: Partial<PreparationReport> = {}): PreparationReport => ({
   largeFilesExcluded: 0,
   estimatedReductionPercent: 94,
   status: "ready",
+  safetyMode: "balanced",
   ...over,
 });
 

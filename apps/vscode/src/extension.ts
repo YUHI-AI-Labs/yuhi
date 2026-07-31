@@ -20,6 +20,9 @@ import {
   runInit,
   DEFAULT_DISCLOSURE_SAFETY_MODE,
   DEFAULT_CONTEXT_DETAIL,
+  DEFAULT_PREPARE_SAFETY_MODE,
+  isSafetyMode,
+  type SafetyMode,
   type PrepareReport,
   type PreparedFileEntry,
   type AgentChangeBaseline,
@@ -110,6 +113,8 @@ function setStatus(state: StatusState): void {
 // ---- shared state ----
 let lastReport: PrepareReport | undefined;
 let lastReportRoot: string | undefined;
+/** The real @yuhi/core Safety Mode the current prepared run (lastReport) used. */
+let lastReportSafetyMode: SafetyMode | undefined;
 let reviewPanel: vscode.WebviewPanel | undefined;
 let preparedStatusBar: vscode.StatusBarItem | undefined;
 let reviewingOpenedPreparedWorkspace = false;
@@ -718,9 +723,19 @@ export function preparationProgressUpdate(
   };
 }
 
+/**
+ * The Safety Mode selected in the workspace setting (`yuhi.safetyMode`). Validated
+ * with `isSafetyMode`; falls back to the core default when unset/invalid.
+ */
+function currentSafetyMode(): SafetyMode {
+  const raw = vscode.workspace.getConfiguration("yuhi").get<SafetyMode>("safetyMode");
+  return isSafetyMode(raw) ? raw : DEFAULT_PREPARE_SAFETY_MODE;
+}
+
 async function prepareWorkspaceForLaunch(
   root: string,
   excludeRelpaths: readonly string[] = [],
+  safetyMode: SafetyMode = currentSafetyMode(),
 ): Promise<PrepareReport | undefined> {
   // Onboarding gates: config + local AI must be ready before preparing.
   if (!existsSync(path.join(root, CONFIG_FILENAME))) {
@@ -785,6 +800,7 @@ async function prepareWorkspaceForLaunch(
           }, 60_000);
           const preparation = prepareWorkspaceOutcome(root, {
             provider,
+            safetyMode,
             deferDocumentInspection: true,
             signal: controller.signal,
             onProgress: (msg) => {
@@ -842,6 +858,9 @@ async function prepareWorkspaceForLaunch(
             increment: Math.max(0, 100 - creditedProgress),
             message: "Preparation complete · Ready for review",
           });
+          // Record the resolved Safety Mode this run actually prepared under so the
+          // review can render the selector state + dirty banner (item 5).
+          lastReportSafetyMode = safetyMode;
           return outcome.report;
         } finally {
           if (watchdog) clearTimeout(watchdog);
@@ -1757,6 +1776,11 @@ function toReviewData(
     // The webview labels these honestly as the applied defaults.
     safetyMode: DEFAULT_DISCLOSURE_SAFETY_MODE,
     contextDetail: DEFAULT_CONTEXT_DETAIL,
+    // Real @yuhi/core Safety Mode for the selector + dirty-state. The prepared
+    // run's mode is the one the extension passed to prepareWorkspace (fallback to
+    // the current setting for older runs opened via activation).
+    preparedSafetyMode: lastReportSafetyMode ?? currentSafetyMode(),
+    selectedSafetyMode: currentSafetyMode(),
     runId: report.runId,
     outcome: classifyOutcome(report),
     osSandboxEnabled: false,
@@ -1999,6 +2023,35 @@ async function commandReview(awaitDecision = false): Promise<"open" | "cancel" |
       if (msg?.type === "exportPublicReport") {
         void exportPublicPreparationReport(root, report);
       }
+      if (msg?.type === "setSafetyMode" && isSafetyMode(msg.value)) {
+        void (async () => {
+          // Persist the choice to the workspace setting, then re-render the review
+          // into its dirty / "Re-prepare required" state. This NEVER auto-launches
+          // and does NOT auto-prepare — lastReport/lastReportSafetyMode stay as the
+          // prepared run, so the selector now differs from the prepared mode.
+          await vscode.workspace
+            .getConfiguration("yuhi")
+            .update("safetyMode", msg.value, vscode.ConfigurationTarget.Workspace);
+          reviewPanel?.dispose();
+          reviewPanel = undefined;
+          await commandReview();
+        })();
+      }
+      if (msg?.type === "reprepare") {
+        void (async () => {
+          // Explicit re-prepare with the selected Safety Mode. Mirrors
+          // retryProtection: re-run preparation, update lastReport, recreate the
+          // panel so the fresh run shows a clean Prepared state (banner gone).
+          const next = await prepareWorkspaceForLaunch(root, [], currentSafetyMode());
+          if (!next) return;
+          lastReport = next;
+          lastReportRoot = root;
+          activityProvider?.setPrepared(buildPreparedMetrics(next), undefined, true, activityDetail(next));
+          reviewPanel?.dispose();
+          reviewPanel = undefined;
+          await commandReview();
+        })();
+      }
       if (msg?.type === "retryProtection") {
         void (async () => {
           const next = await prepareWorkspaceForLaunch(root);
@@ -2086,6 +2139,7 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         findings?: { detector?: string; severity?: "low" | "medium" | "high" | "critical" }[];
       })[];
       sourceModified: number;
+      safetyMode?: SafetyMode;
       tabularAcceptance?: PrepareReport["tabularAcceptance"];
     };
     const metadataFindings = (file: (typeof manifest.files)[number]) => {
@@ -2130,11 +2184,15 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         findings: metadataFindings(f),
       })),
       sourceModified: manifest.sourceModified,
+      safetyMode: isSafetyMode(manifest.safetyMode) ? manifest.safetyMode : currentSafetyMode(),
       ...(manifest.tabularAcceptance
         ? { tabularAcceptance: manifest.tabularAcceptance }
         : {}),
     };
     lastReportRoot = root;
+    // Reflect the mode this Prepared Workspace was actually prepared under (from
+    // the manifest when present), so the review selector shows a clean state.
+    lastReportSafetyMode = lastReport.safetyMode;
     reviewingOpenedPreparedWorkspace = true;
     if (initialRecovery) {
       recoveryReason = initialRecovery.reason;

@@ -45,6 +45,7 @@ describe("buildPreparationReport", () => {
 });
 
 const sample: PreparationReport = {
+  safetyMode: "balanced",
   sourceFiles: 5224,
   preparedArtifacts: 317,
   documentsPrepared: 42,
@@ -112,6 +113,7 @@ describe("formatPreparationReport (all formats are public-safe: numbers only)", 
     const reductions = [0, 0.1, 12.5, 50, 94, 99.9, 100];
     for (let i = 0; i < nums.length; i++) {
       reports.push({
+        safetyMode: i % 2 === 0 ? "balanced" : "strict",
         sourceFiles: nums[(i + 6) % nums.length]!,
         preparedArtifacts: nums[(i + 3) % nums.length]!,
         documentsPrepared: nums[(i + 1) % nums.length]!,
@@ -177,6 +179,7 @@ describe("formatPreparationReport (all formats are public-safe: numbers only)", 
 
   it("renders cleanly at the 0% and near-100% edges and with zero counts", () => {
     const empty: PreparationReport = {
+      safetyMode: "balanced",
       sourceFiles: 0,
       preparedArtifacts: 0,
       documentsPrepared: 0,

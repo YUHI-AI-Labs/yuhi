@@ -346,6 +346,8 @@ export interface PrepareReport {
   decisions?: FileDecision[];
   /** Verified count of changed source files. Successful preparation currently reports 0. */
   sourceModified: number;
+  /** The resolved effective Safety Mode this run was prepared with. */
+  safetyMode: SafetyMode;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
   tabularAcceptance?: {
     entitiesPseudonymized: number;
@@ -2403,6 +2405,9 @@ export async function prepareWorkspace(
     ...(createdAt !== undefined ? { createdAt } : {}),
     runId,
     reductionMode: effectiveMode,
+    // The RESOLVED effective Safety Mode this run was prepared with (not the raw input).
+    // Consumed by freshness checks: selecting a different mode makes the run stale.
+    safetyMode,
     files: files.map((f) => {
       // Decisions are keyed by the ORIGINAL path; a pseudonymized entry must look up
       // its decision by originalRelpath, not the Claude-facing name.
@@ -2591,6 +2596,7 @@ export async function prepareWorkspace(
     errors: files.filter((f) => f.status === "error"),
     decisions: plan.evaluation.decisions,
     sourceModified: originalSourceFilesModified,
+    safetyMode,
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,

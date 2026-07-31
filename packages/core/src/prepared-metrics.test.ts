@@ -9,7 +9,7 @@ import {
 
 function report(): PrepareReport {
   return {
-    runId: "r", outDir: "/tmp/.yuhi/prepared/r",
+    runId: "r", outDir: "/tmp/.yuhi/prepared/r", safetyMode: "balanced",
     report: {
       beforeChars: 400, afterChars: 100,
       beforeTokens: 100, afterTokens: 40, tokensSaved: 60, percentReduction: 0.6,

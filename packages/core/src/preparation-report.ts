@@ -11,9 +11,12 @@
  * document can produce several artifacts (e.g. a PDF → a sanitized Markdown companion).
  * Reporting "Source files" separately keeps the comparison honest.
  */
+import { safetyModeLabel, type SafetyMode, DEFAULT_PREPARE_SAFETY_MODE } from "@yuhi/shared";
 import type { AiReadinessReport } from "./ai-readiness-report.js";
 
 export interface PreparationReport {
+  /** The resolved effective Safety Mode this run used (internal value). */
+  safetyMode: SafetyMode;
   sourceFiles: number;
   preparedArtifacts: number;
   documentsPrepared: number;
@@ -31,9 +34,10 @@ export type ReportFormat = "terminal" | "markdown" | "json" | "svg";
 export function buildPreparationReport(
   readiness: AiReadinessReport,
   totalSourceFiles: number,
-  opts: { warning?: boolean } = {},
+  opts: { warning?: boolean; safetyMode?: SafetyMode } = {},
 ): PreparationReport {
   return {
+    safetyMode: opts.safetyMode ?? DEFAULT_PREPARE_SAFETY_MODE,
     sourceFiles: Math.max(totalSourceFiles, readiness.preparedFiles),
     preparedArtifacts: readiness.preparedFiles,
     documentsPrepared: readiness.documentsSummarized,
@@ -75,6 +79,7 @@ function terminal(r: PreparationReport): string {
   lines.push(
     "",
     `  Estimated accessible-content reduction: ${r.estimatedReductionPercent}%`,
+    `  Safety Mode: ${safetyModeLabel(r.safetyMode)}`,
     "",
     footer(r),
   );
@@ -89,6 +94,7 @@ function markdown(r: PreparationReport): string {
     "| --- | ---: |",
     ...rows(r).map(([k, v]) => `| ${k} | ${group(v)} |`),
     `| **Estimated accessible-content reduction** | **${r.estimatedReductionPercent}%** |`,
+    `| Safety Mode | ${safetyModeLabel(r.safetyMode)} |`,
     "",
     `Status: **${footer(r)}**`,
     "",

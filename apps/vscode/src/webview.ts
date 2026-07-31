@@ -1,11 +1,15 @@
 import {
   DEFAULT_DISCLOSURE_SAFETY_MODE,
   DEFAULT_CONTEXT_DETAIL,
+  DEFAULT_PREPARE_SAFETY_MODE,
+  SAFETY_MODES,
+  safetyModeLabel,
   type PreparedMetrics,
   type PreparedRuntimeBoundary,
   type PreparationReport,
   type DisclosureSafetyMode,
   type ContextDetail,
+  type SafetyMode,
 } from "@yuhi/core";
 import { renderRepositoryReadyCard } from "./repository-ready.js";
 
@@ -55,6 +59,15 @@ export interface ReviewData {
    */
   safetyMode?: DisclosureSafetyMode;
   contextDetail?: ContextDetail;
+  /**
+   * The real @yuhi/core Safety Mode preset THIS prepared run actually used, and
+   * the Safety Mode currently selected in the workspace setting. When they differ
+   * the review renders a "Re-prepare required" dirty state and disables launch.
+   * Optional so older callers/runs render unchanged (they fall back to the
+   * exported default and are treated as not-dirty).
+   */
+  preparedSafetyMode?: SafetyMode;
+  selectedSafetyMode?: SafetyMode;
   runId: string;
   outcome: string;
   osSandboxEnabled: false;
@@ -136,6 +149,17 @@ const CONTEXT_DETAIL_LABELS: Record<ContextDetail, string> = {
   "full-sanitized": "Full (sanitized)",
   standard: "Standard",
   compact: "Compact",
+};
+
+/**
+ * Short, non-overclaiming descriptions for each real Safety Mode. Kept in sync
+ * with the `yuhi.safetyMode` setting's enumDescriptions in package.json. Never
+ * promise "100% secure" / "zero-risk" / "enterprise-compliant".
+ */
+const SAFETY_MODE_DESCRIPTIONS: Record<SafetyMode, string> = {
+  balanced: "Recommended for most repositories.",
+  strict: "More conservative handling for business repositories.",
+  "maximum-privacy": "Shares the minimum context allowed by current Yuhi policies.",
 };
 
 /** Server-side HTML escaping — paths/reasons may contain markup-significant chars. */
@@ -266,7 +290,10 @@ function renderWhatAiCanSeeSection(data: ReviewData): string {
   const files = data.files.slice().sort((a, b) => a.path.localeCompare(b.path));
   const available = files.filter((f) => f.claudeReceives !== "No");
   const unavailable = files.filter((f) => f.claudeReceives === "No");
-  const safety = SAFETY_MODE_LABELS[data.safetyMode ?? DEFAULT_DISCLOSURE_SAFETY_MODE];
+  // The applied Safety Mode is now the REAL @yuhi/core preset this run prepared
+  // under (not the legacy disclosure mode). SAFETY_MODE_LABELS remains only for
+  // any legacy disclosure fallbacks elsewhere.
+  const safety = safetyModeLabel(data.preparedSafetyMode ?? DEFAULT_PREPARE_SAFETY_MODE);
   const detail = CONTEXT_DETAIL_LABELS[data.contextDetail ?? DEFAULT_CONTEXT_DETAIL];
   const glance =
     `${available.length} available to the AI · ${unavailable.length} kept on your machine`;
@@ -295,6 +322,56 @@ function renderWhatAiCanSeeSection(data: ReviewData): string {
   );
 }
 
+/** True when the selected Safety Mode differs from the one the prepared run used. */
+function safetyModeIsDirty(data: ReviewData): boolean {
+  const prepared = data.preparedSafetyMode ?? DEFAULT_PREPARE_SAFETY_MODE;
+  const selected = data.selectedSafetyMode ?? prepared;
+  return selected !== prepared;
+}
+
+/**
+ * v0.3.2 — the Safety Mode selector. A `<select>` with the three real @yuhi/core
+ * presets rendered near the Repository Ready card, showing the mode the current
+ * prepared run used. Changing it posts `{type:"setSafetyMode",value}` (persist +
+ * dirty), NEVER auto-launching and NEVER auto-preparing. When the selection no
+ * longer matches the prepared run, a "Re-prepare required" banner appears with a
+ * "Re-prepare" action posting `{type:"reprepare"}`. Markup only — the host script
+ * (which owns the single acquireVsCodeApi handle) wires the ids below.
+ */
+function renderSafetyModeSelector(data: ReviewData): string {
+  const prepared = data.preparedSafetyMode ?? DEFAULT_PREPARE_SAFETY_MODE;
+  const selected = data.selectedSafetyMode ?? prepared;
+  const dirty = selected !== prepared;
+  const options = SAFETY_MODES.map(
+    (mode) =>
+      `<option value="${mode}"${mode === selected ? " selected" : ""}>` +
+      `${escHtml(safetyModeLabel(mode))} — ${escHtml(SAFETY_MODE_DESCRIPTIONS[mode])}</option>`,
+  ).join("");
+  const banner = dirty
+    ? `<div class="calm" id="safetyModeDirty" style="margin-top:14px">` +
+      `<p><b>Re-prepare required</b></p>` +
+      `<p class="detail">Prepared with: ${escHtml(safetyModeLabel(prepared))}<br>` +
+      `Selected: ${escHtml(safetyModeLabel(selected))}</p>` +
+      `<p class="detail">Changing the mode does not send anything and does not launch. ` +
+      `Re-prepare to apply the selected Safety Mode.</p>` +
+      `<div class="actions" style="margin-top:10px">` +
+      `<button class="button primary" id="reprepare">Re-prepare</button></div></div>`
+    : "";
+  return (
+    `<section class="card" id="safetyMode" style="margin-bottom:24px"${dirty ? ' data-dirty="true"' : ""}>` +
+    `<div class="inside">` +
+    `<div class="eyebrow">YUHI · SAFETY MODE</div>` +
+    `<h2 style="margin:6px 0 4px">Safety Mode</h2>` +
+    `<p class="sub">Controls how conservatively Yuhi prepares this repository. ` +
+    `The current run was prepared with <b>${escHtml(safetyModeLabel(prepared))}</b>.</p>` +
+    `<div class="see-applied"><label for="safetyModeSelect">Mode</label>` +
+    `<select id="safetyModeSelect">${options}</select></div>` +
+    `<p class="note" id="safetyModeDescription">${escHtml(SAFETY_MODE_DESCRIPTIONS[selected])}</p>` +
+    banner +
+    `</div></section>`
+  );
+}
+
 export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: string): string {
   const {
     localModelProvider: _localModelProvider,
@@ -320,7 +397,13 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
     (file) => file.outcome === "included-unverified" && !isPendingDocument(file),
   ).length;
   const needsReviewCount = data.metrics.filesKeptLocal + data.metrics.filesExcluded;
-  const launch = data.launchDecisionEnabled
+  // When the selected Safety Mode no longer matches the prepared run, the launch
+  // action is disabled until the user re-prepares. (Launch-gating on core
+  // freshness is handled separately; this only reflects the selector dirty state.)
+  const safetyDirty = safetyModeIsDirty(data);
+  const launch = safetyDirty
+    ? '<button class="button primary" disabled title="Re-prepare to apply the selected Safety Mode">Open with Claude Code</button>'
+    : data.launchDecisionEnabled
     ? '<button class="button primary launchAction">Open with Claude Code</button>'
     : data.openClaudeHereEnabled
       ? '<button class="button primary openClaudeHere">Open Claude Code</button>'
@@ -337,6 +420,10 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
   // after the Repository Ready card. Shows paths inside the webview only; none of
   // this text ever reaches the public copy/export path (that stays aggregate-only).
   const whatAiCanSeeSection = renderWhatAiCanSeeSection(data);
+  // v0.3.2 — Safety Mode selector + dirty / "Re-prepare required" state. Rendered
+  // near the Repository Ready card. Local review UI only: nothing here routes into
+  // the public copy/export path (that stays aggregate-only).
+  const safetyModeSection = renderSafetyModeSelector(data);
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';script-src 'nonce-${nonce}'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -370,6 +457,7 @@ export function renderSavingsHtml(data: ReviewData, _cspSource: string, nonce: s
  <p class="sub">${data.outcome === "Partial" ? "Claude Code cannot start yet. Choose a recovery action below." : "Nothing has been sent yet."}</p>
 </section>
 ${repositoryReadyCard}
+${safetyModeSection}
 ${whatAiCanSeeSection}
 <details class="card advanced" id="whatYuhiDid"><summary>What Yuhi did</summary><div class="inside"><p class="sub">A plain-language summary of preparation before Claude Code starts.</p><div class="advanced-grid" id="workSummary"></div></div></details>
 <details class="card advanced" id="contextPreparation"><summary>Context preparation</summary><div class="inside"><p class="sub">Yuhi creates a local map of inspected documents before Claude Code starts.</p><div class="advanced-grid" id="contextSummary"></div><p class="note">Token counts are estimates only. Actual Claude usage may differ.</p></div></details>
@@ -511,6 +599,11 @@ document.getElementById("scanner").innerHTML='<p>'+esc(noFindings)+'</p><p>'+esc
 const send=t=>vscode.postMessage({type:t});["copyPublicReport","exportPublicReport"].forEach(id=>{const b=document.getElementById(id);if(b)b.addEventListener("click",()=>send(id))});document.querySelectorAll(".launchAction").forEach(b=>b.addEventListener("click",()=>send("launch")));document.querySelectorAll(".openClaudeHere").forEach(b=>b.addEventListener("click",()=>send("openClaudeHere")));document.querySelectorAll("#cancel,#cancelSticky").forEach(b=>b.addEventListener("click",()=>send("cancel")));document.getElementById("review").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});document.getElementById("backToFiles").addEventListener("click",()=>{document.getElementById("files").open=true;document.getElementById("files").scrollIntoView()});
 const showWithheldFiles=()=>{const s=document.getElementById("filter");if(s)s.value="withheld";render("withheld");const d=document.getElementById("fileDecisions");if(d){d.open=true;d.scrollIntoView()}};const swBtn=document.getElementById("showWithheld");if(swBtn){swBtn.addEventListener("click",showWithheldFiles);swBtn.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();showWithheldFiles()}})}
 document.getElementById("retryProtection")?.addEventListener("click",()=>send("retryProtection"));
+// v0.3.2 Safety Mode selector: changing the mode persists it + marks the review
+// dirty (host re-renders); it NEVER auto-launches or auto-prepares. Re-prepare is
+// an explicit action.
+document.getElementById("safetyModeSelect")?.addEventListener("change",e=>vscode.postMessage({type:"setSafetyMode",value:e.target.value}));
+document.getElementById("reprepare")?.addEventListener("click",()=>send("reprepare"));
 // "What the AI Can See" (read-only): client-side filter + per-file diff. Reuses the
 // existing {type:"diff",path} protocol — no new message types.
 (function(){const root=document.getElementById("whatAiCanSee");if(!root)return;const sel=document.getElementById("aiSeeFilter");const items=[...root.querySelectorAll(".see-item")];const matchSee=(b,s)=>s==="all"||s===b||(s==="available"&&(b==="transformed"||b==="unchanged"));const applySee=()=>{const s=sel?sel.value:"all";for(const el of items)el.hidden=!matchSee(el.dataset.bucket,s);for(const gid of ["aiSeeAvailable","aiSeeUnavailable"]){const g=document.getElementById(gid);if(!g)continue;const empty=g.querySelector(".see-empty");if(!empty)continue;const anyVisible=[...g.querySelectorAll(".see-item")].some(i=>!i.hidden);empty.hidden=anyVisible;}};if(sel)sel.addEventListener("change",applySee);applySee();root.addEventListener("click",e=>{const b=e.target.closest(".diff");if(b)vscode.postMessage({type:"diff",path:b.dataset.p})});})();
