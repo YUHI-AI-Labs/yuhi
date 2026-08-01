@@ -16,7 +16,10 @@ import {
   lookupOnPath,
   managedWorkspaceBaseDir,
   prepareWorkspaceOutcome,
-  prepareDocumentsInBackground,
+  runBackgroundForRun,
+  requestBackgroundCancel,
+  readPublicStatus,
+  reduceProgressiveContextState,
   runInit,
   DEFAULT_DISCLOSURE_SAFETY_MODE,
   DEFAULT_CONTEXT_DETAIL,
@@ -31,6 +34,9 @@ import {
   type AgentChangeBaseline,
   type AgentChangeReview,
   type PreparationProgressEvent,
+  type ProgressiveContextState,
+  type PublicBackgroundStatus,
+  type DeliveredFile,
 } from "@yuhi/core";
 import { createLocalModelProvider, localModelReadiness, INFERENCE_FAILURE_ACTIONS } from "@yuhi/local";
 import {
@@ -52,6 +58,7 @@ import {
   REPOSITORY_READY_EXPORT_FORMATS,
 } from "./repository-ready.js";
 import { YUHI_ACTIVITY_VIEW_ID, YuhiActivityProvider, type PreparedDetail } from "./activity-view.js";
+import { ProgressiveContextController } from "./progressive-context.js";
 import { PREPARED_WINDOW_TITLE, PREPARED_WORKBENCH_COLORS } from "./branding.js";
 import { validatePreparedWorkspace, type RecoveryReason } from "./recovery.js";
 import { renderAgentChangeReviewHtml } from "./agent-review.js";
@@ -141,6 +148,9 @@ let preparedSandboxVerified = false;
 let yuhiOutput: vscode.OutputChannel | undefined;
 let pendingReviewDecision: ((decision: "open" | "cancel") => void) | undefined;
 let activityProvider: YuhiActivityProvider | undefined;
+// v0.3.5 Progressive Context — drives the panel from the PUBLIC status file only.
+let progressiveController: ProgressiveContextController | undefined;
+let progressivePoll: ReturnType<typeof setInterval> | undefined;
 let claudeOpenPromise: Promise<boolean> | undefined;
 let visibleCommandRunning = false;
 let activePrepareController: AbortController | undefined;
@@ -1105,7 +1115,10 @@ async function prepareWorkspaceForLaunch(
             });
             return undefined;
           }
-          startBackgroundDocumentPreparation(outcome.report, provider);
+          // v0.3.5 — background document preparation NO LONGER runs on this (source)
+          // prepare path. It is started fire-and-forget AFTER Yuhi Mode is ready, in the
+          // opened Prepared Workspace window (see startProgressiveContext), and the panel
+          // is driven honestly from the PUBLIC status file — never blocking launch.
           progress.report({
             increment: Math.max(0, 100 - creditedProgress),
             message: "Preparation complete · Ready for review",
@@ -1147,124 +1160,143 @@ function activityDetail(report: PrepareReport, backgroundActive = false): Prepar
   };
 }
 
-function startBackgroundDocumentPreparation(
-  report: PrepareReport,
-  provider: LocalModelProvider,
-): void {
-  const pdfs = report.files
-    .filter(
-      (file) =>
-        !file.omitted &&
-        file.inspection?.fileType === "pdf",
-    )
-    .map((file) => file.relpath);
-  if (pdfs.length === 0) return;
-  let lastShown = -1;
-  appendSafeRecoveryCheckpoint("background-document-preparation", "started");
-  void vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Window,
-      title: "Yuhi is preparing additional context",
-      cancellable: false,
-    },
-    async (progress) => {
-      // Local summaries are an opt-in Ollama enrichment. Enable them only when Ollama
-      // is actually reachable with a model; otherwise skip cleanly and record an
-      // HONEST reason so the empty context/ never looks like a silent failure.
-      let enrich = false;
-      let summaryStatusNote = "Ollama is not running";
-      try {
-        const health = await provider.health();
-        if (health.ok && (health.models?.length ?? 0) > 0) {
-          enrich = true;
-        } else {
-          summaryStatusNote = health.ok
-            ? "no local model is installed for Ollama"
-            : "Ollama is not running";
-        }
-      } catch {
-        summaryStatusNote = "Ollama is not available";
-      }
-      const result = await prepareDocumentsInBackground(report.outDir, {
-        relpaths: pdfs,
-        providerFactory: () => provider,
-        enrichWithOllama: enrich,
-        summaryStatusNote,
-        onProgress: (event) => {
-          if (event.current === lastShown && event.phase !== "complete") return;
-          lastShown = event.current;
-          const phase =
-            event.phase === "summarize"
-              ? "Creating local document context"
-              : event.phase === "complete"
-                ? "Document context updated"
-                : "Inspecting PDFs locally";
-          progress.report({
-            message: `${phase} · ${event.current}/${event.total}`,
-          });
-          if (event.phase !== "complete") {
-            activityProvider?.setBackgroundLifecycle(
-              event.phase === "summarize" ? "summarizing" : "inspecting",
-              event.current,
-              event.total,
-              event.relpath,
-            );
-          }
-        },
-      });
-      const acceptance = report.tabularAcceptance;
-      if (acceptance) {
-        acceptance.pdfInspected = result.inspected;
-        acceptance.documentSummariesCreated = result.summariesCreated;
-        acceptance.documentSummariesRejected = result.summariesRejected;
-      }
-      for (const document of result.documents) {
-        const entry = report.files.find((file) => file.relpath === document.relpath);
-        if (!entry?.inspection) continue;
-        entry.inspection.documentStatus =
-          document.inspection === "incomplete" ? "failed" : "inspected";
-        entry.inspection.extractionMethod =
-          document.inspection === "incomplete" ? "none" : document.inspection;
-        if (document.pages !== undefined) entry.inspection.pageCount = document.pages;
-        entry.inspection.summaryStatus =
-          document.summary === "created"
-            ? "created"
-            : document.summary === "rejected"
-              ? "rejected"
-              : "unavailable";
-        if (document.summaryRelpath) entry.inspection.summaryRelpath = document.summaryRelpath;
-      }
-      activityProvider?.setPrepared(buildPreparedMetrics(report), undefined, true, activityDetail(report));
-      appendSafeRecoveryCheckpoint("background-document-preparation", "completed");
-      if (result.sensitiveDocuments > 0) {
-        const choice = await vscode.window.showWarningMessage(
-          `Yuhi found sensitive content in ${result.sensitiveDocuments} document(s). ` +
-          "The files were already available to Claude Code before background inspection completed.",
-          "Review Prepared Context",
-          "Return to Original Workspace",
-        );
-        if (choice === "Review Prepared Context") await commandReview();
-        else if (choice === "Return to Original Workspace") {
-          await vscode.commands.executeCommand("yuhi.openSourceWorkspace");
-        }
-      } else {
-        const choice = await vscode.window.showInformationMessage(
-          `Yuhi finished background document preparation. ` +
-          `${result.inspected} inspected · ${result.summariesCreated} context summaries added.`,
-          "Review Prepared Context",
-        );
-        if (choice === "Review Prepared Context") await commandReview();
-      }
-    },
-  ).then(undefined, () => {
-    appendSafeRecoveryCheckpoint("background-document-preparation", "failed");
-    void vscode.window.showWarningMessage(
-      "Yuhi could not finish background document preparation. Claude Code can continue with the original PDF files, which remain unverified.",
-      "Review Prepared Context",
-    ).then((choice) => {
-      if (choice === "Review Prepared Context") void commandReview();
-    });
+/**
+ * v0.3.5 Progressive Context host wiring. Every displayed number comes from the
+ * PUBLIC status file (`<preparedDir>/.yuhi/background-status.json`); the PRIVATE
+ * queue state (the internal background root under the managed base) is NEVER read
+ * here. `readStatus` is the ONLY background surface this extension reads.
+ */
+function buildProgressiveContextController(
+  provider?: LocalModelProvider,
+): ProgressiveContextController {
+  return new ProgressiveContextController({
+    runBackground: (input) =>
+      runBackgroundForRun({
+        runId: input.runId,
+        preparedDir: input.preparedDir,
+        signal: input.signal,
+        ...(provider ? { providerFactory: () => provider } : {}),
+      }),
+    cancelBackground: (input) =>
+      requestBackgroundCancel({ runId: input.runId, preparedDir: input.preparedDir }),
+    // SECURITY BOUNDARY: read ONLY the public status file — never the private queue.
+    readStatus: (preparedDir) => readPublicStatus(preparedDir),
+    computeRevision: ({ baseContextId, basePreparedFiles, status }) =>
+      reduceProgressiveContextState({
+        baseContextId,
+        basePreparedFiles,
+        // Project the path-safe public items into the reducer's public-item shape.
+        backgroundItems: status.items.map((item) => ({
+          itemId: "",
+          runId: "",
+          contextId: baseContextId,
+          relpath: item.relpath,
+          kind: item.kind,
+          priority: 0,
+          createdAt: 0,
+          status: item.status,
+          ...(item.preparedRelpath ? { preparedRelpath: item.preparedRelpath } : {}),
+        })),
+      }),
+    recordRevision: (preparedDir, state) => recordContextRevision(preparedDir, state),
+    onView: (view) => activityProvider?.applyProgressiveContext(view),
   });
+}
+
+/**
+ * Record the USED Context Revision into the session manifest (`.yuhi/session.json`).
+ * Best-effort and path-safe: it only stores the base Context ID, the revision number,
+ * the deterministic revisionId, and a timestamp. Keeps the SAME baseContextId.
+ */
+async function recordContextRevision(
+  preparedDir: string,
+  state: ProgressiveContextState,
+): Promise<void> {
+  const target = path.join(preparedDir, ".yuhi", "session.json");
+  try {
+    const raw = JSON.parse(await readFile(target, "utf8")) as Record<string, unknown>;
+    raw.contextRevision = {
+      baseContextId: state.baseContextId,
+      revision: state.revision,
+      revisionId: state.revisionId,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(target, JSON.stringify(raw, null, 2) + "\n", "utf8");
+  } catch {
+    // A missing/locked session file must never break the Refresh action.
+  }
+}
+
+/**
+ * Start (or resume) Progressive Context for an opened Prepared Workspace window, AFTER
+ * Yuhi Mode is ready. Fire-and-forget: the worker never blocks launch, and the panel is
+ * driven by polling the PUBLIC status file (so it survives a reload). Idempotent — a
+ * second call supersedes the previous controller.
+ */
+function startProgressiveContext(
+  report: PrepareReport,
+  filesAvailable: number,
+  basePreparedFiles: readonly DeliveredFile[],
+  provider?: LocalModelProvider,
+): void {
+  stopProgressiveContext();
+  const controller = buildProgressiveContextController(provider);
+  progressiveController = controller;
+  controller.start({
+    runId: report.runId,
+    preparedDir: report.outDir,
+    baseContextId: report.contextId ?? "",
+    filesAvailable,
+    basePreparedFiles,
+    startWorker: true,
+  });
+  // Poll the public status so live progress is honest and survives a reload. Stops once
+  // a terminal status has been observed (the worker's own final write still lands).
+  let sawWork = false;
+  let ticks = 0;
+  progressivePoll = setInterval(() => {
+    ticks += 1;
+    void controller.refreshFromDisk().then(() => {
+      if (controller.currentView()) sawWork = true;
+      const settled = sawWork && !controller.isRunning();
+      if (settled || ticks > 400) stopProgressiveContextPollOnly();
+    });
+  }, 1_500);
+}
+
+/** Stop only the poll timer (the controller keeps its last view). */
+function stopProgressiveContextPollOnly(): void {
+  if (progressivePoll) {
+    clearInterval(progressivePoll);
+    progressivePoll = undefined;
+  }
+}
+
+/** Tear down Progressive Context entirely (abort the worker + stop polling). */
+function stopProgressiveContext(): void {
+  stopProgressiveContextPollOnly();
+  progressiveController?.dispose();
+  progressiveController = undefined;
+}
+
+/**
+ * Panel "Cancel background processing" → persist the cancel request + abort the local
+ * worker. The panel returns to a usable state (never stuck), and polling stops.
+ */
+async function commandCancelBackground(): Promise<void> {
+  const controller = progressiveController;
+  if (!controller) return;
+  await controller.cancel();
+  stopProgressiveContextPollOnly();
+}
+
+/**
+ * Panel "Refresh Context" → recompute the delivered revision from the PUBLIC status
+ * with the SAME baseContextId, record it in the session manifest, and update the shown
+ * Context Revision. Never re-scans or re-prepares.
+ */
+async function commandRefreshContext(): Promise<void> {
+  await progressiveController?.refresh();
 }
 
 async function commandPrepare(target?: vscode.Uri): Promise<void> {
@@ -2543,6 +2575,20 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         filesTransformed: m.preparedFilesModified,
         ...(yuhiModePicker ? { picker: yuhiModePicker } : {}),
       });
+      // v0.3.5 — NOW that Yuhi Mode is ready, start Progressive Context fire-and-forget:
+      // it runs the deferred background work and drives the panel from the PUBLIC status
+      // file only. Building the local provider is best-effort and never blocks launch; a
+      // reload re-enters here and resumes (the worker + revision are idempotent).
+      const yuhiReport = lastReport;
+      void (async () => {
+        let provider: LocalModelProvider | undefined;
+        try {
+          provider = await buildProvider(root);
+        } catch {
+          // No local provider → summaries are honestly kept local; extraction still runs.
+        }
+        startProgressiveContext(yuhiReport, available, [], provider);
+      })();
     } else {
       activityProvider?.setPrepared(m, "Launch blocked", false);
     }
@@ -2851,6 +2897,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("yuhi.prepareWorkspace", () => commandPrepare()),
     vscode.commands.registerCommand("yuhi.prepareHere", (uri?: vscode.Uri) => commandPrepare(uri)),
     vscode.commands.registerCommand("yuhi.reviewPrepared", () => commandReview()),
+    // v0.3.5 Progressive Context — the panel's Cancel / Refresh Context buttons.
+    vscode.commands.registerCommand("yuhi.cancelBackground", () => commandCancelBackground()),
+    vscode.commands.registerCommand("yuhi.refreshContext", () => commandRefreshContext()),
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndOpen, () =>
       runVisibleCommand(commandPrepareAndOpen),
     ),
@@ -2906,5 +2955,6 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  /* nothing to clean up */
+  // Stop the fire-and-forget background worker + its poll timer on shutdown.
+  stopProgressiveContext();
 }

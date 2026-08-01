@@ -10,6 +10,7 @@ import {
   type SafetyModeValue,
 } from "./activity-panel.js";
 import type { AgentPickerData } from "./agent-picker.js";
+import type { ProgressiveContextViewModel } from "./progressive-context.js";
 
 export const YUHI_ACTIVITY_VIEW_ID = "yuhi.workspace";
 const STATE_KEY = "yuhi.activityPanel.v1";
@@ -94,6 +95,14 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         break;
       case "details":
         void vscode.commands.executeCommand("yuhi.reviewPrepared");
+        break;
+      // v0.3.5 Progressive Context — the host command drives the controller (cancel the
+      // background run / recompute + record the Context Revision). Never re-prepares.
+      case "cancelBackground":
+        void vscode.commands.executeCommand("yuhi.cancelBackground");
+        break;
+      case "refreshContext":
+        void vscode.commands.executeCommand("yuhi.refreshContext");
         break;
       // Pre-Prepare settings. Persist the SAME yuhi.* config the prepare path reads
       // (no separate plumbing), then re-render so the panel reflects the new value.
@@ -277,6 +286,20 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     const next = { ...this.data };
     if (picker) next.picker = picker;
     else delete next.picker;
+    this.set(next);
+  }
+
+  /**
+   * v0.3.5 — attach (or clear) the Progressive Context surface on the current
+   * Ready / Yuhi-Mode panel. Driven ONLY by the public status file (via the
+   * controller). Merges into whatever launchable data is already shown, so polling
+   * updates never disturb any other phase; a no-op elsewhere.
+   */
+  applyProgressiveContext(progressive: ProgressiveContextViewModel | undefined): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    const next = { ...this.data };
+    if (progressive) next.progressive = progressive;
+    else delete next.progressive;
     this.set(next);
   }
 

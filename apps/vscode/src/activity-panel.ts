@@ -13,6 +13,10 @@
  */
 
 import { renderAgentPicker, type AgentPickerData } from "./agent-picker.js";
+import {
+  renderProgressiveContext,
+  type ProgressiveContextViewModel,
+} from "./progressive-context.js";
 
 /** Lifecycle of the background document job, shown verbatim while it runs. */
 export type BackgroundLifecycle = "queued" | "inspecting" | "summarizing" | "verifying";
@@ -56,6 +60,11 @@ export type ActivityPanelData =
        * the picker (Claude Code / Codex + Context ID) replaces the single launch button.
        */
       picker?: AgentPickerData;
+      /**
+       * v0.3.5 Progressive Context — the honest background-processing surface, derived
+       * ONLY from the public status file. Present once there is background work.
+       */
+      progressive?: ProgressiveContextViewModel;
     }
   | {
       phase: "preparing";
@@ -94,6 +103,8 @@ export type ActivityPanelData =
       backgroundActive?: boolean;
       /** v0.3.4 agent picker — replaces the single Start button when present. */
       picker?: AgentPickerData;
+      /** v0.3.5 Progressive Context — honest background-processing surface. */
+      progressive?: ProgressiveContextViewModel;
     };
 
 /** Message the webview posts back when a button is activated. */
@@ -101,7 +112,9 @@ export type ActivityPanelMessage =
   | { type: "prepare" }
   | { type: "startClaude" }
   | { type: "details" }
-  | { type: "launchAgent"; agentId: string };
+  | { type: "launchAgent"; agentId: string }
+  | { type: "cancelBackground" }
+  | { type: "refreshContext" };
 
 function esc(value: string): string {
   return value.replace(/[&<>"']/g, (c) =>
@@ -229,6 +242,8 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       // v0.3.4 — when the agent picker is present it REPLACES the single launch button:
       // the same prepared repository is reusable across agents (Claude Code / Codex).
       const launch = data.picker ? renderAgentPicker(data.picker) : openBtn;
+      // v0.3.5 — the honest Progressive Context surface (public-status only).
+      const progressive = data.progressive ? renderProgressiveContext(data.progressive) : "";
       return {
         badge: "Yuhi Mode",
         badgeClass: "mode",
@@ -236,6 +251,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           `<div class="modehdr" role="heading" aria-level="2">◆ YUHI MODE</div>` +
           checks +
           impact +
+          progressive +
           button("details", "Review file decisions") +
           launch,
       };
@@ -315,6 +331,8 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       const gen = data.contextIndex
         ? `<div class="gen">Context generated → <b>.yuhi/context/</b><br>document-index.md · summaries/ · AGENT_HANDOFF.md</div>`
         : "";
+      // v0.3.5 — the honest Progressive Context surface, shown on the Ready surface too.
+      const progressive = data.progressive ? renderProgressiveContext(data.progressive) : "";
       return {
         badge: data.backgroundActive
           ? "Enriching…"
@@ -325,6 +343,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         body:
           checks +
           gen +
+          progressive +
           button("details", "Open details") +
           (data.picker
             ? renderAgentPicker(data.picker)
@@ -525,6 +544,16 @@ export function renderActivityPanel(
     margin-top: 6px; font-size: 11px; font-style: italic;
     color: var(--vscode-descriptionForeground);
   }
+  /* v0.3.5 Progressive Context card — honest background-processing surface. */
+  .pcard {
+    margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, rgba(128,128,128,.35)));
+    background: var(--vscode-editorWidget-background, rgba(128,128,128,.06));
+  }
+  .pc-h {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    color: var(--vscode-descriptionForeground); margin-bottom: 8px;
+  }
   .ver {
     margin-top: 8px; text-align: right; font-size: 10px; letter-spacing: .04em;
     color: var(--vscode-descriptionForeground); opacity: .8;
@@ -539,7 +568,8 @@ export function renderActivityPanel(
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    for (const id of ["prepare", "startClaude", "details"]) {
+    // v0.3.5 adds the background Cancel / Refresh Context buttons; each posts its id.
+    for (const id of ["prepare", "startClaude", "details", "cancelBackground", "refreshContext"]) {
       const el = document.getElementById(id);
       if (el && !el.disabled) el.addEventListener("click", () => vscode.postMessage({ type: id }));
     }

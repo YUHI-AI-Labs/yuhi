@@ -169,6 +169,41 @@ describe("Yuhi Activity Bar contribution", () => {
     ]);
   });
 
+  it("v0.3.5 wires background Cancel / Refresh Context to host commands", () => {
+    const view = readFileSync(path.join(process.cwd(), "apps/vscode/src/activity-view.ts"), "utf8");
+    const panel = readFileSync(path.join(process.cwd(), "apps/vscode/src/activity-panel.ts"), "utf8");
+    expect(view).toContain('executeCommand("yuhi.cancelBackground")');
+    expect(view).toContain('executeCommand("yuhi.refreshContext")');
+    expect(view).toContain("applyProgressiveContext(");
+    // The panel script posts the two new button ids back to the host.
+    expect(panel).toContain("cancelBackground");
+    expect(panel).toContain("refreshContext");
+  });
+
+  it("v0.3.5 replaces prepareDocumentsInBackground with runBackgroundForRun after Yuhi Mode", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/vscode/src/extension.ts"), "utf8");
+    // The deprecated background-documents API is gone; the queue-based run replaces it.
+    expect(source).not.toContain("prepareDocumentsInBackground");
+    expect(source).toContain("runBackgroundForRun");
+    expect(source).toContain("requestBackgroundCancel");
+    expect(source).toContain("startProgressiveContext(");
+    expect(source).toContain('registerCommand("yuhi.cancelBackground"');
+    expect(source).toContain('registerCommand("yuhi.refreshContext"');
+  });
+
+  it("v0.3.5 SECURITY BOUNDARY: reads ONLY the public status, never the private queue", () => {
+    const source = readFileSync(path.join(process.cwd(), "apps/vscode/src/extension.ts"), "utf8");
+    const controller = readFileSync(path.join(process.cwd(), "apps/vscode/src/progressive-context.ts"), "utf8");
+    // The extension drives the panel from the public status file only.
+    expect(source).toContain("readPublicStatus");
+    // The private queue root is NEVER referenced from the extension host.
+    expect(source).not.toContain(".internal/background");
+    expect(source).not.toContain("privateBackgroundDir");
+    expect(source).not.toContain("privateStagingDir");
+    expect(controller).not.toContain(".internal");
+    expect(controller).not.toContain("privateBackgroundDir");
+  });
+
   it("shows honest elapsed preparation progress without fake percentages", () => {
     const source = readFileSync(
       path.join(process.cwd(), "apps/vscode/src/extension.ts"),
