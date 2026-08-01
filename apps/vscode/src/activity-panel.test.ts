@@ -319,9 +319,9 @@ describe("Yuhi activity panel (webview)", () => {
       agentHandoff: true,
       yuhiModeSummary: summary({ availability: { availableVerified: 3 } }),
     });
-    // Null reduction → "Not measured" in the hero, and "calculating…" in the ready header.
+    // Null reduction → "Not measured" in the dashboard, and "calculating…" in the ready header.
     expect(out).toContain("Not measured");
-    expect(out).toContain("Estimated context reduction: calculating…");
+    expect(out).toContain("Repository reduction: calculating…");
     expect(out).not.toMatch(/Estimated context reduction<\/span><b>0%/);
   });
 
@@ -375,7 +375,7 @@ describe("Yuhi activity panel (webview)", () => {
     expect(preparing).toContain("Waiting…");
   });
 
-  it("value-forward Yuhi Mode Ready header lists concrete outcomes, omitting zero counts", () => {
+  it("value-forward Repository Optimization header lists concrete outcomes + a ready-to-start line", () => {
     const out = html({
       phase: "yuhi-mode",
       filesAvailable: 0,
@@ -386,11 +386,13 @@ describe("Yuhi activity panel (webview)", () => {
         background: { status: "idle", pending: 0, processing: 0, completed: 0 },
       }),
     });
-    expect(out).toContain("Yuhi Mode Ready");
+    expect(out).toContain("Repository Optimization");
     expect(out).toContain("4,148 files immediately available");
     expect(out).toContain("163 compact representations");
-    expect(out).toContain("Estimated context reduction 97%");
-    // Background is idle (0) → no "documents processing" line.
+    expect(out).toContain("97% repository reduction");
+    // The "ready to start" close, and no "documents processing" line when background is idle.
+    expect(out).toContain("Ready.");
+    expect(out).toContain("can start now.");
     expect(out).not.toContain("documents processing");
   });
 

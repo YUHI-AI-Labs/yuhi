@@ -318,10 +318,14 @@ function renderValueForwardReady(summary: YuhiModeSummary | undefined): string {
   }
   rows.push(
     e.representationReductionPercent === null
-      ? line("active", "Estimated context reduction: calculating…")
-      : line("done", `Estimated context reduction ${fmtReductionPercent(e.representationReductionPercent)}`),
+      ? line("active", "Repository reduction: calculating…")
+      : line("done", `${fmtReductionPercent(e.representationReductionPercent)} repository reduction`),
   );
-  return `<div class="vfready"><div class="vfready-h">Yuhi Mode Ready</div>${rows.join("")}</div>`;
+  const readyLine =
+    summary.launchStatus === "blocked"
+      ? ""
+      : `<div class="vfready-go"><b>Ready.</b> ${esc(summary.agentCapabilities.selectedAgent || "Claude")} can start now.</div>`;
+  return `<div class="vfready"><div class="vfready-h">Repository Optimization</div>${rows.join("")}${readyLine}</div>`;
 }
 
 function renderYuhiModeSummary(summary: YuhiModeSummary | undefined): string {
@@ -815,6 +819,12 @@ export function renderActivityPanel(
     font-size: 13px; font-weight: 700; letter-spacing: .02em; margin-bottom: 6px;
     color: var(--vscode-foreground);
   }
+  .vfready-go {
+    margin-top: 8px; padding-top: 8px; font-size: 12.5px;
+    border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25));
+    color: var(--vscode-descriptionForeground);
+  }
+  .vfready-go b { color: var(--vscode-foreground); }
   .budgetCard { margin: 0 0 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .budgetCard > div { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px; display: grid; gap: 2px; }
   .budgetCard .budgetStatus { grid-column: 1 / -1; }
