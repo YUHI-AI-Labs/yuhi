@@ -40,14 +40,15 @@ Never weaken these contracts:
 
 - Working branch at RC construction: `feature/per-format-and-cleanup`.
 - Pre-v0.3.6 local HEAD: `08e7c956d5ec12c4acb2cfcf9abff1a31fdba0a7`.
-- The v0.3.6 implementation and release docs are currently uncommitted.
+- The v0.3.6 implementation is committed in `8e46edce6fc1049f33c47524e8e717892822766b`;
+  later documentation-only commits align this handoff and the inspected artifact metadata.
 - Package versions: CLI and VS Code `0.3.6`.
 - Full automated gate: 93 test files, 950 tests, zero failures.
 - Typecheck, lint (zero errors), Core/Agents/CLI/VS Code builds, and diff check pass.
 - Synthetic filesystem acceptance covers normal Apply/Undo, Source conflict, compressed
   blocking, secret blocking/masking, two-file rollback, and Claude/Codex session separation.
 - The VSIX was installed successfully into an isolated VS Code user-data/extensions pair.
-- Real GUI E2E, upgrade testing, commit/push, CI, Marketplace publication, npm publication,
+- Real GUI E2E, upgrade testing, CI, Marketplace publication, npm publication,
   Git tag, and GitHub Release remain pending.
 
 Before transfer, replace this section with the final commit SHA, tag, CI URL/status,
