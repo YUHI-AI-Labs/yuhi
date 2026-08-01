@@ -273,7 +273,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badgeClass: "idle",
         body:
           `<p class="empty">Prepare this workspace to generate local context.</p>` +
-          prepareControls(data.settings ?? { safetyMode: "balanced", compressionMode: "auto", tokenBudget: 200000, permissionMode: "standard", sandboxPreset: "guarded" }) +
+          prepareControls(data.settings ?? { safetyMode: "balanced", compressionMode: "auto", tokenBudget: 0, permissionMode: "standard", sandboxPreset: "guarded" }) +
           button("prepare", "Prepare with Yuhi", { primary: true }),
       };
     case "yuhi-mode": {

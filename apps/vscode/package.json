@@ -233,7 +233,11 @@
         },
         "yuhi.compressionMode": {
           "type": "string",
-          "enum": ["auto", "on", "off"],
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
           "enumDescriptions": [
             "Do not create compact context representations.",
             "Automatically create safe compact representations when useful (recommended).",
@@ -245,14 +249,24 @@
         },
         "yuhi.permissionMode": {
           "type": "string",
-          "enum": ["standard", "plan", "acceptEdits", "auto", "custom"],
+          "enum": [
+            "standard",
+            "plan",
+            "acceptEdits",
+            "auto",
+            "custom"
+          ],
           "default": "standard",
           "scope": "resource",
           "description": "Claude Code permission mode used in Yuhi Mode. Yuhi does not disable Auto mode globally."
         },
         "yuhi.sandboxPreset": {
           "type": "string",
-          "enum": ["standard", "guarded", "locked-down"],
+          "enum": [
+            "standard",
+            "guarded",
+            "locked-down"
+          ],
           "enumDescriptions": [
             "Use Claude Code defaults; Yuhi adds no permission restrictions.",
             "Enable Claude's sandbox while preserving Auto mode and prompting for unsandboxed commands.",
@@ -264,7 +278,7 @@
         },
         "yuhi.tokenBudget": {
           "type": "number",
-          "default": 200000,
+          "default": 0,
           "minimum": 0,
           "maximum": 1000000000,
           "scope": "resource",
@@ -272,14 +286,20 @@
         },
         "yuhi.alwaysIncludeWarningExtensions": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^\\.[A-Za-z0-9]+$" },
+          "items": {
+            "type": "string",
+            "pattern": "^\\.[A-Za-z0-9]+$"
+          },
           "default": [],
           "scope": "resource",
           "description": "File extensions explicitly allowed with inspection warnings. Known credentials and policy blocks still remain excluded."
         },
         "yuhi.alwaysExcludeExtensions": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^\\.[A-Za-z0-9]+$" },
+          "items": {
+            "type": "string",
+            "pattern": "^\\.[A-Za-z0-9]+$"
+          },
           "default": [],
           "scope": "resource",
           "description": "File extensions explicitly kept out of the Prepared Workspace."

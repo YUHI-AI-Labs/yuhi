@@ -186,11 +186,14 @@ remain user choices. Standard and Guarded sandbox presets must not inject
 `disableAutoMode` or globally force bypass permissions off. Only the explicitly
 selected Locked Down preset may impose those restrictions.
 
-Context Compression defaults to `Auto (Recommended)` with a 200,000-token
-best-effort target. `Auto` and `On` accept a Token Budget; `Off` retains the saved
-value but does not apply it. Compression and parser failures always fall back to the
-FULL original. A token target must never delete a useful repository file. Compact
-representations are additive companions; the original remains available.
+Context Compression defaults to `Auto (Recommended)` with **no Token Budget target**
+(blank / `No target`). `Auto` and `On` accept an optional Token Budget: a positive
+value is a best-effort target; blank / `0` means no target; `Off` retains the saved
+value but does not apply it. The unset-workspace default is therefore Safety Mode
+`Balanced`, Compression `On`, Token Budget `No target` — Maximum Privacy applies only
+when the user explicitly selects it. Compression and parser failures always fall back
+to the FULL original. A token target must never delete a useful repository file.
+Compact representations are additive companions; the original remains available.
 
 All public surfaces use the Core `YuhiModeSummary`. It deduplicates each source file
 across Preparation and Background and separates repository-representation estimates

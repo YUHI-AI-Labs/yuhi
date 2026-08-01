@@ -72,7 +72,9 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).toContain("Prepare with Yuhi");
     expect(out).toContain('id="prepare"');
     expect(out).toMatch(/id="cfgCompressionMode"[^>]*>[\s\S]*?<option value="auto" selected>Auto \(Recommended\)<\/option>/);
-    expect(out).toMatch(/id="cfgBudget"[^>]*value="200000"/);
+    // Corrected default: Token Budget is blank (No target), not a hidden 200000 cap.
+    expect(out).toMatch(/id="cfgBudget"[^>]*value=""/);
+    expect(out).not.toMatch(/id="cfgBudget"[^>]*value="200000"/);
   });
 
   it("separates verified, warning-available, pending, and failed counts in Yuhi Mode", () => {

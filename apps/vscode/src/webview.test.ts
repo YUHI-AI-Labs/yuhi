@@ -995,15 +995,23 @@ describe("Context Compression settings (v0.3.3)", () => {
     expect(compress?.scope).toBe("resource");
   });
 
-  it("declares yuhi.tokenBudget (number, default 200000 best-effort target, resource-scoped)", () => {
+  it("declares yuhi.tokenBudget (number, default 0 = No target, resource-scoped)", () => {
     const budget = props["yuhi.tokenBudget"];
     expect(budget).toBeDefined();
     expect(budget?.type).toBe("number");
-    // Corrected policy: Context Compression defaults to Auto with a 200,000-token
-    // best-effort target (0 remains a valid "No target"; the field stays optional).
-    expect(budget?.default).toBe(200_000);
+    // Corrected default: Compression is ON (Auto) but the Token Budget has NO target
+    // by default (0/blank). A budget only applies when the user sets a positive value.
+    expect(budget?.default).toBe(0);
     expect(budget?.scope).toBe("resource");
     expect((budget as { minimum?: number })?.minimum).toBe(0);
     expect((budget as { maximum?: number })?.maximum).toBe(1_000_000_000);
+  });
+
+  it("fresh-workspace defaults are Balanced / Compression On (Auto) / No target", () => {
+    // The unset-workspace default must be Balanced + compression On + No target.
+    // Maximum Privacy and a token budget apply ONLY when the user chooses them.
+    expect(props["yuhi.safetyMode"]?.default).toBe("balanced");
+    expect(props["yuhi.compressionMode"]?.default).toBe("auto");
+    expect(props["yuhi.tokenBudget"]?.default).toBe(0);
   });
 });

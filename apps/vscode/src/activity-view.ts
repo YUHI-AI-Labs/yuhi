@@ -433,7 +433,9 @@ function readPrepareSettings(): PrepareSettings {
   const rawCompression = cfg.get<string>("compressionMode");
   const compressionMode = rawCompression === "off" || rawCompression === "on" ? rawCompression : "auto";
   const rawBudget = cfg.get<number>("tokenBudget");
-  const tokenBudget = typeof rawBudget === "number" && rawBudget > 0 ? Math.floor(rawBudget) : 200000;
+  // No target by default. A blank / 0 budget means "no target" (not a hidden 200k
+  // cap) — the same normalization currentCompressionOptions() uses for Prepare.
+  const tokenBudget = typeof rawBudget === "number" && rawBudget > 0 ? Math.floor(rawBudget) : 0;
   const rawPermission = cfg.get<string>("permissionMode");
   const permissionMode = rawPermission === "plan" || rawPermission === "acceptEdits" || rawPermission === "auto" || rawPermission === "custom" ? rawPermission : "standard";
   const rawSandbox = cfg.get<string>("sandboxPreset");
