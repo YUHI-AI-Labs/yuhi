@@ -8,6 +8,7 @@ import { deriveWorkflowState, type YuhiWorkflowState } from "./workflow-state.js
 import { buildAiReadinessReport } from "./ai-readiness-report.js";
 import { buildPreparationReport, type PreparationReport } from "./preparation-report.js";
 import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
+import type { PublicPreparedContextSummary } from "./public-prepared-summary.js";
 
 /** Why a Prepared Workspace is stale relative to the current inputs. */
 export type PreparationFreshnessReason =
@@ -99,6 +100,7 @@ export interface SafePreparedRunSummary {
    * detail.
    */
   compression?: CompressionReport;
+  publicSummary?: PublicPreparedContextSummary;
 }
 
 export function buildSafePreparedRunSummary(report: PrepareReport): SafePreparedRunSummary {
@@ -161,6 +163,7 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     localModelConfiguredParallelism: acceptance?.localModelConfiguredParallelism ?? 0,
     preparationReport,
     ...(report.compression ? { compression: report.compression } : {}),
+    ...(report.publicSummary ? { publicSummary: report.publicSummary } : {}),
   };
 }
 
@@ -171,6 +174,7 @@ function buildPreparationReportSafely(report: PrepareReport, warning: boolean): 
     return buildPreparationReport(readiness, report.files.length, {
       warning,
       safetyMode: report.safetyMode,
+      ...(report.publicSummary ? { context: report.publicSummary } : {}),
     });
   } catch {
     return {

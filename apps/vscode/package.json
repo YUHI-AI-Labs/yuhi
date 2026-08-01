@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi — AI-Ready Repositories",
   "description": "Scan, sanitize, convert, and reduce your repository before opening it with an AI coding agent. Local-first, no telemetry.",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -234,8 +234,10 @@
         "yuhi.tokenBudget": {
           "type": "number",
           "default": 0,
+          "minimum": 0,
+          "maximum": 1000000000,
           "scope": "resource",
-          "description": "Target token budget for the prepared context (0 = no target; best-effort)."
+          "description": "Target token budget for the prepared context. Enable Context Compression first. Use 0 for No target; positive whole numbers are best-effort targets."
         }
       }
     }

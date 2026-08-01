@@ -79,6 +79,23 @@ function bigTsSource(): string {
 const YUHI_CONFIG = 'version: "1"\nrules: []\n';
 
 describe("v0.3.3 structure compression integration", () => {
+  it("threads a 5000 token budget through Prepare into the shared public summary", async () => {
+    put("yuhi.yaml", YUHI_CONFIG);
+    put("src/index.ts", "export const start = (): void => {};\n");
+    put("src/feature.ts", bigTsSource());
+    put("package.json", JSON.stringify({ name: "budget-e2e", version: "1.0.0" }) + "\n");
+
+    const report = await prepareWorkspace(dir, { compress: true, tokenBudget: 5_000 });
+    expect(report.compression).toBeDefined();
+    expect(report.compression?.targetBudget).toBe(5_000);
+    expect(report.compression?.preparedTokens).toBeGreaterThan(0);
+    expect(report.publicSummary?.compressionEnabled).toBe(true);
+    expect(report.publicSummary?.tokenBudget).toBe(5_000);
+    expect(["achieved", "best-effort-over-target"]).toContain(
+      report.publicSummary?.tokenBudgetStatus,
+    );
+  });
+
   it("body-omits a large TS file, keeps manifests/README full, and never touches source", async () => {
     put("yuhi.yaml", YUHI_CONFIG);
     put("src/big.ts", bigTsSource());

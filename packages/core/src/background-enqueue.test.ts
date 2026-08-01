@@ -123,6 +123,14 @@ describe("v0.3.5 foreground → background queue registration", () => {
     expect(raw).not.toContain("sourceArtifactPath");
     const status = await readPublicStatus(report.outDir);
     expect(status?.counts.pending).toBe(1);
+    expect(report.publicSummary?.backgroundPendingFiles).toBe(1);
+    expect(report.publicSummary?.excludedForSafetyFiles).toBe(0);
+    const handoff = readFileSync(
+      path.join(report.outDir, ".yuhi", "context", "AGENT_HANDOFF.md"),
+      "utf8",
+    );
+    expect(handoff).toContain("Processing locally in background: 1");
+    expect(handoff).not.toContain("notes/report.md");
   });
 
   it("keeps the file local (not pending) when the enqueue cannot be persisted", async () => {
@@ -176,6 +184,11 @@ describe("v0.3.5 foreground → background queue registration", () => {
     expect(entry?.document?.sourceType).toBe("pdf");
     expect(entry?.document?.extractionStatus).toBe("pending");
     expect(entry?.document?.originalSharedWithAgent).toBe(false);
+    expect(report.publicSummary?.backgroundPendingFiles).toBe(1);
+    expect(report.publicSummary?.excludedForSafetyFiles).toBe(0);
+    expect(
+      readFileSync(path.join(report.outDir, ".yuhi", "context", "AGENT_HANDOFF.md"), "utf8"),
+    ).not.toContain("docs/report.pdf");
 
     // A persistent document-extraction item is in the run's queue.
     const queue = await BackgroundQueue.open(privateBackgroundDir(managedDir, report.runId));

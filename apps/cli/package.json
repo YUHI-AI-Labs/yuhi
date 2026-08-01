@@ -1,6 +1,6 @@
 {
   "name": "@yuhi-ai-labs/yuhi",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "type": "module",
   "description": "See exactly what your AI agent can see — then run it on a locally-prepared copy of your repo. Local-first, no telemetry.",
   "keywords": [

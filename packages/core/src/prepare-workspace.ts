@@ -55,6 +55,11 @@ import {
   writePublicStatus,
   type BackgroundPreparationKind,
 } from "./background/index.js";
+import { writePrivateRunSourceBinding } from "./patch/private-state.js";
+import {
+  buildPublicPreparedContextSummary,
+  type PublicPreparedContextSummary,
+} from "./public-prepared-summary.js";
 
 /** The pipeline every summarize target is run through (local model → mask → gate). */
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
@@ -459,45 +464,42 @@ function parseTabularRegion(text: string): ParsedDelimitedTable {
   }
 }
 
-/** Handoff section listing every file NOT copied into the workspace, with its reason. */
+/** Metadata-safe handoff summary for files not copied into the workspace. Individual
+ * names stay in the user-only Review surface, never in agent instructions. */
 function describeUnavailableFiles(files: PreparedFileEntry[]): string[] {
   const kept = files.filter((f) => f.omitted);
   if (kept.length === 0) return [];
+  const byCategory = new Map<string, number>();
+  for (const file of kept) {
+    const category = file.failureCategory ?? file.outcome ?? "policy";
+    byCategory.set(category, (byCategory.get(category) ?? 0) + 1);
+  }
   return [
     "## Files unavailable to the agent",
     "",
-    "These files were intentionally NOT copied into this Prepared Workspace. Do not try",
-    "to retrieve them from the original workspace or any external path — report the",
-    "required source as unavailable when needed.",
+    `${kept.length} file(s) were excluded because of an actual finding or explicit policy.`,
+    "Individual names are available only in Yuhi's user-facing Review file decisions.",
     "",
-    ...kept.map((f) => {
-      const reason =
-        f.error ??
-        (f.action === "block"
-          ? "excluded by policy"
-          : ["local-only", "inject", "ask", "metadata-only"].includes(f.action)
-            ? "kept local by policy"
-            : "not included");
-      return `- \`${f.relpath}\` — kept local (${f.failureCategory ?? f.outcome ?? "policy"}): ${reason}`;
-    }),
+    ...[...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b)).map(
+      ([category, count]) => `- ${category}: ${count}`,
+    ),
     "",
   ];
 }
 
-/** Handoff section listing files that ARE available but could not be fully verified. */
+/** Metadata-safe count of files available with a warning. */
 function describeUnverifiedFiles(files: PreparedFileEntry[]): string[] {
-  const unverified = files.filter((f) => f.outcome === "included-unverified" && !f.omitted);
+  const unverified = files.filter(
+    (f) =>
+      !f.omitted &&
+      (f.outcome === "included-unverified" || f.outcome === "background-processing-pending"),
+  );
   if (unverified.length === 0) return [];
   return [
     "## Files included but not fully verified",
     "",
-    "These files ARE available in the workspace, but Yuhi could not fully transform or",
-    "verify them. Review before sharing sensitive information.",
-    "",
-    ...unverified.map(
-      (f) =>
-        `- \`${f.relpath}\` — included with warning${f.failureCategory ? ` (${f.failureCategory})` : ""}${f.error ? `: ${f.error}` : ""}`,
-    ),
+    `${unverified.length} file(s) are available with warnings while local inspection continues.`,
+    "Inspection unavailable or pending does not imply that a file is safe or verified.",
     "",
   ];
 }
@@ -559,6 +561,8 @@ export interface PrepareReport {
   };
   /** v0.3.3 structure-compression summary; present ONLY when `compress: true`. */
   compression?: CompressionReport;
+  /** One public-safe summary shared by every product surface. */
+  publicSummary?: PublicPreparedContextSummary;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
   tabularAcceptance?: {
     entitiesPseudonymized: number;
@@ -1414,7 +1418,6 @@ export async function prepareWorkspace(
   // v0.3.5: PDF/DOCX/PPTX heavy extraction (incl. OCR) no longer runs in the foreground.
   // Documents are enqueued as `document-extraction` items and their sanitized companions
   // are produced + safety-gated + published by `runBackgroundForRun` after launch.
-  let documentsWithoutOriginal = 0;
 
   /**
    * Route a summarize target to KEPT-LOCAL because the local model timed out or was
@@ -1479,29 +1482,26 @@ export async function prepareWorkspace(
     }
 
     // ===== DOCUMENT ROUTING (PDF / DOCX / DOCM / PPTX / PPTM) → BACKGROUND QUEUE =====
-    // v0.3.5: the ORIGINAL document binary is NEVER placed in the Prepared Workspace,
-    // and its HEAVY extraction (PDF text / OCR / DOCX-PPTX unzip) NEVER runs in the
-    // foreground — that would delay entry into Yuhi Mode. Instead we register a
-    // persistent `document-extraction` item; AFTER launch `runBackgroundForRun` builds
-    // the sanitized companion, runs it through the IDENTICAL safety gate (normalize →
-    // pseudonymize → secret/PII inspect → policy), and atomically publishes
-    // `<relpath>.md` under the prepared root (counting toward the Context Revision).
-    // The entry becomes `background-processing-pending` ONLY after a successful enqueue;
-    // if enqueue fails it stays kept-local (honest reason) and the original is never
-    // shared. Runs AFTER the explicit block/credential/local-only handling above, so a
-    // hard-blocked document never reaches here — size never overrides a security block.
+    // Progressive Context: document extraction / OCR remains OFF the foreground path.
+    // The unverified original stays local while a private queue item prepares a safe
+    // companion. Yuhi Mode never waits for this optional work and only a verified,
+    // atomically-published companion becomes agent-visible.
     const docType = info ? documentSourceType(relpath) : undefined;
-    if (info && docType && !info.flags.isSymlink) {
-      documentsWithoutOriginal += 1;
+    if (
+      info &&
+      docType &&
+      !info.flags.isSymlink &&
+      decision.action !== "block" &&
+      !/(?:private-key|credential|secret-director)/i.test(decision.ruleName)
+    ) {
       const before = tokenEstimate(String(info.size));
       beforeTokens += before.tokens;
+      approx = true;
       const entry: PreparedFileEntry = {
-        relpath, // the ORIGINAL document path — NOT delivered; the companion is `<relpath>.md`
+        relpath,
         originalRelpath: relpath,
         action: "prepare-locally",
         status: "skipped",
-        // Provisional kept-local; flipped to `background-processing-pending` on a
-        // successful enqueue in the post-loop registration block.
         outcome: "local-only-unverified",
         transmission: "blocked",
         beforeChars: info.size,
@@ -1542,7 +1542,7 @@ export async function prepareWorkspace(
         sourceContentHash: info.sha256 ?? createHash("sha256").update(`${relpath}:${info.size}`).digest("hex"),
         processorVersion: `document-extraction@${YUHI_VERSION}`,
       });
-      progress(`Document ${relpath}: queued for background extraction; original kept local.`);
+      progress(`Document ${relpath}: original kept local; safe companion queued in background.`);
       decisionsProcessed += 1;
       if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
         progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
@@ -1553,8 +1553,8 @@ export async function prepareWorkspace(
 
     // PER-FORMAT SIZE STRATEGY (no single 2 MB gate). A file too large to inspect for
     // its type — a PDF over 64 MB, or any other file over the in-memory ceiling — is
-    // passed through as-is WITH A WARNING (delivered, `included-unverified`), never
-    // hanging or OOM-ing the run. Text and spreadsheets under the ceiling fall through
+    // kept local rather than loaded into memory, never hanging or OOM-ing the run.
+    // Text and spreadsheets under the ceiling fall through
     // to normal de-identification regardless of size. Explicit policy `block` and
     // symlinks (handled below) always win over size.
     const oversizeReason =
@@ -1562,9 +1562,9 @@ export async function prepareWorkspace(
         ? oversizePassThroughReason(info.inspection.fileType, info.size)
         : undefined;
     if (info && oversizeReason) {
-      if (keepUnverifiedLocal) {
-        // Strict / Maximum Privacy: never deliver content that could not be
-        // verified. Keep the oversized file local (not copied to the workspace).
+      {
+        // Never deliver content that could not be verified. Keep the oversized file
+        // local (not copied to the workspace), without blocking Yuhi Mode.
         unsupportedOrUnverifiedFiles += 1;
         beforeTokens += Math.ceil(info.size / 4);
         approx = true;
@@ -1590,33 +1590,6 @@ export async function prepareWorkspace(
         detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
         continue;
       }
-      await copyMirrored(outDir, relpath, info.absPath);
-      provenance.push({ relpath, source: relpath, action: "allow" });
-      unsupportedOrUnverifiedFiles += 1;
-      const approxTokens = Math.ceil(info.size / 4);
-      beforeTokens += approxTokens;
-      afterTokens += approxTokens;
-      approx = true;
-      files.push({
-        relpath,
-        action: "allow",
-        status: "ok",
-        outcome: "included-unverified",
-        transmission: "approved",
-        beforeChars: info.size,
-        afterChars: info.size,
-        transformed: false,
-        omitted: false,
-        limitation: "transformation-unavailable",
-        failureCategory: "structural",
-        error: oversizeReason,
-      });
-      decisionsProcessed += 1;
-      if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
-        progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
-      }
-      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
-      continue;
     }
 
     const unverifiedInspection = !!info && !info.inspection.contentVerified;
@@ -1707,9 +1680,10 @@ export async function prepareWorkspace(
           !rawPresent &&
           verified.directIdentifierColumns > 0 &&
           verified.sensitiveSheets === transformed.sensitiveSheets;
-        if (!fullyClean && keepUnverifiedLocal) {
-          // Strict / Maximum Privacy: a best-effort-only de-identified workbook was
-          // not fully verified → keep it local rather than deliver it with a warning.
+        if (!fullyClean) {
+          // A best-effort-only workbook is not publishable in any mode. The exact
+          // transformed candidate is discarded; the raw workbook never becomes a
+          // fallback. Yuhi Mode still launches with other safe files.
           unsupportedOrUnverifiedFiles += 1;
           beforeTokens += tokenEstimate(sourceBytes.toString("base64")).tokens;
           approx = true;
@@ -1773,29 +1747,23 @@ export async function prepareWorkspace(
             ? error.message
             : "Workbook could not be transformed.";
         const category = classifyTransformFailure(reason);
-        // The workbook could not be safely transformed. Excel is always delivered:
-        // include the ORIGINAL (structure preserved) with a clear unverified warning and
-        // the exact reason + category, rather than dropping it. (A workbook cannot be
-        // re-scanned for secrets once parsing failed; the unverified warning is the
-        // signal to review before sharing.)
-        await writeMirrored(outDir, relpath, sourceBytes);
-        provenance.push({ relpath, source: relpath, action: decision.action });
+        // Transformation failed: raw fallback is forbidden. Keep the workbook local
+        // and let Yuhi Mode continue with the rest of the verified workspace.
         const tokens = tokenEstimate(sourceBytes.toString("base64"));
         beforeTokens += tokens.tokens;
-        afterTokens += tokens.tokens;
         approx = true;
         unsupportedOrUnverifiedFiles += 1;
         files.push({
           relpath,
-          action: "allow",
-          status: "ok",
-          outcome: "included-unverified",
-          transmission: "approved",
+          action: "local-only",
+          status: "skipped",
+          outcome: "local-only-transformation-failed",
+          transmission: "blocked",
           beforeChars: sourceBytes.length,
-          afterChars: sourceBytes.length,
+          afterChars: 0,
           transformations: [],
           transformed: false,
-          omitted: false,
+          omitted: true,
           error: reason,
           limitation: "transformation-unavailable",
           failureCategory: category,
@@ -1807,8 +1775,8 @@ export async function prepareWorkspace(
 
     if (
       decision.action === "allow" &&
-      (info.inspection.fileType === "pdf" ||
-        (!info.inspection.contentVerified && info.inspection.fileType === "binary"))
+      info.inspection.fileType === "pdf" &&
+      info.inspection.contentVerified
     ) {
       const sourceBytes = await readFile(info.absPath);
       await writeMirrored(outDir, relpath, sourceBytes);
@@ -2262,25 +2230,21 @@ export async function prepareWorkspace(
         });
         filesExcluded += 1;
       } else {
-        // ALWAYS-PASS promise: a non-credential high-risk file (that reached the
-        // verbatim route without a safe transform) is DELIVERED as the original with
-        // an explicit warning — marked included-unverified so it never blocks launch.
-        await writeMirrored(outDir, relpath, content);
-        provenance.push({ relpath, source: relpath, action: decision.action });
-        afterTokens += tok.tokens;
+        // High-risk content without a verified transform stays local. This is a file
+        // decision, not a workspace launch blocker.
         files.push({
           relpath,
-          action: "allow",
-          status: "ok",
-          outcome: "included-unverified",
-          transmission: "approved",
+          action: "local-only",
+          status: "skipped",
+          outcome: "local-only-transformation-failed",
+          transmission: "blocked",
           beforeChars: content.length,
-          afterChars: content.length,
+          afterChars: 0,
           transformed: false,
-          omitted: false,
+          omitted: true,
           limitation: "transformation-unavailable",
           failureCategory: "reidentification-risk",
-          error: "High-risk content could not be de-identified; included with a warning.",
+          error: "High-risk content could not be de-identified; kept local.",
         });
         unsupportedOrUnverifiedFiles += 1;
       }
@@ -2407,16 +2371,11 @@ export async function prepareWorkspace(
   }
 
   // ===== SAFETY-MODE CENTRALIZED ESCALATION PASS =====
-  // Strict / Maximum Privacy forbid delivering content that could not be fully
-  // inspected/verified. The two inline escalations above cover the oversized and
-  // XLSX-degraded routes, but `included-unverified` is delivered from several other
-  // sites (raw PDF/binary pass-through, unverifiable text, structural fallbacks). A
-  // single post-loop sweep guarantees NOTHING unverified survives to delivery, and —
-  // under Maximum Privacy — that no delivered file still carries a sensitive finding.
-  // Runs only in Strict/Maximum Privacy; Balanced is a strict no-op. It never weakens
-  // a hard block: credentials / private keys / `.env` are already withheld raw before
-  // this point, and this pass only ever escalates a delivered file to local-only.
-  if (keepUnverifiedLocal) {
+  // Safety-mode escalation applies only to ACTUAL sensitive findings. Inspection
+  // unavailable/incomplete is not a finding and must remain included with a warning in
+  // every mode; otherwise one unsupported parser silently empties the agent workspace.
+  // Hard blocks (credentials/private keys/explicit policy) were withheld earlier.
+  {
     const zeroFindings = requiresZeroFindings(safetyMode);
     for (const entry of files) {
       if (entry.omitted) continue;
@@ -2944,6 +2903,13 @@ export async function prepareWorkspace(
     (file) => file.status === "ok" && !file.omitted && file.transformed,
   ).length;
   const localOnlyProjectFiles = files.filter((file) => file.omitted).length;
+  let publicSummary = buildPublicPreparedContextSummary({
+    files,
+    ...(compressionReport ? { compression: compressionReport } : {}),
+    originalWorkspaceModified: originalSourceFilesModified > 0,
+    secretsExposed: unresolvedCredential ? 1 : 0,
+  });
+  const estimatedContextReduction = publicSummary.reductionPercent;
   const agentHandoff = [
     "# Yuhi Agent Handoff",
     "",
@@ -2966,6 +2932,12 @@ export async function prepareWorkspace(
     `- Context summaries created: ${documentSummariesCreated}`,
     `- Files not included: ${localOnlyProjectFiles}`,
     "- Original workspace files modified during preparation: 0",
+    `- Estimated context reduction: ${estimatedContextReduction === null ? "Not measured" : `${estimatedContextReduction.toFixed(1)}%`}`,
+    `- Estimated tokens: ${publicSummary.originalEstimatedTokens ?? "Not measured"} before → ${publicSummary.preparedEstimatedTokens ?? "Not measured"} after`,
+    `- Background pending: ${publicSummary.backgroundPendingFiles}`,
+    `- Excluded for safety: ${publicSummary.excludedForSafetyFiles}`,
+    `- Kept local after processing failure: ${publicSummary.keptLocalAfterFailureFiles}`,
+    "- Actual agent usage may differ because of system prompts, tool output, conversation history, and caching.",
     "",
     ...describeUnavailableFiles(files),
     ...describeUnverifiedFiles(files),
@@ -3003,6 +2975,8 @@ export async function prepareWorkspace(
     `- Project files available: ${availableProjectFiles}`,
     `- Files transformed locally: ${transformedProjectFiles}`,
     `- Files not included: ${localOnlyProjectFiles}`,
+    `- Estimated context reduction: ${estimatedContextReduction === null ? "Not measured" : `${estimatedContextReduction.toFixed(1)}%`}`,
+    `- Estimated tokens: ${publicSummary.originalEstimatedTokens ?? "Not measured"} before → ${publicSummary.preparedEstimatedTokens ?? "Not measured"} after`,
     "",
     "Some files could not be fully verified or were kept local. Their names are omitted",
     "here for safety — open “Review file decisions” in Yuhi for the full list.",
@@ -3119,6 +3093,45 @@ export async function prepareWorkspace(
     }
   }
 
+  // Queue registration changes local-only candidates into the distinct durable
+  // background-pending state. Recompute the ONE shared summary only after that state is
+  // final, then replace the handoff with a compact count-only version. Pending is never
+  // reported as excluded and no individual filename enters agent instructions.
+  publicSummary = buildPublicPreparedContextSummary({
+    files,
+    ...(compressionReport ? { compression: compressionReport } : {}),
+    originalWorkspaceModified: originalSourceFilesModified > 0,
+    secretsExposed: unresolvedCredential ? 1 : 0,
+  });
+  const finalHandoff = [
+    "# Yuhi Agent Handoff",
+    "",
+    "Yuhi Mode: Ready",
+    "",
+    "Read `.yuhi/context/document-index.md` for verified context artifacts.",
+    "",
+    `- Available to agent: ${publicSummary.availableFiles}`,
+    `- Processing locally in background: ${publicSummary.backgroundPendingFiles}`,
+    `- Transformed and available: ${publicSummary.transformedFiles}`,
+    `- Excluded for safety: ${publicSummary.excludedForSafetyFiles}`,
+    `- Kept local after processing failure: ${publicSummary.keptLocalAfterFailureFiles}`,
+    `- Original workspace modified: ${publicSummary.originalWorkspaceModified ? "Yes" : "No"}`,
+    `- Secrets exposed: ${publicSummary.secretsExposed}`,
+    "",
+    `- Context Compression: ${publicSummary.compressionEnabled ? "On" : "Off"}`,
+    `- Original estimated tokens: ${publicSummary.originalEstimatedTokens ?? "Not measured"}`,
+    `- Prepared estimated tokens: ${publicSummary.preparedEstimatedTokens ?? "Not measured"}`,
+    `- Tokens reduced: ${publicSummary.reducedTokens ?? "Not measured"}`,
+    `- Estimated context reduction: ${publicSummary.reductionPercent === null ? "Not measured" : `${publicSummary.reductionPercent.toFixed(1)}%`}`,
+    `- Token Budget: ${publicSummary.tokenBudget ?? "No target"}`,
+    `- Token Budget status: ${publicSummary.tokenBudgetStatus}`,
+    "",
+    "Unverified originals remain local. Verified companions may be added atomically while you work.",
+    "Actual agent usage may differ because of system prompts, tool output, conversation history, and caching.",
+    "",
+  ].join("\n");
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", finalHandoff);
+
   const manifest = {
     schemaVersion: manifestSchemaVersion,
     // Deterministic Context ID — the agent-independent identity of this prepared
@@ -3132,6 +3145,7 @@ export async function prepareWorkspace(
     // Consumed by freshness checks: selecting a different mode makes the run stale.
     safetyMode,
     ...(compressionReport ? { compression: compressionReport } : {}),
+    publicSummary,
     files: files.map((f) => {
       // Decisions are keyed by the ORIGINAL path; a pseudonymized entry must look up
       // its decision by originalRelpath, not the Claude-facing name.
@@ -3318,6 +3332,11 @@ export async function prepareWorkspace(
     },
   };
   await writeFile(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  // Patch/source mapping is private operational state. It must never be written to
+  // manifest/session/public status or anywhere below the agent-visible workspace.
+  // Failure never delays Yuhi Mode startup; the agent-launch gate will fail closed
+  // with a metadata-safe snapshot-unavailable error if the binding is absent.
+  await writePrivateRunSourceBinding(managedBase, runId, root).catch(() => {});
   progress(`Prepared safe copies · ${provenance.length} files`);
 
   return {
@@ -3333,6 +3352,7 @@ export async function prepareWorkspace(
     safetyMode,
     ...(degraded ? { degraded } : {}),
     ...(compressionReport ? { compression: compressionReport } : {}),
+    publicSummary,
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,

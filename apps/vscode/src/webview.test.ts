@@ -1001,5 +1001,7 @@ describe("Context Compression settings (v0.3.3)", () => {
     expect(budget?.type).toBe("number");
     expect(budget?.default).toBe(0);
     expect(budget?.scope).toBe("resource");
+    expect((budget as { minimum?: number })?.minimum).toBe(0);
+    expect((budget as { maximum?: number })?.maximum).toBe(1_000_000_000);
   });
 });

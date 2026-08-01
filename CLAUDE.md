@@ -26,10 +26,33 @@ The user makes the final decision
 ### Default file behavior
 
 - **Safe**: include automatically.
-- **Caution / Unverified**: include with an explicit warning and continue.
+- **Caution / Unverified**: keep the unverified original local, register safe
+  background processing when supported, and continue launching Yuhi Mode. Publish
+  only a verified companion or summary; never publish the unverified original as a
+  speed fallback.
 - **High risk**: exclude by recommendation, but continue launching. Let the user
   explicitly choose `Include anyway`, `Keep excluded`, or, when supported,
   `Use transformed copy`.
+
+The unverified-file invariant is absolute:
+
+```text
+inspection unavailable or unsuccessful
+  → keep original local
+  → process safely in background when supported
+  → continue to Yuhi Mode
+
+NOT
+
+inspection unavailable or unsuccessful
+  → share the unverified original with a warning
+  → delay Yuhi Mode for optional heavy inspection
+```
+
+Only an actual high-risk finding or explicit policy rule counts as excluded for
+safety. Parser absence, OCR failure, background pending, and processing failure are
+distinct local-only states and must not be counted as exclusions. The UI and handoff
+must report those states separately using public-safe counts only.
 
 The governing invariant is:
 
@@ -95,6 +118,25 @@ PDF inspection, OCR, summarization, detailed metrics, unverified-file processing
 and excluded-file review normally continue in the background and must not delay
 entry into Claude Code.
 
+### Estimated context reduction is a primary outcome
+
+Every successful Prepare and Review surface must show **Estimated context
+reduction** prominently in the primary summary, using a large, immediately visible
+value rather than hiding it in technical or advanced details. It must be visually
+secondary only to the current workflow state and primary action.
+
+Calculate it consistently as:
+
+```text
+(beforeTokens - afterTokens) / beforeTokens * 100
+```
+
+When `beforeTokens` is zero, report `0.0%`. Always label the value exactly
+`Estimated context reduction`. Never describe it as actual token usage, API token
+savings, billing savings, cost savings, or a provider measurement. Explain that
+actual agent usage may differ because of system prompts, tool output, conversation
+history, and caching.
+
 After entry, the sidebar should communicate the active boundary and useful status,
 for example:
 
@@ -142,3 +184,7 @@ Do not silently reinterpret these conflicts:
 3. Yuhi is not an OS-level filesystem jail. A user override must never be described
    as safe, verified, or confined merely because the agent starts in the Prepared
    Workspace.
+4. Current surfaces may conflate background-pending, processing failure, unsupported,
+   and excluded-for-safety. Keep unverified originals local, but fix routing,
+   manifests, Review UI, handoff wording, and regression tests so those states remain
+   distinct and do not block Yuhi Mode.

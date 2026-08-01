@@ -10,12 +10,19 @@
  * All heavy dependencies are injectable so this is unit-testable with a fake
  * runner / fake adapters — the real `claude` / `codex` CLIs are NEVER spawned in tests.
  */
+import { randomUUID } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { AgentCommand } from "@yuhi/shared";
 import {
   validatePreparedRun,
   managedWorkspaceBaseDir,
+  capturePatchSession,
+  computeRevisionId,
+  readPrivateRunSourceBinding,
+  readPublicStatus,
+  loadPatchSession,
+  reviewPatchSession,
   type CorePreparedSession,
 } from "@yuhi/core";
 import {
@@ -155,6 +162,18 @@ export interface PerformLaunchOptions {
   detectTimeoutMs?: number;
   sessionId?: string;
   startedAt?: string;
+  managedBase?: string;
+  /** Test seam; production always uses the private core snapshot implementation. */
+  captureBaseline?: (input: {
+    managedBase: string;
+    runId: string;
+    sessionId: string;
+    contextId: string;
+    revisionId: string;
+    preparedRoot: string;
+    agentId: "claude" | "codex";
+    inheritFromSessionId?: string;
+  }) => Promise<string>;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -184,6 +203,7 @@ export async function performLaunch(opts: PerformLaunchOptions): Promise<number>
     return 3;
   }
   const run = resolution.run;
+  const managedBase = opts.managedBase ?? managedWorkspaceBaseDir();
 
   const adapter = await registry.get(opts.agentId);
 
@@ -210,6 +230,58 @@ export async function performLaunch(opts: PerformLaunchOptions): Promise<number>
     ...(opts.forwardedArgs ? { forwardedArgs: [...opts.forwardedArgs] } : {}),
   });
 
+  const sessionId = opts.sessionId ?? randomUUID();
+  let snapshotId: string | undefined;
+  let launchedRevisionId: string | undefined;
+  let inheritPatchSessionId: string | undefined;
+  try {
+    const previous = await loadPatchSession(managedBase, run.session.runId).catch(() => undefined);
+    if (previous) {
+      const unreviewed = await reviewPatchSession(previous).catch(() => undefined);
+      if (unreviewed && unreviewed.changes.length > 0) {
+        err("warning: Unreviewed changes from a previous agent session exist. They remain in the Prepared Repository and will not be applied automatically.");
+        inheritPatchSessionId = previous.sessionId;
+      }
+    }
+    const publicStatus = await readPublicStatus(run.workspace);
+    const baseContextId = context.contextId;
+    const revisionId = publicStatus?.revisionId ?? computeRevisionId({ baseContextId, files: [] });
+    launchedRevisionId = revisionId;
+    if (opts.captureBaseline) {
+      snapshotId = await opts.captureBaseline({
+        managedBase,
+        runId: run.session.runId,
+        sessionId,
+        contextId: baseContextId,
+        revisionId,
+        preparedRoot: run.workspace,
+        agentId: opts.agentId as "claude" | "codex",
+        ...(inheritPatchSessionId ? { inheritFromSessionId: inheritPatchSessionId } : {}),
+      });
+    } else {
+      const binding = await readPrivateRunSourceBinding(managedBase, run.session.runId);
+      const patchSession = await capturePatchSession({
+        managedBase,
+        runId: run.session.runId,
+        sessionId,
+        contextId: baseContextId,
+        revisionId,
+        preparedRoot: run.workspace,
+        sourceRoot: binding.sourceRoot,
+        agentId: opts.agentId as "claude" | "codex",
+        ...(inheritPatchSessionId ? { inheritFromSessionId: inheritPatchSessionId } : {}),
+      });
+      snapshotId = patchSession.snapshotId;
+    }
+    const statusAfterSnapshot = await readPublicStatus(run.workspace);
+    if (statusAfterSnapshot?.revisionId && statusAfterSnapshot.revisionId !== revisionId) {
+      throw new Error("context-revision-changed-during-snapshot");
+    }
+  } catch {
+    err("Yuhi could not create the private pre-agent patch snapshot. Agent launch was not attempted.\n\nSafe error category: patch-snapshot-unavailable");
+    return 3;
+  }
+
   const summary = buildLaunchSummary(run, adapter.displayName);
   if (!opts.json) {
     out(formatLaunchSummary(summary));
@@ -219,11 +291,15 @@ export async function performLaunch(opts: PerformLaunchOptions): Promise<number>
   const session = await adapter.launch(plan, {
     spawn: opts.spawn ?? true,
     ...(opts.runner ? { runner: opts.runner } : {}),
-    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+    sessionId,
     ...(opts.startedAt ? { startedAt: opts.startedAt } : {}),
   });
 
-  const publicManifest = toPublicAgentSessionManifest(session);
+  const publicManifest = toPublicAgentSessionManifest({
+    ...session,
+    ...(launchedRevisionId ? { revisionId: launchedRevisionId } : {}),
+    ...(snapshotId ? { snapshotId } : {}),
+  });
   if (opts.json) {
     out(JSON.stringify({ command: "launch", summary, session: publicManifest }, null, 2));
   } else if (opts.verbose) {

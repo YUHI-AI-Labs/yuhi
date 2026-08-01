@@ -6,6 +6,18 @@ const NONCE = "NONCE123";
 const html = (d: ActivityPanelData) => renderActivityPanel(d, CSP, NONCE);
 
 describe("Yuhi activity panel (webview)", () => {
+  it("surfaces a non-automatic Safe Patch Review action in Yuhi Mode", () => {
+    const out = html({
+      phase: "yuhi-mode",
+      filesAvailable: 3,
+      filesExcluded: 0,
+      agentChangesDetected: true,
+    });
+    expect(out).toContain("AI changes detected");
+    expect(out).toContain("Review changes");
+    expect(out).toContain("Nothing is applied automatically");
+    expect(out).toContain("reviewChanges");
+  });
   it("is CSP-locked to a nonce with no external/inline script or style", () => {
     const out = html({ phase: "not-prepared" });
     expect(out).toContain("Content-Security-Policy");
@@ -39,8 +51,8 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).toContain("Yuhi protected your data");
     expect(out).toContain("2,165");
     expect(out).toContain("sensitive values masked");
-    expect(out).toContain("82%");
-    expect(out).toContain("context reduced");
+    expect(out).toContain("82.0%");
+    expect(out).toContain("Estimated context reduction");
     expect(out).toContain("files transformed");
     expect(out).toContain(">3<"); // the transformed-file count value
     expect(out).toContain("Open Claude Code");
@@ -59,6 +71,41 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).not.toMatch(/\b24\b|\b\d+ files discovered\b|\b\d+ documents inspected\b/);
     expect(out).toContain("Prepare with Yuhi");
     expect(out).toContain('id="prepare"');
+  });
+
+  it("disables Token Budget while compression is off and preserves its value", () => {
+    const out = html({
+      phase: "not-prepared",
+      settings: { safetyMode: "balanced", compress: false, tokenBudget: 100_000 },
+    });
+    expect(out).toMatch(/id="cfgBudget"[^>]*value="100000"[^>]*disabled/);
+    expect(out).toContain("Enable Context Compression to set a token budget.");
+  });
+
+  it("enables Token Budget with compression and validates/saves input", () => {
+    const out = html({
+      phase: "not-prepared",
+      settings: { safetyMode: "balanced", compress: true, tokenBudget: 100_000 },
+    });
+    expect(out).toMatch(/id="cfgBudget"[^>]*value="100000"/);
+    expect(out).not.toMatch(/id="cfgBudget"[^>]*disabled/);
+    expect(out).toContain('type: "setTokenBudget"');
+    expect(out).toContain("positive whole number");
+    expect(out).toContain("1,000,000,000 or less");
+  });
+
+  it("shows the same budget and best-effort result on Ready", () => {
+    const out = html({
+      phase: "ready", filesDiscovered: 2, documentsInspected: 0, summariesRejected: 0,
+      contextIndex: true, agentHandoff: true,
+      reductionPercent: 41.3, estimatedTokensBefore: 190_787, estimatedTokensAfter: 112_012,
+      compression: { tokenBudget: 100_000, preparedTokens: 112_012, status: "best-effort" },
+    });
+    expect(out).toContain("Token Budget");
+    expect(out).toContain("100,000");
+    expect(out).toContain("Prepared Tokens");
+    expect(out).toContain("112,012");
+    expect(out).toContain("Best effort — 12,012 over target");
   });
 
   it("checks come only from real completed state (todo when files are absent)", () => {

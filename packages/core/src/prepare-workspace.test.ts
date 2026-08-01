@@ -402,20 +402,19 @@ describe("prepareWorkspace", () => {
       .not.toContain("synthetic\\n");
   });
 
-  it("includes an uninspectable binary but never copies a private key", async () => {
+  it("keeps uninspectable binaries and private keys local without blocking launch", async () => {
     writeFileSync(path.join(dir, "model.bin"), Buffer.from([0x00, 0xff, 0x12, 0x34]));
     writeFileSync(path.join(dir, "private.key"), Buffer.from([0x00, 0xff, 0x55, 0xaa]));
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
 
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
-    expect(readFileSync(path.join(report.outDir, "model.bin")))
-      .toEqual(readFileSync(path.join(dir, "model.bin")));
+    expect(existsSync(path.join(report.outDir, "model.bin"))).toBe(false);
     expect(report.files.find((item) => item.relpath === "model.bin")).toMatchObject({
-      outcome: "included-unverified",
-      transmission: "approved",
+      outcome: "local-only-unsupported",
+      transmission: "blocked",
     });
-    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).not.toBe(true);
+    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).toBe(true);
     expect(existsSync(path.join(report.outDir, "private.key"))).toBe(false);
     expect(report.files.find((item) => item.relpath === "private.key")).toMatchObject({
       action: "local-only",
@@ -756,10 +755,7 @@ describe("prepareWorkspace", () => {
     expect(existsSync(path.join(report.outDir, "synthetic-companion.txt"))).toBe(true);
   });
 
-  it("ALWAYS delivers a sensitive tabular file that can't be transformed (passed with a warning, never excluded)", async () => {
-    // PROMISE: csv/tsv/txt/xlsx are always passed. A sensitive table that cannot be
-    // verifiably de-identified is included as the original WITH a clear warning +
-    // failure category — never kept local. Only credentials are kept local.
+  it("never raw-fallbacks a sensitive tabular file that cannot be transformed", async () => {
     const raw = 'full name,student id,grade\n"unterminated,S-1,A';
     put("malformed.csv", raw);
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
@@ -767,15 +763,13 @@ describe("prepareWorkspace", () => {
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
     const entry = report.files.find((item) => item.relpath === "malformed.csv");
     expect(entry).toMatchObject({
-      status: "ok",
-      omitted: false,
-      outcome: "included-unverified",
+      status: "skipped",
+      omitted: true,
+      outcome: "local-only-unverified",
     });
     expect(entry?.failureCategory).toBeTruthy(); // honest reason preserved
     expect(entry?.error).toBeTruthy();
-    // The file IS delivered to the workspace (the promise), with the original bytes.
-    expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(true);
-    expect(readFileSync(path.join(report.outDir, "malformed.csv"), "utf8")).toBe(raw);
+    expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(false);
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
@@ -994,7 +988,7 @@ describe("prepareWorkspace", () => {
     expect(report.files.some((f) => f.relpath.includes("report-"))).toBe(true);
   });
 
-  it("a volatile .DS_Store rewritten during preparation never fails the run (still included)", async () => {
+  it("a volatile .DS_Store rewritten during preparation never fails the run and remains local", async () => {
     // macOS Finder rewrites .DS_Store on its own schedule; over a long prep it will
     // mutate. That must never fail the source-integrity assertion. The file itself
     // stays included in the workspace — only its churn is exempt from integrity.
@@ -1010,9 +1004,9 @@ describe("prepareWorkspace", () => {
         writeFileSync(path.join(dir, "sub", ".DS_Store"), Buffer.from([1, 2, 3]));
       },
     });
-    // Preparation completed (no throw) and .DS_Store is still delivered.
+    // Preparation completed (no throw); uninspectable metadata is not delivered.
     expect(report.files.some((f) => f.relpath === ".DS_Store")).toBe(true);
-    expect(existsSync(path.join(report.outDir, ".DS_Store"))).toBe(true);
+    expect(existsSync(path.join(report.outDir, ".DS_Store"))).toBe(false);
   });
 
   it("FINAL ARTIFACT: no delivered CSV/nested/TXT/XLSX contains raw names or IDs; grades remain", async () => {
@@ -1071,10 +1065,10 @@ describe("prepareWorkspace", () => {
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
     const partial = await prepareWorkspace(dir, { provider: fakeProvider() });
-    // The malformed table is DELIVERED with a warning (always-pass promise); the user
-    // can still explicitly exclude it, producing a fresh immutable run below.
+    // The malformed table remains local; an explicit exclusion still creates a fresh
+    // immutable run with a distinct user decision.
     expect(partial.files.find((file) => file.relpath === "malformed.csv")?.outcome).toBe(
-      "included-unverified",
+      "local-only-unverified",
     );
     const oldManifest = readFileSync(path.join(partial.outDir, "manifest.json"), "utf8");
 
@@ -1298,10 +1292,10 @@ describe("prepareWorkspace", () => {
     const salaryDecision = report.decisions?.find((d) => d.relpath === "data/salaries.csv");
     expect(salaryDecision?.action).toBe("local-only");
     expect(salaryDecision?.ruleName).toBe("salary-restricted");
-    expect(readFileSync(path.join(report.outDir, "logo.bin"))).toEqual(files["logo.bin"]);
+    expect(existsSync(path.join(report.outDir, "logo.bin"))).toBe(false);
     expect(report.files.find((f) => f.relpath === "logo.bin")).toMatchObject({
-      outcome: "included-unverified",
-      transmission: "approved",
+      outcome: "local-only-unsupported",
+      transmission: "blocked",
     });
     expect(report.report.filesSummarized).toBe(2);
     const metrics = buildPreparedMetrics(report);
@@ -1315,7 +1309,7 @@ describe("prepareWorkspace", () => {
     expect(metrics.sensitiveValuesMasked).toBe(
       report.files.reduce((total, file) => total + (file.maskedValues ?? 0), 0),
     );
-    expect(metrics.filesKeptLocal).toBe(3);
+    expect(metrics.filesKeptLocal).toBe(4);
     expect(metrics.filesExcluded).toBe(0);
   });
 

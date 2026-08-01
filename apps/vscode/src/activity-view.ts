@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { PreparedMetrics } from "@yuhi/core";
+import type { PreparedMetrics, PublicPreparedContextSummary } from "@yuhi/core";
 import {
   renderActivityPanel,
   type ActivityPanelData,
@@ -21,6 +21,12 @@ export interface PreparedDetail {
   documentsInspected: number;
   summariesRejected: number;
   backgroundActive?: boolean;
+  compression?: {
+    tokenBudget: number | null;
+    preparedTokens: number;
+    status: "within-budget" | "best-effort" | "no-budget";
+  };
+  publicSummary?: PublicPreparedContextSummary;
 }
 
 /**
@@ -104,6 +110,9 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       case "refreshContext":
         void vscode.commands.executeCommand("yuhi.refreshContext");
         break;
+      case "reviewChanges":
+        void vscode.commands.executeCommand("yuhi.reviewAgentChanges");
+        break;
       // Pre-Prepare settings. Persist the SAME yuhi.* config the prepare path reads
       // (no separate plumbing), then re-render so the panel reflects the new value.
       case "setSafetyMode": {
@@ -117,8 +126,18 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         void this.updateConfig("compress", message.value === true);
         break;
       case "setTokenBudget": {
+        if (message.value === null || message.value === "") {
+          void this.updateTokenBudget(0);
+          break;
+        }
         const n = typeof message.value === "number" ? message.value : Number(message.value);
-        void this.updateConfig("tokenBudget", Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
+        if (!Number.isInteger(n) || n <= 0 || n > 1_000_000_000) {
+          void vscode.window.showWarningMessage(
+            "Yuhi: Token Budget must be a positive whole number up to 1,000,000,000, or left blank for No target.",
+          );
+          break;
+        }
+        void this.updateTokenBudget(n);
         break;
       }
     }
@@ -130,6 +149,12 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       .update(key, value, vscode.ConfigurationTarget.Workspace);
     // The onDidChangeConfiguration listener re-renders; call directly too so the
     // panel updates even when the effective value did not change target scope.
+    if (this.data.phase === "not-prepared") this.setNotPrepared();
+  }
+
+  private async updateTokenBudget(value: number): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("yuhi");
+    await cfg.update("tokenBudget", value, vscode.ConfigurationTarget.Workspace);
     if (this.data.phase === "not-prepared") this.setNotPrepared();
   }
 
@@ -177,6 +202,12 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     this.set({
       phase: "preparing",
       blocking,
+      ...(blocking
+        ? {
+            compressionEnabled: readPrepareSettings().compress,
+            tokenBudget: readPrepareSettings().tokenBudget,
+          }
+        : {}),
       ...(detail.filesDiscovered !== undefined ? { filesDiscovered: detail.filesDiscovered } : {}),
       ...(detail.percent !== undefined ? { percent: detail.percent } : {}),
       ...(detail.stepIndex !== undefined ? { stepIndex: detail.stepIndex } : {}),
@@ -240,6 +271,16 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       summariesRejected: detail?.summariesRejected ?? 0,
       contextIndex,
       agentHandoff,
+      ...(detail?.publicSummary?.reductionPercent !== null && detail?.publicSummary?.reductionPercent !== undefined
+        ? { reductionPercent: detail.publicSummary.reductionPercent }
+        : {}),
+      ...(detail?.publicSummary?.originalEstimatedTokens !== null && detail?.publicSummary?.originalEstimatedTokens !== undefined
+        ? { estimatedTokensBefore: detail.publicSummary.originalEstimatedTokens }
+        : {}),
+      ...(detail?.publicSummary?.preparedEstimatedTokens !== null && detail?.publicSummary?.preparedEstimatedTokens !== undefined
+        ? { estimatedTokensAfter: detail.publicSummary.preparedEstimatedTokens }
+        : {}),
+      ...(detail?.compression ? { compression: detail.compression } : {}),
       ...(detail?.backgroundActive ? { backgroundActive: true } : {}),
     });
   }
@@ -253,6 +294,13 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     claudeExtensionActive?: boolean;
     maskedValues?: number;
     reductionPercent?: number;
+    estimatedTokensBefore?: number;
+    estimatedTokensAfter?: number;
+    compression?: {
+      tokenBudget: number | null;
+      preparedTokens: number;
+      status: "within-budget" | "best-effort" | "no-budget";
+    };
     filesTransformed?: number;
     /** v0.3.4 agent picker reconstructed from the on-disk manifest (Context ID). */
     picker?: AgentPickerData;
@@ -270,6 +318,13 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         : {}),
       ...(detail.maskedValues !== undefined ? { maskedValues: detail.maskedValues } : {}),
       ...(detail.reductionPercent !== undefined ? { reductionPercent: detail.reductionPercent } : {}),
+      ...(detail.estimatedTokensBefore !== undefined
+        ? { estimatedTokensBefore: detail.estimatedTokensBefore }
+        : {}),
+      ...(detail.estimatedTokensAfter !== undefined
+        ? { estimatedTokensAfter: detail.estimatedTokensAfter }
+        : {}),
+      ...(detail.compression ? { compression: detail.compression } : {}),
       ...(detail.filesTransformed !== undefined ? { filesTransformed: detail.filesTransformed } : {}),
       ...(detail.picker ? { picker: detail.picker } : {}),
     });
@@ -316,7 +371,15 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
 
   /** Agent changes are surfaced via notifications + the Review panel; the activity badge stays. */
   setAgentChangesDetected(): void {
-    /* no panel change; handled by the Review flow */
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    this.set({ ...this.data, agentChangesDetected: true });
+  }
+
+  clearAgentChangesDetected(): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    const next = { ...this.data };
+    delete next.agentChangesDetected;
+    this.set(next);
   }
 }
 

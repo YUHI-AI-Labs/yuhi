@@ -317,18 +317,21 @@ export function formatOpenedMessage(s: PreparedSummary): string {
 
 /** Pure status text calculation, shared by activation wiring and unit tests. */
 export function formatPreparedStatusText(metrics: PreparedMetrics): string {
-  return metrics.sensitiveValuesMasked > 0 || metrics.filesExcluded > 0
-    ? `$(shield) Prepared by Yuhi · ${metrics.sensitiveValuesMasked} masked · ${metrics.filesExcluded} excluded`
-    : `$(shield) Prepared by Yuhi · −${metrics.estimatedReductionPercent.toFixed(1)}% context`;
+  return `$(shield) Prepared by Yuhi · Estimated context reduction ${metrics.estimatedReductionPercent.toFixed(1)}%`;
 }
 
-export function preparedStatusTooltipLines(runId: string, metrics: PreparedMetrics): string[] {
+export function preparedStatusTooltipLines(
+  runId: string,
+  metrics: PreparedMetrics,
+  publicSummary?: import("@yuhi/core").PublicPreparedContextSummary,
+): string[] {
   const runtime = buildPreparedRuntimeBoundary("claude-code-sandbox");
   return [
     "**Prepared by Yuhi**",
     `Run ID: \`${runId}\``,
     "Agent: Claude Code",
-    `Estimated context reduction: ${metrics.estimatedReductionPercent.toFixed(1)}%`,
+    `Estimated context reduction: ${publicSummary?.reductionPercent === null || publicSummary?.reductionPercent === undefined ? "Not measured" : `${publicSummary.reductionPercent.toFixed(1)}%`}`,
+    `Estimated tokens: ${publicSummary?.originalEstimatedTokens ?? "Not measured"} before → ${publicSummary?.preparedEstimatedTokens ?? "Not measured"} after`,
     `Sensitive findings detected: ${metrics.sensitiveFindings}`,
     `Sensitive values masked: ${metrics.sensitiveValuesMasked}`,
     `Files kept local: ${metrics.filesKeptLocal}`,

@@ -13,6 +13,7 @@
  */
 import { safetyModeLabel, type SafetyMode, DEFAULT_PREPARE_SAFETY_MODE } from "@yuhi/shared";
 import type { AiReadinessReport } from "./ai-readiness-report.js";
+import type { PublicPreparedContextSummary } from "./public-prepared-summary.js";
 
 export interface PreparationReport {
   /** The resolved effective Safety Mode this run used (internal value). */
@@ -32,6 +33,7 @@ export interface PreparationReport {
   /** Explicitly an estimate of agent-accessible content reduction, not token savings. */
   estimatedReductionPercent: number;
   status: "ready" | "ready-with-warning";
+  context?: PublicPreparedContextSummary;
 }
 
 export type ReportFormat = "terminal" | "markdown" | "json" | "svg";
@@ -40,7 +42,7 @@ export type ReportFormat = "terminal" | "markdown" | "json" | "svg";
 export function buildPreparationReport(
   readiness: AiReadinessReport,
   totalSourceFiles: number,
-  opts: { warning?: boolean; safetyMode?: SafetyMode } = {},
+  opts: { warning?: boolean; safetyMode?: SafetyMode; context?: PublicPreparedContextSummary } = {},
 ): PreparationReport {
   return {
     safetyMode: opts.safetyMode ?? DEFAULT_PREPARE_SAFETY_MODE,
@@ -52,6 +54,7 @@ export function buildPreparationReport(
     largeFilesExcluded: readiness.largeFilesReduced,
     estimatedReductionPercent: readiness.estimatedReductionPercent,
     status: opts.warning ? "ready-with-warning" : "ready",
+    ...(opts.context ? { context: opts.context } : {}),
   };
 }
 
@@ -89,10 +92,32 @@ function terminal(r: PreparationReport): string {
     "",
     footer(r),
   );
+  if (r.context) {
+    lines.push(
+      "",
+      "Context preparation",
+      `  Original estimated tokens  ${r.context.originalEstimatedTokens === null ? "Not measured" : group(r.context.originalEstimatedTokens)}`,
+      `  Prepared estimated tokens  ${r.context.preparedEstimatedTokens === null ? "Not measured" : group(r.context.preparedEstimatedTokens)}`,
+      `  Tokens reduced             ${r.context.reducedTokens === null ? "Not measured" : group(r.context.reducedTokens)}`,
+      `  Estimated reduction        ${r.context.reductionPercent === null ? "Not measured" : `${r.context.reductionPercent.toFixed(1)}%`}`,
+      `  Token Budget               ${r.context.tokenBudget === null ? "No target" : group(r.context.tokenBudget)}`,
+      `  Token Budget status        ${r.context.tokenBudgetStatus}`,
+    );
+  }
   return lines.join("\n");
 }
 
 function markdown(r: PreparationReport): string {
+  const contextRows = r.context
+    ? [
+        `| Original estimated tokens | ${r.context.originalEstimatedTokens === null ? "Not measured" : group(r.context.originalEstimatedTokens)} |`,
+        `| Prepared estimated tokens | ${r.context.preparedEstimatedTokens === null ? "Not measured" : group(r.context.preparedEstimatedTokens)} |`,
+        `| Tokens reduced | ${r.context.reducedTokens === null ? "Not measured" : group(r.context.reducedTokens)} |`,
+        `| **Estimated context reduction** | **${r.context.reductionPercent === null ? "Not measured" : `${r.context.reductionPercent.toFixed(1)}%`}** |`,
+        `| Token Budget | ${r.context.tokenBudget === null ? "No target" : group(r.context.tokenBudget)} |`,
+        `| Token Budget status | ${r.context.tokenBudgetStatus} |`,
+      ]
+    : [];
   return [
     "## Repository Ready",
     "",
@@ -101,6 +126,7 @@ function markdown(r: PreparationReport): string {
     ...rows(r).map(([k, v]) => `| ${k} | ${group(v)} |`),
     `| **Estimated accessible-content reduction** | **${r.estimatedReductionPercent}%** |`,
     `| Safety Mode | ${safetyModeLabel(r.safetyMode)} |`,
+    ...contextRows,
     "",
     `Status: **${footer(r)}**`,
     "",

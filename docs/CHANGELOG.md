@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While Yuhi is in `0.x`, minor releases may include breaking changes; these will
 be called out explicitly.
 
+## [0.3.6]
+
+Safe Patch Review — *Review first. Apply safely.*
+
+- Agent launch now captures a private pre-agent snapshot; failure blocks the launch rather
+  than starting without change provenance.
+- Added deterministic patch identity, Prepared Working Tree identity, source-baseline
+  conflict checks, masked review diffs, file/hunk selection, and a session-scoped Trusted
+  Apply API shared by CLI and VS Code.
+- Source writes require explicit confirmation and exact-byte revalidation. Compressed and
+  background representations, binary/mode changes, credentials, PII, Yuhi metadata, unsafe
+  paths, symlinks, and changed Source files cannot be applied.
+- Multi-file Apply and Undo use private backups and explicit transaction outcomes, retain
+  recovery material when needed, and never report success before final hash verification.
+- Removed the legacy parallel Safe Apply writer so there is one Core Source-write path.
+- Added synthetic filesystem acceptance for Apply/Undo, conflict, compressed representation,
+  secret blocking, rollback, and Claude/Codex session separation.
+
 ## [0.3.5]
 
 Progressive Context — *Start fast. Context gets better in the background.*

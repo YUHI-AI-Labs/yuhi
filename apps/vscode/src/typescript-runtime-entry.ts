@@ -7,6 +7,8 @@
  * `globalThis.__yuhiTypeScriptRuntime` so the compressor uses this shipped runtime instead
  * of a bare `import("typescript")` that an installed VSIX (no node_modules) cannot resolve.
  */
+// This dedicated CJS bundle intentionally uses TypeScript's export-assignment shape.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import ts = require("typescript");
 
 export = ts;

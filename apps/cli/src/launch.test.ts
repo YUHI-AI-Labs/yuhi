@@ -42,7 +42,15 @@ function registryWith(id: string, available = true): AgentRegistry {
 function capture() {
   const out: string[] = [];
   const err: string[] = [];
-  return { out, err, opts: { out: (l: string) => out.push(l), err: (l: string) => err.push(l) } };
+  return {
+    out,
+    err,
+    opts: {
+      out: (l: string) => out.push(l),
+      err: (l: string) => err.push(l),
+      captureBaseline: async () => `sha256:${"c".repeat(64)}`,
+    },
+  };
 }
 
 describe("buildLaunchSummary / formatLaunchSummary", () => {
@@ -149,6 +157,8 @@ describe("performLaunch — happy path (fake runner, no real CLI)", () => {
     });
     const payload = JSON.parse(out.join("\n"));
     expect(payload.session.contextId).toBe(CTX);
+    expect(payload.session.revisionId).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(payload.session.snapshotId).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(payload.session).not.toHaveProperty("workingDirectory");
     expect(JSON.stringify(payload.session)).not.toContain("/prepared/secret-path");
   });
@@ -208,5 +218,22 @@ describe("performLaunch — failure paths (finite, clear)", () => {
     expect(code).toBe(0);
     expect(ran).toBe(false);
     expect(out.join("\n")).toContain("Ready for Claude Code");
+  });
+
+  it("fails closed without spawning when the private patch snapshot cannot be created", async () => {
+    const { err, opts } = capture();
+    let ran = false;
+    const code = await performLaunch({
+      agentId: "claude",
+      registry: registryWith("claude"),
+      resolveRun: async () => ({ ok: true, run: makeRun("/prepared/no-snapshot") }),
+      runner: async () => ((ran = true), { exitCode: 0, signal: null }),
+      ...opts,
+      captureBaseline: async () => { throw new Error("synthetic failure"); },
+    });
+    expect(code).toBe(3);
+    expect(ran).toBe(false);
+    expect(err.join("\n")).toContain("patch-snapshot-unavailable");
+    expect(err.join("\n")).not.toContain("synthetic failure");
   });
 });

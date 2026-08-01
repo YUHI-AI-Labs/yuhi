@@ -278,6 +278,42 @@ describe("launchPreparedAgent + reuse of one prepared context", () => {
     expect(runs[0]!.args).toEqual(["--config", "--flag"]);
   });
 
+  it("captures the review checkpoint after plan assembly and before process launch", async () => {
+    const events: string[] = [];
+    const adapter = createFakeAgentAdapter({ id: "claude" });
+    const originalPrepare = adapter.prepare.bind(adapter);
+    const originalLaunch = adapter.launch.bind(adapter);
+    adapter.prepare = async (...args) => {
+      events.push("prepare");
+      return originalPrepare(...args);
+    };
+    adapter.launch = async (...args) => {
+      events.push("launch");
+      return originalLaunch(...args);
+    };
+    await launchPreparedAgent(fakeRegistry({ claude: adapter }), "claude", context, {
+      runner: okRunner,
+      beforeLaunch: async () => {
+        events.push("snapshot");
+      },
+    });
+    expect(events).toEqual(["prepare", "snapshot", "launch"]);
+  });
+
+  it("fails closed and never starts the agent when the review checkpoint fails", async () => {
+    const adapter = createFakeAgentAdapter({ id: "claude" });
+    const launch = vi.spyOn(adapter, "launch");
+    await expect(
+      launchPreparedAgent(fakeRegistry({ claude: adapter }), "claude", context, {
+        runner: okRunner,
+        beforeLaunch: async () => {
+          throw new Error("snapshot unavailable");
+        },
+      }),
+    ).rejects.toThrow("snapshot unavailable");
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it("reuses the SAME prepared context for both agents — no re-prepare, identical Context ID", async () => {
     const claude = createFakeAgentAdapter({ id: "claude", displayName: "Claude Code" });
     const codex = createFakeAgentAdapter({ id: "codex", displayName: "Codex" });

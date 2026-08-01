@@ -120,7 +120,7 @@ describe("resolvePolicy", () => {
     expect(decisions[0]?.ruleName).toBe("detector:tabular-auto-pseudonymize");
   });
 
-  it("includes an unparsed PDF unchanged with an explicit warning route", () => {
+  it("keeps an unparsed PDF original local for background-safe preparation", () => {
     const inspection = {
       fileType: "pdf" as const,
       parserAvailable: false,
@@ -135,8 +135,8 @@ describe("resolvePolicy", () => {
       { relpath: "synthetic.pdf", findings: [], inspection },
     ]).decisions[0];
     expect(decision).toMatchObject({
-      action: "allow",
-      ruleName: "file-type:pdf-unverified-included",
+      action: "local-only",
+      ruleName: "file-type:pdf-inspection-unavailable",
     });
     expect(decision).not.toHaveProperty("processors");
   });
@@ -190,7 +190,7 @@ describe("resolvePolicy", () => {
     });
   });
 
-  it("includes an uninspectable binary unchanged with an explicit warning route", () => {
+  it("keeps an uninspectable binary original local", () => {
     const inspection = {
       fileType: "binary" as const,
       parserAvailable: false,
@@ -205,8 +205,8 @@ describe("resolvePolicy", () => {
       { relpath: "synthetic.bin", findings: [], inspection },
     ]).decisions[0];
     expect(decision).toMatchObject({
-      action: "allow",
-      ruleName: "file-type:binary-unverified-included",
+      action: "local-only",
+      ruleName: "file-type:binary-inspection-unavailable",
     });
   });
 

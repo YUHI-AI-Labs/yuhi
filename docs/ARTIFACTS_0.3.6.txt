@@ -1,0 +1,11 @@
+Yuhi transfer artifact checksums
+
+yuhi-vscode-0.3.5.vsix
+  size: 2248829 bytes
+  sha256: aa2f493ed9f6477c134596e56563abfa4517fc876a0263b245433d0c990f7b9a
+
+yuhi.vsix
+  size: 2263687 bytes
+  sha256: fca2eb5225803d4584a8b265bac59c95403ad5a6c2cddd8d8f37bc50a45da801
+
+Verify after transfer. Do not install an artifact whose size or SHA-256 differs.

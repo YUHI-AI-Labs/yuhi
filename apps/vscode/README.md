@@ -62,6 +62,15 @@ Original Workspace → Prepare locally → Review what the AI can see
 
 Yuhi never automatically applies agent-generated changes to the Original Workspace.
 
+### Safe Patch Review — v0.3.6
+
+After Claude Code or Codex works in the Prepared Workspace, Yuhi detects created, modified,
+deleted, and renamed files. Review eligible files or text hunks, then explicitly apply the
+selection. Yuhi revalidates the private pre-agent snapshot, current Prepared bytes, current
+Original bytes, path containment, secrets, PII, and source conflicts immediately before the
+write. Private backup, rollback, Undo, and Discard are available. Binary, mode, compressed,
+background-context, credential, and conflicting changes are not applied automatically.
+
 ## Important boundary
 
 Yuhi controls the generated initial context; it is **not an OS sandbox**. A launched agent

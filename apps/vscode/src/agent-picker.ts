@@ -317,6 +317,12 @@ export interface LaunchPreparedAgentOptions {
   /** Deterministic ids for tests. */
   sessionId?: string;
   startedAt?: string;
+  /**
+   * v0.3.6 Safe Patch Review checkpoint. Runs after the adapter has assembled its
+   * launch plan but immediately before the agent process is started. A rejection
+   * aborts launch, so Yuhi never starts an agent without a review baseline.
+   */
+  beforeLaunch?: () => Promise<void>;
 }
 
 /**
@@ -336,6 +342,7 @@ export async function launchPreparedAgent(
     ...(options.forwardedArgs ? { forwardedArgs: [...options.forwardedArgs] } : {}),
     ...(options.envPassthrough ? { envPassthrough: [...options.envPassthrough] } : {}),
   });
+  await options.beforeLaunch?.();
   return adapter.launch(plan, {
     runner: options.runner,
     ...(options.sessionId ? { sessionId: options.sessionId } : {}),
@@ -415,6 +422,7 @@ export async function runAgentLaunch(params: RunAgentLaunchParams): Promise<Agen
       ...(params.envPassthrough ? { envPassthrough: params.envPassthrough } : {}),
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
       ...(params.startedAt ? { startedAt: params.startedAt } : {}),
+      ...(params.beforeLaunch ? { beforeLaunch: params.beforeLaunch } : {}),
     });
     if (session.status === "failed") {
       return { status: "failed", id: params.id, error: "launch-failed" };

@@ -33,6 +33,10 @@ export interface AgentSessionManifest {
    */
   revision?: number;
   revisionId?: string;
+  /** v0.3.6 Safe Patch Review: private pre-agent snapshot identity. */
+  snapshotId?: string;
+  /** Deterministic reviewed patch identity, once a patch has been detected. */
+  patchId?: string;
 }
 
 /**
@@ -43,6 +47,8 @@ export interface AgentSessionManifest {
 export type AgentSessionRevisionInput = AgentSession & {
   readonly revision?: number;
   readonly revisionId?: string;
+  readonly snapshotId?: string;
+  readonly patchId?: string;
 };
 
 /**
@@ -68,5 +74,7 @@ export function toPublicAgentSessionManifest(
     ...(session.exitCode !== undefined ? { exitCode: session.exitCode } : {}),
     ...(session.revision !== undefined ? { revision: session.revision } : {}),
     ...(session.revisionId !== undefined ? { revisionId: session.revisionId } : {}),
+    ...(session.snapshotId !== undefined ? { snapshotId: session.snapshotId } : {}),
+    ...(session.patchId !== undefined ? { patchId: session.patchId } : {}),
   };
 }

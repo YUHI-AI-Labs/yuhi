@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
-import * as path from "node:path";
 import { cliVersion } from "./version.js";
 import {
   YuhiError,
@@ -33,14 +32,11 @@ import {
   exportAudit,
   KNOWN_AGENT_IDS,
   buildAdapter,
-  reviewAgentChanges,
-  deriveWorkflowState,
   formatPreparationReport,
   formatCompressionReport,
   isSafetyMode,
   safetyModeLabel,
   type SafetyMode,
-  type AgentChangeBaseline,
 } from "@yuhi/core";
 import { loadConfig, resolveSafetyMode } from "@yuhi/config";
 import { createLocalModelProvider } from "@yuhi/local";
@@ -80,6 +76,15 @@ import {
   performBackgroundRetry,
   maybeWaitBackground,
 } from "./background.js";
+import {
+  patchApply,
+  patchDiff,
+  patchDiscard,
+  patchHistoryCommand,
+  patchStatus,
+  patchUndoCommand,
+  patchValidate,
+} from "./patch.js";
 
 interface Globals {
   json: boolean;
@@ -624,6 +629,10 @@ async function main(): Promise<void> {
           }
           tokenBudget = parsed;
         }
+        if (tokenBudget !== null && !compress) {
+          console.error(`${symbols.err()} --token-budget requires --compress.`);
+          return 3;
+        }
 
         const target = await assertSafeSourceWorkspace(cmd.args[0] ?? dir);
 
@@ -779,47 +788,10 @@ async function main(): Promise<void> {
   program
     .command("review-agent-changes <run>")
     .description("Review post-agent Prepared Workspace changes; never applies automatically")
-    .requiredOption("--original <dir>", "original workspace used for conflict checks")
-    .requiredOption("--baseline <file>", "metadata-only baseline captured before agent execution")
     .action(
       action(async (cmd) => {
         const { g } = getContext(cmd);
-        const opts = cmd.opts() as { original: string; baseline: string };
-        const prepared = resolvePreparedRunReference(cmd.args[0]!);
-        await readPreparedRunSession(cmd.args[0]!);
-        const original = await assertSafeSourceWorkspace(opts.original);
-        const baseline = JSON.parse(await readFile(path.resolve(opts.baseline), "utf8")) as AgentChangeBaseline;
-        if (
-          baseline?.schemaVersion !== 2 ||
-          typeof baseline.runId !== "string" ||
-          !Array.isArray(baseline.files)
-        ) {
-          console.error("Invalid input\n\nSafe error category: invalid-agent-baseline");
-          return 3;
-        }
-        const review = await reviewAgentChanges(baseline, prepared, original);
-        const output = {
-          command: "review-agent-changes",
-          runId: baseline.runId,
-          changedFileCount: review.changes.length,
-          changes: review.changes,
-          security: review.security,
-          applyAllowed: review.applyAllowed,
-          blockers: review.blockers,
-          applyResult: "unavailable-in-cli",
-          workflowState: deriveWorkflowState({
-            changedFileCount: review.changes.length,
-            reviewingChanges: true,
-          }),
-        };
-        if (g.json) printJson(output);
-        else {
-          console.log(`AI Agent completed\n\nChanges detected: ${output.changedFileCount}`);
-          console.log(`Security scan: ${output.security.safe ? "Passed" : "Blocked"}`);
-          console.log(`Apply: ${output.applyResult}`);
-          if (output.blockers.length > 0) console.log(`Blockers: ${output.blockers.join(", ")}`);
-        }
-        return 0;
+        return patchStatus({ runRef: cmd.args[0]!, json: g.json });
       }),
     );
 
@@ -952,6 +924,74 @@ async function main(): Promise<void> {
         }),
       );
   }
+
+  // ---- patch ----  v0.3.6 Safe Patch Review
+  const patchCommand = program
+    .command("patch")
+    .description("Review first. Apply selected agent changes safely.");
+  patchCommand
+    .command("status")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchStatus({ ...(opts.run ? { runRef: String(opts.run) } : {}), json: g.json });
+    }));
+  patchCommand
+    .command("diff")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .option("--file <relpath>", "show one repository-relative file")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchDiff({
+        ...(opts.run ? { runRef: String(opts.run) } : {}),
+        ...(opts.file ? { files: [String(opts.file)] } : {}),
+        json: g.json,
+      });
+    }));
+  patchCommand
+    .command("validate")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchValidate({ ...(opts.run ? { runRef: String(opts.run) } : {}), json: g.json });
+    }));
+  patchCommand
+    .command("apply")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .option("--file <relpath...>", "apply only selected repository-relative files")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchApply({
+        ...(opts.run ? { runRef: String(opts.run) } : {}),
+        ...(Array.isArray(opts.file) ? { files: opts.file.map(String) } : {}),
+        json: g.json,
+        confirmApply: (count) => confirm(`Apply ${count} reviewed change(s) to the Original Workspace?`, false),
+      });
+    }));
+  patchCommand
+    .command("undo <patch-id>")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      return patchUndoCommand({ patchId: cmd.args[0]!, json: g.json });
+    }));
+  patchCommand
+    .command("history")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      return patchHistoryCommand({ json: g.json });
+    }));
+  patchCommand
+    .command("discard")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchDiscard({ ...(opts.run ? { runRef: String(opts.run) } : {}), json: g.json });
+    }));
 
   // ---- background ----  v0.3.5 Progressive Context control surface
   const background = program

@@ -159,10 +159,6 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
         (capabilities.fileType === "csv" ||
           capabilities.fileType === "tsv" ||
           capabilities.fileType === "text");
-      const unverifiedRawAllowed =
-        !credentialOrPrivateKeyRoute &&
-        !transformableUnverified &&
-        (capabilities.fileType === "pdf" || capabilities.fileType === "binary");
       if (transformableUnverified) {
         action = "prepare-locally";
         winningRule = `file-type:${capabilities.fileType}-transform-unverified`;
@@ -178,13 +174,6 @@ export function resolvePolicy(input: PolicyInput, files: MatchableFile[]): Polic
           capabilities.fileType === "xlsx"
             ? ["pseudonymize-student-records", "safety-check"]
             : ["pseudonymize", "safety-check"];
-        winningDestinations = ["external", "local"];
-      } else if (unverifiedRawAllowed) {
-        action = "allow";
-        winningRule = `file-type:${capabilities.fileType}-unverified-included`;
-        reason =
-          `This ${capabilities.fileType.toUpperCase()} file could not be inspected. ` +
-          "It will be included unchanged with an explicit warning.";
         winningDestinations = ["external", "local"];
       } else if (!credentialOrPrivateKeyRoute) {
         action = "local-only";

@@ -54,6 +54,13 @@ export type ActivityPanelData =
       /** Impact metrics to celebrate what Yuhi protected/reduced (all optional). */
       maskedValues?: number;
       reductionPercent?: number;
+      estimatedTokensBefore?: number;
+      estimatedTokensAfter?: number;
+      compression?: {
+        tokenBudget: number | null;
+        preparedTokens: number;
+        status: "within-budget" | "best-effort" | "no-budget";
+      };
       filesTransformed?: number;
       /**
        * v0.3.4 agent picker — "one prepared repository, multiple agents". When present,
@@ -65,6 +72,7 @@ export type ActivityPanelData =
        * ONLY from the public status file. Present once there is background work.
        */
       progressive?: ProgressiveContextViewModel;
+      agentChangesDetected?: boolean;
     }
   | {
       phase: "preparing";
@@ -87,6 +95,8 @@ export type ActivityPanelData =
       phaseLabel?: string;
       /** Elapsed seconds, shown so the user sees continuous activity. */
       elapsedSeconds?: number;
+      compressionEnabled?: boolean;
+      tokenBudget?: number;
     }
   | {
       phase: "ready";
@@ -99,12 +109,21 @@ export type ActivityPanelData =
       contextIndex: boolean;
       /** Physical existence of .yuhi/context/AGENT_HANDOFF.md. */
       agentHandoff: boolean;
+      reductionPercent?: number;
+      estimatedTokensBefore?: number;
+      estimatedTokensAfter?: number;
+      compression?: {
+        tokenBudget: number | null;
+        preparedTokens: number;
+        status: "within-budget" | "best-effort" | "no-budget";
+      };
       /** Background enrichment still running (Start allowed; badge shows activity). */
       backgroundActive?: boolean;
       /** v0.3.4 agent picker — replaces the single Start button when present. */
       picker?: AgentPickerData;
       /** v0.3.5 Progressive Context — honest background-processing surface. */
       progressive?: ProgressiveContextViewModel;
+      agentChangesDetected?: boolean;
     };
 
 /** Message the webview posts back when a button is activated. */
@@ -141,6 +160,22 @@ function button(id: string, label: string, opts: { primary?: boolean; disabled?:
   return `<button type="button" id="${id}" class="${cls}"${dis}>${esc(label)}</button>`;
 }
 
+function renderBudgetCard(
+  budget: { tokenBudget: number | null; preparedTokens: number; status: "within-budget" | "best-effort" | "no-budget" } | undefined,
+  fallbackPreparedTokens = 0,
+): string {
+  const status = !budget || budget.tokenBudget === null
+    ? "No target"
+    : budget.status === "within-budget"
+      ? "Target achieved"
+      : `Best effort — ${Math.max(0, budget.preparedTokens - budget.tokenBudget).toLocaleString()} over target`;
+  return (
+    `<div class="budgetCard"><div><span>Token Budget</span><b>${budget?.tokenBudget === null || !budget ? "No target" : budget.tokenBudget.toLocaleString()}</b></div>` +
+    `<div><span>Prepared Tokens</span><b>${(budget?.preparedTokens ?? fallbackPreparedTokens).toLocaleString()}</b></div>` +
+    `<div class="budgetStatus"><span>Status</span><b>${esc(status)}</b></div></div>`
+  );
+}
+
 /** Human labels for the three Safety Mode presets (values mirror `yuhi.safetyMode`). */
 const SAFETY_MODE_CHOICES: ReadonlyArray<readonly [SafetyModeValue, string]> = [
   ["balanced", "Balanced"],
@@ -152,8 +187,8 @@ const SAFETY_MODE_CHOICES: ReadonlyArray<readonly [SafetyModeValue, string]> = [
  * The pre-Prepare controls shown in the `not-prepared` state so Safety Mode /
  * Compression / Token Budget can be chosen BEFORE the first prepare. Each control
  * persists the same `yuhi.*` setting the prepare path reads; there is no dirty /
- * Re-prepare affordance here (nothing has been prepared yet). Token Budget is enabled
- * only while Compression is on.
+ * Re-prepare affordance here (nothing has been prepared yet). Token Budget is always
+ * editable; entering a positive target automatically enables Compression.
  */
 function prepareControls(s: PrepareSettings): string {
   const options = SAFETY_MODE_CHOICES.map(
@@ -174,8 +209,10 @@ function prepareControls(s: PrepareSettings): string {
     `</div>` +
     `<div class="ctl">` +
     `<label for="cfgBudget">Token Budget</label>` +
-    `<input type="number" id="cfgBudget" class="num" min="0" step="1000" placeholder="No target"` +
-    ` value="${esc(budgetValue)}"${s.compress ? "" : " disabled"}>` +
+    `<input type="number" id="cfgBudget" class="num" min="1" max="1000000000" step="1000" placeholder="No target"` +
+    ` value="${esc(budgetValue)}" aria-describedby="cfgBudgetHint cfgBudgetError"${s.compress ? "" : " disabled"}>` +
+    `<span id="cfgBudgetHint" class="hint">${s.compress ? "Positive whole number · blank means No target" : "Enable Context Compression to set a token budget."}</span>` +
+    `<span id="cfgBudgetError" class="inputError" role="alert"></span>` +
     `</div>` +
     `</div>`
   );
@@ -202,6 +239,15 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       };
     case "yuhi-mode": {
       const pending = data.documentsPending ?? 0;
+      const reduction = data.reductionPercent;
+      const reductionHero =
+        `<div class="reductionHero"><span>Estimated context reduction</span>` +
+        `<b>${reduction === undefined ? "Not measured" : `${reduction.toFixed(1)}%`}</b>` +
+        (data.estimatedTokensBefore !== undefined && data.estimatedTokensAfter !== undefined
+          ? `<small>${data.estimatedTokensBefore.toLocaleString()} → ${data.estimatedTokensAfter.toLocaleString()} estimated tokens</small>`
+          : "") +
+        `</div>`;
+      const budgetCard = renderBudgetCard(data.compression, data.estimatedTokensAfter ?? 0);
       const checks =
         // Blue "Yuhi Mode" = this window IS the Prepared Workspace. Whether the
         // Claude Code extension has actually opened is a SEPARATE state (shown only
@@ -228,9 +274,6 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       if (data.maskedValues !== undefined && data.maskedValues > 0) {
         stats.push(stat(data.maskedValues.toLocaleString(), "sensitive values masked"));
       }
-      if (data.reductionPercent !== undefined && data.reductionPercent > 0) {
-        stats.push(stat(`${data.reductionPercent.toFixed(0)}%`, "context reduced"));
-      }
       if (data.filesTransformed !== undefined && data.filesTransformed > 0) {
         stats.push(
           stat(String(data.filesTransformed), `file${data.filesTransformed === 1 ? "" : "s"} transformed`),
@@ -244,14 +287,21 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       const launch = data.picker ? renderAgentPicker(data.picker) : openBtn;
       // v0.3.5 — the honest Progressive Context surface (public-status only).
       const progressive = data.progressive ? renderProgressiveContext(data.progressive) : "";
+      const changes = data.agentChangesDetected
+        ? `<div class="gen"><b>AI changes detected</b><br>Review first. Nothing is applied automatically.</div>` +
+          button("reviewChanges", "Review changes", { primary: true })
+        : "";
       return {
         badge: "Yuhi Mode",
         badgeClass: "mode",
         body:
           `<div class="modehdr" role="heading" aria-level="2">◆ YUHI MODE</div>` +
+          reductionHero +
+          budgetCard +
           checks +
           impact +
           progressive +
+          changes +
           button("details", "Review file decisions") +
           launch,
       };
@@ -287,6 +337,9 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
             : "";
       const elapsed = data.elapsedSeconds !== undefined ? `${data.elapsedSeconds}s` : "";
       const meta = [counts, elapsed].filter(Boolean).join(" · ");
+      const contextMeta = data.compressionEnabled
+        ? `Context Compression: On · Token Budget: ${data.tokenBudget && data.tokenBudget > 0 ? data.tokenBudget.toLocaleString() : "No target"} · Estimated reduction: calculating…`
+        : "Context Compression: Off · Token reduction: Not measured";
       // Determinate bar when we have a percent; otherwise an indeterminate shimmer.
       const pct = data.percent !== undefined ? Math.max(2, Math.min(100, Math.round(data.percent))) : undefined;
       const bar =
@@ -304,6 +357,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           `<div class="prep-step">${stepLine}</div></div>${percentText}</div>` +
           bar +
           (meta ? `<div class="prep-meta">${meta}</div>` : "") +
+          `<div class="prep-meta">${esc(contextMeta)}</div>` +
           (data.currentDoc ? `<div class="sub">${esc(data.currentDoc)}</div>` : "") +
           `<div class="prep-note">Nothing has been sent to Claude Code yet.</div>` +
           `</div>` +
@@ -316,6 +370,14 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       };
     }
     case "ready": {
+      const reductionHero =
+        `<div class="reductionHero"><span>Estimated context reduction</span>` +
+        `<b>${data.reductionPercent === undefined ? "Not measured" : `${data.reductionPercent.toFixed(1)}%`}</b>` +
+        (data.estimatedTokensBefore !== undefined && data.estimatedTokensAfter !== undefined
+          ? `<small>${data.estimatedTokensBefore.toLocaleString()} → ${data.estimatedTokensAfter.toLocaleString()} estimated tokens</small>`
+          : `<small>Context Compression: Off</small>`) +
+        `</div>`;
+      const budgetCard = renderBudgetCard(data.compression, data.estimatedTokensAfter ?? 0);
       const warnings = data.summariesRejected > 0;
       const checks =
         line("done", `${data.filesDiscovered} files discovered`) +
@@ -333,6 +395,10 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         : "";
       // v0.3.5 — the honest Progressive Context surface, shown on the Ready surface too.
       const progressive = data.progressive ? renderProgressiveContext(data.progressive) : "";
+      const changes = data.agentChangesDetected
+        ? `<div class="gen"><b>AI changes detected</b><br>Review first. Nothing is applied automatically.</div>` +
+          button("reviewChanges", "Review changes", { primary: true })
+        : "";
       return {
         badge: data.backgroundActive
           ? "Enriching…"
@@ -341,9 +407,12 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
             : "Ready",
         badgeClass: data.backgroundActive ? "busy" : warnings ? "warn" : "ok",
         body:
+          reductionHero +
+          budgetCard +
           checks +
           gen +
           progressive +
+          changes +
           button("details", "Open details") +
           (data.picker
             ? renderAgentPicker(data.picker)
@@ -475,6 +544,18 @@ export function renderActivityPanel(
   @keyframes slide { 0% { margin-left: -42%; } 100% { margin-left: 100%; } }
   .prep-meta { font-size: 12px; color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
   .prep-note { margin-top: 7px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .reductionHero { margin: 10px 0 14px; padding: 14px; border: 1px solid var(--vscode-focusBorder);
+    border-radius: 8px; display: grid; gap: 3px; background: var(--vscode-editorWidget-background); }
+  .reductionHero span { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--vscode-descriptionForeground); font-weight: 700; }
+  .reductionHero b { font-size: 30px; line-height: 1.1; font-variant-numeric: tabular-nums;
+    color: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); }
+  .reductionHero small { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+  .budgetCard { margin: 0 0 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .budgetCard > div { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px; display: grid; gap: 2px; }
+  .budgetCard .budgetStatus { grid-column: 1 / -1; }
+  .budgetCard span { font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+  .budgetCard b { font-size: 13px; font-variant-numeric: tabular-nums; }
   /* Pre-Prepare settings (Safety Mode / Compression / Token Budget). */
   .cfg { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 12px; }
   .ctl { display: flex; flex-direction: column; gap: 4px; }
@@ -490,6 +571,8 @@ export function renderActivityPanel(
     border-radius: 4px;
   }
   .num:disabled { opacity: .5; }
+  .hint { font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+  .inputError { min-height: 1.2em; font-size: 10.5px; color: var(--vscode-errorForeground); }
   .sel:focus-visible, .num:focus-visible, .tog input:focus-visible {
     outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px;
   }
@@ -569,7 +652,7 @@ export function renderActivityPanel(
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     // v0.3.5 adds the background Cancel / Refresh Context buttons; each posts its id.
-    for (const id of ["prepare", "startClaude", "details", "cancelBackground", "refreshContext"]) {
+    for (const id of ["prepare", "startClaude", "details", "cancelBackground", "refreshContext", "reviewChanges"]) {
       const el = document.getElementById(id);
       if (el && !el.disabled) el.addEventListener("click", () => vscode.postMessage({ type: id }));
     }
@@ -583,9 +666,41 @@ export function renderActivityPanel(
     const safety = document.getElementById("cfgSafety");
     if (safety) safety.addEventListener("change", () => vscode.postMessage({ type: "setSafetyMode", value: safety.value }));
     const compress = document.getElementById("cfgCompress");
-    if (compress) compress.addEventListener("change", () => vscode.postMessage({ type: "setCompress", value: compress.checked }));
     const budget = document.getElementById("cfgBudget");
-    if (budget) budget.addEventListener("change", () => vscode.postMessage({ type: "setTokenBudget", value: Number(budget.value) || 0 }));
+    const budgetHint = document.getElementById("cfgBudgetHint");
+    const budgetError = document.getElementById("cfgBudgetError");
+    if (compress) compress.addEventListener("change", () => {
+      if (budget) budget.disabled = !compress.checked;
+      if (budgetHint) budgetHint.textContent = compress.checked
+        ? "Positive whole number · blank means No target"
+        : "Enable Context Compression to set a token budget.";
+      if (budgetError) budgetError.textContent = "";
+      vscode.postMessage({ type: "setCompress", value: compress.checked });
+    });
+    if (budget) {
+      let budgetTimer;
+      budget.addEventListener("input", () => {
+        if (budgetError) budgetError.textContent = "";
+        clearTimeout(budgetTimer);
+        budgetTimer = setTimeout(() => {
+          const raw = budget.value.trim();
+          if (raw === "") {
+            vscode.postMessage({ type: "setTokenBudget", value: null });
+            return;
+          }
+          const value = Number(raw);
+          if (!Number.isInteger(value) || value <= 0) {
+            if (budgetError) budgetError.textContent = "Enter a positive whole number, or leave blank for No target.";
+            return;
+          }
+          if (value > 1000000000) {
+            if (budgetError) budgetError.textContent = "Token Budget must be 1,000,000,000 or less.";
+            return;
+          }
+          vscode.postMessage({ type: "setTokenBudget", value });
+        }, 250);
+      });
+    }
   </script>
 </body></html>`;
 }

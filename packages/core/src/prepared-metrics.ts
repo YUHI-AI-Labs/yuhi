@@ -216,8 +216,12 @@ export function buildPreparedMetrics(report: PrepareReport): PreparedMetrics {
     filesSummarized: sourceFiles.filter((f) => f.transformations?.includes("summarized")).length,
     filesPseudonymized: sourceFiles.filter((f) => f.transformations?.includes("pseudonymized")).length,
     filesWithMaskedValues: sourceFiles.filter((f) => (f.maskedValues ?? 0) > 0).length,
-    filesKeptLocal: sourceFiles.filter((f) => f.omitted && KEPT_LOCAL.has(f.action)).length,
-    filesExcluded: sourceFiles.filter((f) => f.omitted && !KEPT_LOCAL.has(f.action)).length,
+    filesKeptLocal: sourceFiles.filter(
+      (f) => f.omitted && f.outcome !== "background-processing-pending" && KEPT_LOCAL.has(f.action),
+    ).length,
+    filesExcluded: sourceFiles.filter(
+      (f) => f.omitted && f.outcome !== "background-processing-pending" && !KEPT_LOCAL.has(f.action),
+    ).length,
     sensitiveFilesExcluded: fileDecisions.filter(
       (f) =>
         !f.included &&

@@ -5,6 +5,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.6]
+
+Theme: **Safe Patch Review** — *Review first. Apply safely.*
+
+- Captures an agent-private, deterministic snapshot immediately before each Claude Code or
+  Codex launch. Snapshot failure prevents launch; another session cannot silently reuse it.
+- Detects created, modified, deleted, renamed, binary, and mode changes in the Prepared
+  Repository. FULL text files can be selected by file or hunk; compressed files, background
+  artifacts, binaries, mode changes, credentials, PII, internal metadata, and conflicts are
+  blocked from Source Apply.
+- Adds a session-scoped **Trusted Apply** boundary. Caller-supplied risk, eligibility, hashes,
+  paths, or content are not trusted. Yuhi reloads private state, recomputes patch and Working
+  Tree identities, rescans exact bytes, and rechecks Source hashes and path containment.
+- Adds private backup, atomic replacement, verified rollback, transactional Undo, Discard,
+  metadata-only history, and masked diff output. Nothing is automatically applied, committed,
+  pushed, or published.
+- Adds CLI `yuhi patch status|diff|validate|apply|undo|history|discard` using the same Core
+  review and Apply contracts as VS Code.
+
+Known limitation: Node.js does not expose descriptor-relative `openat(2)` operations. Yuhi
+therefore repeats `O_NOFOLLOW`, canonical containment, symlink, and hash checks at every
+critical boundary and fails closed, but does not claim an OS-level filesystem sandbox.
+
 ## [0.3.5]
 
 Theme: **Progressive Context** — *Start fast. Context gets better in the background.*

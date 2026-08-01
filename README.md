@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
-> **Current release: 0.3.5** — **Progressive Context: start fast, context gets better in the background.** Heavy preparation (PDF/DOCX/OCR/local summaries) runs after Yuhi Mode is ready and is published safely; one prepared repository stays reusable across Claude Code and Codex.
+> **Current release: 0.3.6** — **Safe Patch Review: review first, apply safely.** Claude Code and Codex work in the Prepared Repository; Yuhi detects their changes and applies only explicitly selected, revalidated files or hunks to the Source Repository.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi?label=npm&color=cb3837&logo=npm&logoColor=white"></a>
@@ -88,6 +88,29 @@ with how much heavy work is pending.
 - **Private-state boundary.** The queue's private records, staging bytes, and cancel flags
   live *outside* every agent-visible root (under the managed base); the agent reads only a
   single path-safe public status file.
+
+## Safe Patch Review — review first, apply safely
+
+Yuhi keeps agent work isolated in the Prepared Repository until you explicitly approve it.
+After Claude Code or Codex changes files, Yuhi shows what changed, masks sensitive diff
+content, and lets you select eligible files or text hunks.
+
+Before every Source write, Core reloads the private pre-agent snapshot and rechecks the
+Prepared Working Tree identity, Source hashes, path containment, symlinks, representation,
+secrets, PII, and sensitive configuration. Apply uses private backups, atomic replacement,
+verified rollback, and transactional Undo. Compressed files, background artifacts, binary
+changes, mode changes, credentials, and source conflicts remain blocked.
+
+```bash
+yuhi patch status
+yuhi patch diff
+yuhi patch validate
+yuhi patch apply
+yuhi patch undo <patch-id>
+yuhi patch history
+```
+
+Yuhi never auto-applies, commits, pushes, or opens a pull request.
 
 ## See how much of your repository your AI actually needs
 

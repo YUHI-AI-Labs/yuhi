@@ -195,7 +195,7 @@ describe("launch metadata and policy", () => {
     expect(metrics).toBe(0);
     const sessionMetrics = (await import("@yuhi/core")).buildPreparedMetrics(report);
     expect(formatPreparedStatusText(sessionMetrics))
-      .toBe("$(shield) Prepared by Yuhi · 2 masked · 0 excluded");
+      .toBe("$(shield) Prepared by Yuhi · Estimated context reduction 75.0%");
   });
 
   it("status text shows one-decimal reduction when no masking or exclusion exists", async () => {
@@ -203,7 +203,7 @@ describe("launch metadata and policy", () => {
     report.files = report.files.slice(0, 1);
     report.decisions = report.decisions?.slice(0, 1);
     expect(formatPreparedStatusText((await import("@yuhi/core")).buildPreparedMetrics(report)))
-      .toBe("$(shield) Prepared by Yuhi · −75.0% context");
+      .toBe("$(shield) Prepared by Yuhi · Estimated context reduction 75.0%");
   });
 
   it("status tooltip carries the enforced boundary wording", async () => {

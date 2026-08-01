@@ -35,6 +35,25 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
       "Run `yuhi prepare <another-source>` to choose another source.",
     ].join("\n");
   }
+  const context = result.publicSummary;
+  const contextLines = context
+    ? [
+        "Context preparation",
+        `Context Compression: ${context.compressionEnabled ? "On" : "Off"}`,
+        `Original estimated tokens: ${context.originalEstimatedTokens ?? "Not measured"}`,
+        `Prepared estimated tokens: ${context.preparedEstimatedTokens ?? "Not measured"}`,
+        `Tokens reduced: ${context.reducedTokens ?? "Not measured"}`,
+        `Estimated context reduction: ${context.reductionPercent === null ? "Not measured" : `${context.reductionPercent.toFixed(1)}%`}`,
+        `Full files: ${context.fullFiles}`,
+        `Compressed files: ${context.compressedFiles}`,
+        `Excluded files: ${context.compressionExcludedFiles}`,
+        `Token Budget: ${context.tokenBudget ?? "No target"}`,
+        `Token Budget status: ${context.tokenBudgetStatus}`,
+        `Background pending: ${context.backgroundPendingFiles}`,
+        `Secrets exposed: ${context.secretsExposed}`,
+        "",
+      ]
+    : [];
   return [
     // Lead with the shareable, public-safe Repository Report — the proof of value.
     formatPreparationReport(result.preparationReport, "terminal"),
@@ -43,6 +62,7 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     "",
     "Prepared by Yuhi",
     "",
+    ...contextLines,
     "Status: Success",
     `Workflow: ${result.workflowState}`,
     `Files included: ${result.filesIncluded}`,

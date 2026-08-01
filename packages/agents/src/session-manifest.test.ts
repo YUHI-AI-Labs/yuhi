@@ -51,6 +51,22 @@ describe("Agent Session Manifest — public projection", () => {
     expect("revisionId" in m).toBe(false);
   });
 
+  it("records patch provenance without exposing private snapshot storage", () => {
+    const snapshotId = "sha256:" + "d".repeat(64);
+    const patchId = "sha256:" + "e".repeat(64);
+    const m = toPublicAgentSessionManifest({ ...session(), snapshotId, patchId });
+    expect(m.snapshotId).toBe(snapshotId);
+    expect(m.patchId).toBe(patchId);
+    expect(JSON.stringify(m)).not.toContain("workingDirectory");
+    expect(JSON.stringify(m)).not.toContain("snapshotPath");
+  });
+
+  it("omits patch provenance for older sessions", () => {
+    const m = toPublicAgentSessionManifest(session());
+    expect("snapshotId" in m).toBe(false);
+    expect("patchId" in m).toBe(false);
+  });
+
   it("is a SEPARATE artifact from the deterministic Context Manifest", () => {
     // The session manifest is per-run (sessionId, status) and carries only a LINK
     // to the context via contextId — it is not the Context Manifest itself.

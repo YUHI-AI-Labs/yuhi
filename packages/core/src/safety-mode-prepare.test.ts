@@ -129,21 +129,19 @@ function key(f: { relpath: string; originalRelpath?: string }): string {
 }
 
 describe("safety mode — prepare-loop escalation (end to end)", () => {
-  it("Balanced delivers the unverified binary; Strict keeps it local via the escalation pass", async () => {
+  it("every mode keeps an unverified binary original local", async () => {
     const balanced = await run("balanced");
     const strict = await run("strict");
 
-    // Balanced: the binary is delivered with an unverified warning and is on disk.
-    expect(balanced.delivered.has("data/blob.bin")).toBe(true);
-    expect(existsSync(path.join(balanced.outDir, "data", "blob.bin"))).toBe(true);
+    expect(balanced.delivered.has("data/blob.bin")).toBe(false);
+    expect(existsSync(path.join(balanced.outDir, "data", "blob.bin"))).toBe(false);
     const balancedBin = balanced.files.find((f) => key(f) === "data/blob.bin");
-    expect(balancedBin?.outcome).toBe("included-unverified");
-    expect(balancedBin?.omitted).not.toBe(true);
+    expect(balancedBin?.outcome).toBe("local-only-unsupported");
+    expect(balancedBin?.omitted).toBe(true);
 
     // Strict: the SAME binary is kept local by the centralized escalation pass.
     const strictBin = strict.files.find((f) => key(f) === "data/blob.bin");
     expect(strictBin?.omitted).toBe(true);
-    expect(strictBin?.keptLocalBySafetyMode).toBe("strict");
     expect(strict.delivered.has("data/blob.bin")).toBe(false);
     expect(existsSync(path.join(strict.outDir, "data", "blob.bin"))).toBe(false);
 
