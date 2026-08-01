@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
-> **Current release: 0.3.4** — **Prepare once. Run with Claude or Codex.** One prepared repository, reusable across agents — plus opt-in Context Compression and a fast, never-stuck preparation.
+> **Current release: 0.3.5** — **Progressive Context: start fast, context gets better in the background.** Heavy preparation (PDF/DOCX/OCR/local summaries) runs after Yuhi Mode is ready and is published safely; one prepared repository stays reusable across Claude Code and Codex.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi?label=npm&color=cb3837&logo=npm&logoColor=white"></a>
