@@ -315,11 +315,16 @@ function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue
   return processors;
 }
 
-/** Derive the revision (published-artifact count) + revisionId for the public status. */
+/**
+ * Derive the revision (published-artifact count) + revisionId for the public status.
+ * The immutable `baseContextId` is taken from the items' own `contextId` (all items
+ * in a run share it), so the revisionId written here is identical to the one the VS
+ * Code / CLI surfaces recompute for the same run and the same delivered set.
+ */
 function revisionOf(items: readonly PublicBackgroundItem[]): { revision: number; revisionId: string } {
+  const baseContextId = items.find((it) => typeof it.contextId === "string" && it.contextId !== "")?.contextId ?? "";
   const state = reduceProgressiveContextState({
-    baseContextId: "",
-    basePreparedFiles: [],
+    baseContextId,
     backgroundItems: items,
   });
   return { revision: state.revision, revisionId: state.revisionId };

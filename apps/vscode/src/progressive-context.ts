@@ -22,7 +22,6 @@
  *     read-status / reduce-revision) so it is fully testable with fakes.
  */
 import type {
-  DeliveredFile,
   ProgressiveContextState,
   PublicBackgroundStatus,
   PublicStatusItem,
@@ -243,11 +242,11 @@ export interface ProgressiveContextHost {
   readStatus(preparedDir: string): Promise<PublicBackgroundStatus | undefined>;
   /**
    * Recompute the {@link ProgressiveContextState} for the delivered set, keeping the
-   * SAME baseContextId. Wraps `reduceProgressiveContextState`. MUST NOT re-prepare.
+   * SAME baseContextId (which the revisionId folds in — no base-file hashes needed).
+   * Wraps `reduceProgressiveContextState`. MUST NOT re-prepare.
    */
   computeRevision(input: {
     baseContextId: string;
-    basePreparedFiles: readonly DeliveredFile[];
     status: PublicBackgroundStatus;
   }): ProgressiveContextState;
   /** Persist the used revision into the session manifest (optional). */
@@ -259,10 +258,8 @@ export interface ProgressiveContextHost {
 export interface ProgressiveContextStartInput {
   runId: string;
   preparedDir: string;
-  /** == report.contextId. IMMUTABLE — never recomputed by Refresh. */
+  /** == report.contextId. IMMUTABLE — never recomputed by Refresh; folded into revisionId. */
   baseContextId: string;
-  /** Base prepared files already delivered (for the revisionId). Defaults to none. */
-  basePreparedFiles?: readonly DeliveredFile[];
   /** Count of base context files already available (display only). */
   filesAvailable: number;
   /**
@@ -363,7 +360,6 @@ export class ProgressiveContextController {
     }
     const state = this.host.computeRevision({
       baseContextId: this.input.baseContextId, // SAME id — never recomputed here.
-      basePreparedFiles: this.input.basePreparedFiles ?? [],
       status,
     });
     this.displayRevision = state.revision;

@@ -67,6 +67,28 @@ In VS Code, the review shows **Launch with [ Claude Code ] [ Codex ]** with each
 availability and the run's Context ID. Yuhi stays agent-agnostic: it prepares and secures
 the context; the agent you choose is what talks to the model.
 
+## Progressive Context — start fast, context gets better in the background
+
+Yuhi's job is to get you into Yuhi Mode *fast*, so heavy preparation — PDF/DOCX extraction,
+OCR, local summarization — never blocks launch. Those steps are **deferred to a persistent
+background queue** that runs *after* Yuhi Mode is ready. Foreground wall-time doesn't grow
+with how much heavy work is pending.
+
+- **Safety-gated, atomic publish.** A background result is normalized, pseudonymized, and
+  safety-inspected *before* anything is written; only a verified, sanitized companion is
+  published (atomically) into the agent-visible workspace. A result carrying a secret or PII
+  is **kept local** — the original source and raw document are never delivered.
+- **Immutable Context ID + incrementing Context Revision.** The base **Context ID** never
+  changes as background work completes; each safely-published artifact bumps a deterministic
+  **Context Revision** (`revisionId`) that folds in the base Context ID plus the published
+  set. It's time-, path-, machine-, user-, and **agent-independent** — Claude and Codex reuse
+  the *same* prepared run and compute the *same* revision, with no re-scan or re-preparation.
+- **VS Code**: the panel honestly shows background progress with **Cancel** and **Refresh
+  Context**. **CLI**: `yuhi background` reports status and can start / cancel / retry.
+- **Private-state boundary.** The queue's private records, staging bytes, and cancel flags
+  live *outside* every agent-visible root (under the managed base); the agent reads only a
+  single path-safe public status file.
+
 ## See how much of your repository your AI actually needs
 
 Coding agents start inside your working tree and can read everything there — `.env` files,

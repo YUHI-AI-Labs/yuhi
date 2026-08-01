@@ -5,6 +5,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.5]
+
+Theme: **Progressive Context** — *Start fast. Context gets better in the background.*
+
+### Progressive Context
+
+- Heavy preparation — **PDF / DOCX extraction, OCR, and local summarization** — no longer
+  blocks launch. It runs in a **persistent background queue** *after* Yuhi Mode is ready, so
+  you reach Claude Code / Codex fast and the context keeps improving behind you. Foreground
+  wall-time does not grow with how many background items are pending.
+- **Safety-gated, atomic publish.** Every background result is normalized, pseudonymized, and
+  safety-inspected *before* anything is written; only a verified, sanitized companion is
+  published atomically into the agent-visible workspace. A result carrying a secret or PII is
+  **kept local** — the original source and raw document are never delivered, and a failure
+  leaves no partial artifact.
+- **Immutable Context ID + incrementing Context Revision.** The base **Context ID** stays
+  byte-identical as background work completes; each safely-published artifact bumps a
+  deterministic **Context Revision** (`revisionId`) that folds in the immutable Context ID
+  plus the published set. It is time-, path-, machine-, user-, and **agent-independent** —
+  Claude and Codex reuse the *same* prepared run and compute the *same* revision, with **no
+  re-scan or re-preparation** when you switch agents. Each session manifest records the
+  revision it used.
+- **Panel status, Cancel, and Refresh.** The panel honestly shows background progress
+  (per-kind counts, safe artifacts added, files kept local, current revision) sourced only
+  from a path-safe public status file. **Cancel background processing** stops the run
+  promptly; **Refresh Context** re-reads the status and recomputes the revision (never a
+  re-prepare).
+- **Private-state boundary.** The queue's private records, pre-inspection staging bytes, and
+  cancel flags live *outside* every agent-visible root (under the managed base). The panel and
+  the agent read only the single public status file — never an absolute path, provider detail,
+  or raw error.
+
 ## [0.3.4]
 
 Theme: **one prepared repository, multiple agents** — *Prepare once. Run with Claude or Codex.*

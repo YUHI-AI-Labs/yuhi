@@ -13,15 +13,23 @@
  *   - `baseContextId`  — stays byte-identical no matter how many background
  *                        artifacts complete. It answers "same prepared context?".
  *   - `revision`       — 0 at prepare; +1 for each safely-published artifact.
- *   - `revisionId`     — a deterministic `sha256:<hex>` over the SORTED set of
- *                        delivered repo-relative paths + their content hashes
- *                        (base prepared files + all safely-published background
- *                        artifacts up to this revision). It answers "exactly WHICH
- *                        bytes has the agent been handed at this revision?".
+ *   - `revisionId`     — a deterministic `sha256:<hex>` over the immutable
+ *                        `baseContextId` PLUS the SORTED set of safely-published
+ *                        background artifacts (repo-relative path + content hash)
+ *                        up to this revision. It answers "exactly WHICH delivered
+ *                        set — base + published companions — is this?".
  *
- * revisionId INCLUDES (the delivered file-set only):
- *   - sorted repo-relative POSIX paths of delivered files
- *   - each delivered file's content hash (sha256, normalized)
+ * The base delivered state is represented by the immutable `baseContextId` itself
+ * (which is ALREADY the deterministic, agent-invariant fingerprint of the prepared
+ * base workspace — `report.contextId`). Folding it in means callers no longer need
+ * to re-hash the base prepared files per call site: the revisionId is complete and
+ * identical no matter which call site (worker, VS Code, CLI, either agent) computes
+ * it. It changes ONLY when the published safe-artifact set changes.
+ *
+ * revisionId INCLUDES:
+ *   - the immutable `baseContextId` (the deterministic base fingerprint)
+ *   - sorted repo-relative POSIX paths of the safely-published artifacts
+ *   - each published artifact's content hash (sha256, normalized) when known
  *   - a canonicalization version tag
  *
  * revisionId EXCLUDES (must never influence it):
@@ -31,11 +39,12 @@
  *   - agent id, agent session id, run id
  *   - randomness / UUIDs
  *
- * Consequence: the SAME delivered file-set yields a byte-identical revisionId
+ * Consequence: the SAME base + published set yields a byte-identical revisionId
  * regardless of WHEN it was produced, on WHICH machine, by WHICH user, or for
- * WHICH agent (Claude / Codex). A `failed` / `timed-out` / `cancelled` /
- * `kept-local` background item publishes nothing, so it neither bumps the
- * revision nor changes the revisionId.
+ * WHICH agent (Claude / Codex) — because `baseContextId` is itself agent-invariant
+ * and none of the excluded inputs participate. A `failed` / `timed-out` /
+ * `cancelled` / `kept-local` background item publishes nothing, so it neither bumps
+ * the revision nor changes the revisionId.
  */
 import { createHash } from "node:crypto";
 
@@ -47,12 +56,15 @@ export const REVISION_ID_PREFIX = `${REVISION_ID_ALGORITHM}:`;
 /**
  * Canonicalization version. Bump ONLY when the canonical serialization changes in
  * a way that must invalidate previously computed revisionIds.
+ *
+ * v2: the base delivered state is now represented by the immutable `baseContextId`
+ * folded into the hash, replacing per-file base-prepared-file hashes.
  */
-export const REVISION_ID_CANONICALIZATION_VERSION = 1;
+export const REVISION_ID_CANONICALIZATION_VERSION = 2;
 
 /**
- * One file that has been DELIVERED to the agent at a given revision — a base
- * prepared file or a safely-published background artifact. Repo-relative only.
+ * One file that has been safely PUBLISHED to the agent at a given revision — a
+ * sanitized background companion artifact. Repo-relative only.
  */
 export interface DeliveredFile {
   /** Repo-relative POSIX path. NEVER an absolute path. */
@@ -83,8 +95,14 @@ export interface ProgressiveContextState {
   updatedAt: string;
 }
 
-/** Deterministic input to {@link computeRevisionId}: the delivered file-set. */
+/**
+ * Deterministic input to {@link computeRevisionId}: the immutable base fingerprint
+ * plus the safely-published artifacts delivered on top of it.
+ */
 export interface RevisionIdInput {
+  /** == report.contextId. The deterministic, agent-invariant base fingerprint. */
+  baseContextId: string;
+  /** The safely-published background companion artifacts (repo-relative). */
   files: readonly DeliveredFile[];
 }
 
@@ -100,13 +118,15 @@ function compareStrings(a: string, b: string): number {
 }
 
 /**
- * Produce the canonical, deterministic serialization of a delivered file-set.
- * Exposed for tests/debugging; {@link computeRevisionId} hashes this string.
+ * Produce the canonical, deterministic serialization of the delivered set: the
+ * immutable base fingerprint plus the safely-published artifacts. Exposed for
+ * tests/debugging; {@link computeRevisionId} hashes this string.
  *
  * Determinism guarantees:
- *   - files are sorted by relpath (code-point order)
- *   - duplicate relpaths collapse to the LAST occurrence (reducer emits base
- *     files first, then published artifacts, so a published artifact wins)
+ *   - the immutable `baseContextId` is emitted first (it stands in for the whole
+ *     base delivered state — no per-base-file hashing needed)
+ *   - published files are sorted by relpath (code-point order)
+ *   - duplicate relpaths collapse to the LAST occurrence
  *   - object keys are emitted in a fixed order (insertion order)
  */
 export function canonicalizeRevisionIdInput(input: RevisionIdInput): string {
@@ -120,11 +140,12 @@ export function canonicalizeRevisionIdInput(input: RevisionIdInput): string {
 
   return JSON.stringify({
     canonicalization: REVISION_ID_CANONICALIZATION_VERSION,
+    baseContextId: input.baseContextId,
     files,
   });
 }
 
-/** Compute the deterministic revisionId (`sha256:<hex>`) from a delivered set. */
+/** Compute the deterministic revisionId (`sha256:<hex>`) from base + published set. */
 export function computeRevisionId(input: RevisionIdInput): string {
   const hex = createHash(REVISION_ID_ALGORITHM)
     .update(canonicalizeRevisionIdInput(input))
@@ -144,10 +165,11 @@ function isPublished(item: PublicBackgroundItem): boolean {
 
 /** Input to the pure reducer that derives a {@link ProgressiveContextState}. */
 export interface ProgressiveContextInput {
-  /** == report.contextId — copied through untouched. */
+  /**
+   * == report.contextId — copied through untouched AND folded into the revisionId
+   * to represent the immutable base delivered state (no base-file hashes needed).
+   */
   baseContextId: string;
-  /** Files delivered at prepare time (repo-relative path + content hash). */
-  basePreparedFiles: readonly DeliveredFile[];
   /** The queue's public projection (`BackgroundQueue.list()`). */
   backgroundItems: readonly PublicBackgroundItem[];
   /**
@@ -166,12 +188,13 @@ export interface ProgressiveContextInput {
  * base id, the base prepared files, and the queue's public items.
  *
  * Rules:
- *   - `baseContextId` is copied through unchanged (never recomputed).
+ *   - `baseContextId` is copied through unchanged (never recomputed) AND folded
+ *     into the revisionId to stand in for the whole base delivered state.
  *   - `revision` == the number of safely-published (`completed`) items. A
  *     `failed` / `timed-out` / `cancelled` / `kept-local` item does NOT bump it.
- *   - `revisionId` is computed over the base prepared files PLUS every published
- *     artifact's `preparedRelpath` + content hash. It is order-independent and
- *     free of time / machine / user / agent / abspath.
+ *   - `revisionId` is computed over `baseContextId` PLUS every published artifact's
+ *     `preparedRelpath` + content hash. It is order-independent and free of time /
+ *     machine / user / agent / abspath.
  */
 export function reduceProgressiveContextState(
   input: ProgressiveContextInput,
@@ -196,23 +219,20 @@ export function reduceProgressiveContextState(
     }
   }
 
-  // Assemble the delivered set: base files first, then published artifacts. The
-  // published-artifact order is sorted so the outcome is input-order-independent.
-  const delivered: DeliveredFile[] = input.basePreparedFiles.map((f) => ({
-    relpath: f.relpath,
-    sha256: f.sha256,
-  }));
-
+  // The base delivered state is represented by the immutable baseContextId; only
+  // the published artifacts are enumerated here. The order is sorted so the outcome
+  // is input-order-independent.
   const published = input.backgroundItems
     .filter((it) => isPublished(it) && typeof it.preparedRelpath === "string" && it.preparedRelpath !== "")
     .map((it) => it.preparedRelpath as string)
     .sort(compareStrings);
 
-  for (const relpath of published) {
-    delivered.push({ relpath, sha256: input.publishedArtifactHashes?.[relpath] ?? "" });
-  }
+  const delivered: DeliveredFile[] = published.map((relpath) => ({
+    relpath,
+    sha256: input.publishedArtifactHashes?.[relpath] ?? "",
+  }));
 
-  const revisionId = computeRevisionId({ files: delivered });
+  const revisionId = computeRevisionId({ baseContextId: input.baseContextId, files: delivered });
   const updatedAt = (input.now?.() ?? new Date()).toISOString();
 
   return {

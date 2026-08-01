@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While Yuhi is in `0.x`, minor releases may include breaking changes; these will
 be called out explicitly.
 
+## [0.3.5]
+
+Progressive Context — *Start fast. Context gets better in the background.*
+
+- **Background preparation queue** — heavy steps (PDF/DOCX extraction, OCR, local
+  summarization) are deferred to a **persistent background queue** that runs *after* Yuhi Mode
+  is ready, so launch is never blocked and foreground wall-time does not grow with the number
+  of pending items. The queue survives restart, recovers stale in-flight items, dedupes by
+  idempotency key, never re-runs completed items, isolates a single failure, bounds
+  concurrency (local model = 1), opens a circuit breaker to zero further calls after repeated
+  provider failures, and terminates a hanging provider.
+- **Safety-gated atomic publish** — each background result is normalized → pseudonymized →
+  safety-inspected *before* anything is written; only a verified, sanitized companion is
+  published atomically into the agent-visible workspace. A secret- or PII-bearing result is
+  **kept local**; failures leave no partial artifact; the original source and raw document are
+  never delivered.
+- **Immutable Context ID + incrementing Context Revision** — the base Context ID stays
+  byte-identical as background work completes; each safely-published artifact bumps a
+  deterministic `revisionId` that folds in the immutable Context ID plus the published set. It
+  is time-, path-, machine-, user-, and **agent-independent** — Claude and Codex reuse the
+  *same* prepared run and compute the *same* revision, with no re-scan or re-preparation. Each
+  Agent Session Manifest records the revision it used.
+- **VS Code**: panel status (per-kind progress, safe artifacts added, kept-local, current
+  revision), **Cancel background processing**, and **Refresh Context** (re-read + recompute,
+  never a re-prepare) — all sourced from a single path-safe public status file.
+- **CLI**: `yuhi background` reports status (`--json` for machine-readable) and can start,
+  cancel (whole-run or `--item`), and retry (`--failed-only`); public output never prints an
+  absolute path or raw error.
+- **Private-state boundary** — the queue's private records, pre-inspection staging, and cancel
+  flags live under the managed base (`.internal/background/<runId>`), *outside* every
+  agent-visible prepared root; the agent reads only the public status file.
+
 ## [0.3.4]
 
 One prepared repository, multiple agents — *Prepare once. Run with Claude or Codex.*

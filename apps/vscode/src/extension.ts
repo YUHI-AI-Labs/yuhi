@@ -36,7 +36,6 @@ import {
   type PreparationProgressEvent,
   type ProgressiveContextState,
   type PublicBackgroundStatus,
-  type DeliveredFile,
 } from "@yuhi/core";
 import { createLocalModelProvider, localModelReadiness, INFERENCE_FAILURE_ACTIONS } from "@yuhi/local";
 import {
@@ -1181,10 +1180,9 @@ function buildProgressiveContextController(
       requestBackgroundCancel({ runId: input.runId, preparedDir: input.preparedDir }),
     // SECURITY BOUNDARY: read ONLY the public status file — never the private queue.
     readStatus: (preparedDir) => readPublicStatus(preparedDir),
-    computeRevision: ({ baseContextId, basePreparedFiles, status }) =>
+    computeRevision: ({ baseContextId, status }) =>
       reduceProgressiveContextState({
         baseContextId,
-        basePreparedFiles,
         // Project the path-safe public items into the reducer's public-item shape.
         backgroundItems: status.items.map((item) => ({
           itemId: "",
@@ -1236,7 +1234,6 @@ async function recordContextRevision(
 function startProgressiveContext(
   report: PrepareReport,
   filesAvailable: number,
-  basePreparedFiles: readonly DeliveredFile[],
   provider?: LocalModelProvider,
 ): void {
   stopProgressiveContext();
@@ -1247,7 +1244,6 @@ function startProgressiveContext(
     preparedDir: report.outDir,
     baseContextId: report.contextId ?? "",
     filesAvailable,
-    basePreparedFiles,
     startWorker: true,
   });
   // Poll the public status so live progress is honest and survives a reload. Stops once
@@ -2587,7 +2583,7 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         } catch {
           // No local provider → summaries are honestly kept local; extraction still runs.
         }
-        startProgressiveContext(yuhiReport, available, [], provider);
+        startProgressiveContext(yuhiReport, available, provider);
       })();
     } else {
       activityProvider?.setPrepared(m, "Launch blocked", false);

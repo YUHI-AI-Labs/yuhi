@@ -23,6 +23,9 @@ importers:
       '@typescript-eslint/parser':
         specifier: ^8.18.0
         version: 8.65.0(eslint@9.39.5)(typescript@5.9.3)
+      '@yuhi/agents':
+        specifier: workspace:*
+        version: link:packages/agents
       '@yuhi/config':
         specifier: workspace:*
         version: link:packages/config
