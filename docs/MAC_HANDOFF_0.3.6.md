@@ -66,7 +66,7 @@ Inspected RC properties:
 ```text
 Version:       0.3.6
 Publisher:     yuhi-ai-labs
-Pre-release:   true
+Publication:   not published (publication channel still pending)
 Size:          2,263,687 bytes
 File count:    10
 SHA-256:       fca2eb5225803d4584a8b265bac59c95403ad5a6c2cddd8d8f37bc50a45da801
@@ -81,8 +81,8 @@ literals in the bundle, not credential values.
 Recompute on the destination Mac; do not trust a copied checksum without checking it:
 
 ```bash
-shasum -a 256 apps/vscode/yuhi-vscode-0.3.6.vsix
-node apps/vscode/scripts/inspect-vsix.mjs apps/vscode/yuhi-vscode-0.3.6.vsix
+shasum -a 256 apps/vscode/yuhi.vsix
+node apps/vscode/scripts/inspect-vsix.mjs apps/vscode/yuhi.vsix
 ```
 
 ## 5. New Mac bootstrap
@@ -130,7 +130,7 @@ Install into an isolated profile before touching the normal profile:
 ```bash
 code --user-data-dir <temporary-user-data> \
   --extensions-dir <temporary-extensions> \
-  --install-extension apps/vscode/yuhi-vscode-0.3.6.vsix --force
+  --install-extension apps/vscode/yuhi.vsix --force
 code --user-data-dir <temporary-user-data> \
   --extensions-dir <temporary-extensions> \
   --list-extensions --show-versions
