@@ -26,6 +26,31 @@ Safe Patch Review — *Review first. Apply safely.*
 - Added synthetic filesystem acceptance for Apply/Undo, conflict, compressed representation,
   secret blocking, rollback, and Claude/Codex session separation.
 
+### Security fixes
+
+- **Agent-visible metadata boundary.** A workspace filename is itself identifying data
+  (`9999990001 評定-0722.xlsx`, `名簿-9999990001/`), so withholding a file's bytes while
+  publishing its name disclosed the identifier anyway. Yuhi now keeps the source relpath,
+  the `originalRelpath` pseudonym mapping, provenance `source`, absolute paths, and the
+  background queue records PRIVATE. A file whose original is not delivered appears on every
+  agent-readable surface — `manifest.json`, `.yuhi/background-status.json`,
+  `.yuhi/session.json`, `.yuhi/yuhi-mode-summary.json`, `AGENT_HANDOFF.md`,
+  `document-index.md` — only as a stable `documentId` plus a kind-only `displayName`
+  (`doc-<hex>.pdf`). Published companions and generated summary artifacts are named by
+  identity rather than from the source basename (`.yuhi/` paths are skipped by the filename
+  de-identification pass, so a source basename there previously survived). Identity, not
+  the name, crosses the boundary: counts, dedup, and Context Revisions stay exact, and
+  exclusions are still reported in full. See T15 in `docs/THREAT_MODEL.md`.
+- **Filename identifier detection widened** — a long pure-digit token that is not a
+  calendar-valid date is now treated as a direct identifier (`9999990001` is a student
+  number; `20260715` remains a date and is preserved as useful context).
+- **Secret redaction, sensitive documents, and archives** — closed a no-op in the `REDACT`
+  path, stopped delivery of an original carrying a KNOWN sensitive finding, and stopped
+  encrypted archives passing through uninspected.
+- Verification for the above is an adversarial byte scan across every agent-visible file in
+  Balanced / Strict / Maximum Privacy, with and without document inspection: raw identifier
+  count 0 (`packages/core/src/metadata-boundary-e2e.test.ts`).
+
 ## [0.3.5]
 
 Progressive Context — *Start fast. Context gets better in the background.*
