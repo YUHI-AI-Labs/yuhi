@@ -1273,7 +1273,9 @@ function buildProgressiveContextController(
           itemId: "",
           runId: "",
           contextId: baseContextId,
-          relpath: item.relpath,
+          // The revision is derived from PUBLISHED artifacts; a withheld original has
+          // no agent-visible path, so its public identity stands in for one.
+          relpath: item.relpath ?? item.documentId ?? item.displayName ?? "",
           kind: item.kind,
           priority: 0,
           createdAt: 0,

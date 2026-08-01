@@ -23,6 +23,14 @@ Theme: **Safe Patch Review** — *Review first. Apply safely.*
   pushed, or published.
 - Adds CLI `yuhi patch status|diff|validate|apply|undo|history|discard` using the same Core
   review and Apply contracts as VS Code.
+- Adds an agent-visible **metadata boundary**. A real workspace names its data after the
+  person in it (`9999990001 評定-0722.xlsx`), so withholding a file's bytes while publishing
+  its name disclosed the identifier anyway. A file whose original is not delivered now
+  appears on every agent-readable surface — manifest, background status, session, mode
+  summary, handoff, document index — only as a stable `documentId` and a kind-only label
+  (`doc-<hex>.pdf`); generated context artifacts are named by identity; and long non-date
+  digit runs in delivered filenames are pseudonymized. Exclusions are still reported in
+  full: the boundary removes names, not counts.
 
 Known limitation: Node.js does not expose descriptor-relative `openat(2)` operations. Yuhi
 therefore repeats `O_NOFOLLOW`, canonical containment, symlink, and hash checks at every

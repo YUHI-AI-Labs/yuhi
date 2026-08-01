@@ -13,13 +13,16 @@
  *  - PUBLIC status — a single JSON file inside the agent-visible root
  *    (`<preparedDir>/.yuhi/background-status.json`). It is the ONLY background
  *    surface the agent / CLI / UI reads, and it contains ONLY path-safe fields:
- *    counts, per-item {status, relpath, kind, reasonCode, preparedRelpath},
- *    revision, revisionId. It NEVER contains an absolute path, staging path,
- *    provider detail, raw error, environment, username, or machine name.
+ *    counts, per-item {status, documentId, kind, reasonCode, preparedRelpath} plus
+ *    a `relpath` ONLY for an original the agent already has (otherwise a kind-only
+ *    `displayName`), revision, revisionId. It NEVER contains an absolute path,
+ *    staging path, provider detail, raw error, environment, username, machine name,
+ *    or the filename of a file whose original was withheld.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { documentIdFor, withheldDisplayName } from "../metadata-boundary.js";
 import type {
   BackgroundPreparationKind,
   BackgroundPreparationStatus,
@@ -42,9 +45,19 @@ export function publicStatusPath(preparedDir: string): string {
   return path.join(path.resolve(preparedDir), ".yuhi", "background-status.json");
 }
 
-/** Per-item projection in the PUBLIC status — path-safe fields only. */
+/**
+ * Per-item projection in the PUBLIC status — path-safe fields only.
+ *
+ * `relpath` is present ONLY for a file the agent can already see in its tree. When
+ * the original was withheld, the item is identified by `documentId` + the kind-only
+ * `displayName` instead: the filename of a withheld file is itself identifying data.
+ */
 export interface PublicStatusItem {
-  relpath: string;
+  relpath?: string;
+  /** Stable public identity of the source document (`doc-<hex>`). Always present. */
+  documentId?: string;
+  /** Kind-only public label (`doc-<hex>.pdf`), used when there is no `relpath`. */
+  displayName?: string;
   kind: BackgroundPreparationKind;
   status: BackgroundPreparationStatus;
   reasonCode?: BackgroundReasonCode;
@@ -111,8 +124,15 @@ export function buildPublicStatus(
         else counts.keptLocal += 1;
         break;
     }
+    // METADATA BOUNDARY: the item's own `relpath` is the PRIVATE source path. It may
+    // cross into the public status only when that exact path was delivered to the
+    // agent; otherwise the agent gets an identity + a kind, never a name.
+    const documentId = item.documentId ?? documentIdFor(item.relpath, item.contextId);
     projected.push({
-      relpath: item.relpath,
+      ...(item.publicRelpath
+        ? { relpath: item.publicRelpath }
+        : { displayName: withheldDisplayName(item.relpath, documentId) }),
+      documentId,
       kind: item.kind,
       status: item.status,
       ...(item.reasonCode ? { reasonCode: item.reasonCode } : {}),

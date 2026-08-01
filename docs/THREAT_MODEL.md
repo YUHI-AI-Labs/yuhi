@@ -27,6 +27,9 @@ copy. It is **defense-in-depth against accidental exposure**, not a sandbox.
 
 - Secrets/credentials (`.env`, keys, tokens, cloud creds).
 - Sensitive documents (customer data, private specs, internal docs).
+- **Identifying metadata — the filenames and paths of withheld files.** A real workspace
+  names its data after the person in it (`9999990001 評定-0722.xlsx`, `名簿-9999990001/`),
+  so a name is an asset in its own right, not just a pointer to one.
 - The integrity of the original repository (must never be modified).
 - Audit log integrity (metadata-only).
 
@@ -59,6 +62,26 @@ them (e.g. letting a file-level finding block the launch) is a defect, not a saf
   Review UI supports per-file and per-type warning inclusion/local-only decisions. Known
   credentials, private keys, and explicit policy blocks still win over warning inclusion.)
 
+### The metadata boundary (v0.3.6)
+
+Withholding a file's bytes is only half of withholding the file. Everything at or below
+the prepared root is agent-visible — including `manifest.json`,
+`.yuhi/background-status.json`, `.yuhi/session.json`, `.yuhi/yuhi-mode-summary.json`,
+`.yuhi/context/AGENT_HANDOFF.md`, `.yuhi/context/document-index.md`, and the names of
+any generated context artifact. So Yuhi keeps two layers:
+
+- **Private** (outside every agent-visible root, or in memory for the local UI, which
+  shows the user their own filenames): source relpaths, the `originalRelpath` pseudonym
+  mapping, provenance `source`, absolute paths, the run/source binding, background queue
+  records.
+- **Public**: a delivered file keeps the (already de-identified) name the agent can see
+  in its tree anyway. A file whose ORIGINAL was withheld appears only as a stable
+  `documentId` plus a kind-only `displayName` (`doc-<hex>.pdf`).
+
+Identity — not the name — crosses the boundary, so counts, dedup, and Context Revisions
+stay exact while no surface carries the filename. Exclusions are still reported in full;
+only the names are gone.
+
 ## Threats & mitigations
 
 | # | Threat | Mitigation (v0.1) | Residual risk |
@@ -77,6 +100,7 @@ them (e.g. letting a file-level finding block the launch) is a defect, not a saf
 | T12 | Agent reads outside workspace / phones home | OUT OF SCOPE for v0.1 — documented limitation; future sandbox backends | High: inherent to "run the real agent" |
 | T13 | Crash leaves temp/partial workspace | Workspaces are self-contained under `~/.yuhi/workspaces/<id>`; `yuhi workspace clean` removes; atomic-ish via temp dir + rename where possible | Orphaned dirs recoverable |
 | T14 | Audit log tampering | v0.1 stores plain JSON; tamper-evidence (hash chain/signing) is FUTURE, explicitly not claimed | Local attacker can edit |
+| T15 | A withheld file's NAME disclosed through agent-visible metadata (manifest, background status, session, mode summary, handoff, document index, generated artifact names) | Two-layer metadata boundary (`packages/core/src/metadata-boundary.ts`): the source relpath, `originalRelpath` and provenance `source` stay private; a withheld file appears publicly only as `documentId` + a kind-only `displayName`; generated artifacts are named by identity; a redaction pass covers free-text fields; an adversarial byte scan over every agent-visible file asserts zero raw identifiers | Name-shaped data inside a DELIVERED file's own name (de-identified per-token, not semantically) |
 
 ## Environment variable policy (T7 detail)
 

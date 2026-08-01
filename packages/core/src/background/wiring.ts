@@ -37,6 +37,7 @@ import { resolvePolicy } from "@yuhi/policy";
 
 import { buildDocumentArtifact, type DocumentSourceType, type PdfTextExtractor } from "../document-artifact.js";
 import { runLocalPreparation } from "../route-executor.js";
+import { documentIdFor, withheldDisplayName } from "../metadata-boundary.js";
 import type { PreparedFileEntry } from "../prepare-workspace.js";
 import type { PublicPreparedContextSummary } from "../public-prepared-summary.js";
 import { buildYuhiModeSummary, renderYuhiModeHandoff } from "../yuhi-mode-summary.js";
@@ -214,6 +215,21 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
   return { normalizer, pseudonymizer, inspector, policy };
 }
 
+/**
+ * The agent-visible path a published companion must take.
+ *
+ * When the original was delivered, the companion sits beside it under the same
+ * (already de-identified) name. When the original was WITHHELD, deriving the
+ * companion name from the source path would republish the very filename the
+ * withholding was meant to protect, so the companion is published under the
+ * document's public identity instead.
+ */
+function companionRelpath(item: BackgroundPreparationItem): string {
+  if (item.publicRelpath) return `${item.publicRelpath}.md`;
+  const documentId = item.documentId ?? documentIdFor(item.relpath, item.contextId);
+  return `.yuhi/context/companions/${withheldDisplayName(item.relpath, documentId)}.md`;
+}
+
 /** Cheap, stable idempotency seed for a source file — never loads it into memory. */
 async function sourceSeed(absPath: string, relpath: string): Promise<string> {
   try {
@@ -257,7 +273,7 @@ function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue
       const { text, kind } = await extractWith(item, pdfTextExtractor);
       if (kind === "companion") {
         // Sufficient text recovered → publish the sanitized companion. No OCR.
-        return { text, preparedRelpath: `${item.relpath}.md` };
+        return { text, preparedRelpath: companionRelpath(item) };
       }
       // Insufficient text (scanned / image-only / no extractor). For a PDF, hand off
       // to a DEPENDENT OCR item; this item publishes nothing and is kept local.
@@ -267,6 +283,9 @@ function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue
           runId: item.runId,
           contextId: item.contextId,
           relpath: item.relpath,
+          // The dependent item inherits the SAME metadata boundary as its parent.
+          ...(item.publicRelpath ? { publicRelpath: item.publicRelpath } : {}),
+          ...(item.documentId ? { documentId: item.documentId } : {}),
           kind: "ocr",
           sourceArtifactPath: item.sourceArtifactPath,
           // The OCR item's idempotency key includes the source seed AND the
@@ -299,7 +318,9 @@ function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue
       if (prepared.status === "error") {
         throw new ProviderUnavailableError(prepared.error ?? "local preparation error");
       }
-      return { text: prepared.output, preparedRelpath: item.relpath };
+      // The summary replaces the DELIVERED file when the agent already has it; for a
+      // withheld original it is published under the document's public identity.
+      return { text: prepared.output, preparedRelpath: item.publicRelpath ?? companionRelpath(item) };
     },
   };
 
@@ -312,7 +333,7 @@ function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue
       if (!ocrExtractor) throw new ProviderUnavailableError("OCR extractor unavailable");
       const { text, kind } = await extractWith(item, ocrExtractor);
       if (kind !== "companion") throw new KeepLocalError("background-extraction-failed");
-      return { text, preparedRelpath: `${item.relpath}.md` };
+      return { text, preparedRelpath: companionRelpath(item) };
     },
   };
   if (providerFactory) processors["summarize-local"] = summarizeLocal;

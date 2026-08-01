@@ -78,8 +78,13 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
   const project = input.files.filter(
     (file) => file.relpath !== "manifest.json" && !file.relpath.startsWith(".yuhi/"),
   );
+  // Join on IDENTITY, not on name: a withheld file's path does not cross the
+  // agent-visible metadata boundary, so `documentId` is what lines the two surfaces up
+  // (both sides fall back to the path for a pre-boundary manifest).
   const backgroundByPath = new Map(
-    (input.background?.items ?? []).map((item) => [item.relpath, item] as const),
+    (input.background?.items ?? []).map(
+      (item) => [item.documentId ?? item.relpath ?? item.displayName ?? "", item] as const,
+    ),
   );
   // Source files still enqueued for background work are in a TRANSIENT progress state,
   // not one of the six final availability states. They are reported under
@@ -88,7 +93,7 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
   const filePendingKeys = new Set<string>();
   const states = new Map<string, UserFacingAvailability>();
   for (const file of project) {
-    const key = file.originalRelpath ?? file.relpath;
+    const key = file.documentId ?? file.originalRelpath ?? file.relpath;
     const background = backgroundByPath.get(key);
     if (file.outcome === "background-processing-pending") {
       filePendingKeys.add(key);
@@ -119,8 +124,10 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
   const backgroundSources = new Map<string, (NonNullable<BuildYuhiModeSummaryInput["background"]>["items"])[number]>();
   const rank = (status: string): number => status === "completed" ? 5 : status === "processing" ? 4 : status === "pending" ? 3 : status === "failed" ? 2 : 1;
   for (const item of input.background?.items ?? []) {
-    const current = backgroundSources.get(item.relpath);
-    if (!current || rank(item.status) >= rank(current.status)) backgroundSources.set(item.relpath, item);
+    // Same identity key as `filePendingKeys` above, so the two sets still dedupe.
+    const key = item.documentId ?? item.relpath ?? item.displayName ?? "";
+    const current = backgroundSources.get(key);
+    if (!current || rank(item.status) >= rank(current.status)) backgroundSources.set(key, item);
   }
   const backgroundValues = [...backgroundSources.values()];
   // Pending/processing come from the public background status when present, PLUS any

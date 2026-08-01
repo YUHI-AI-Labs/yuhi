@@ -961,13 +961,22 @@ describe("prepareWorkspace", () => {
     // The file is on disk under the pseudonymized name, not the original.
     expect(existsSync(path.join(report.outDir, entry!.relpath))).toBe(true);
     expect(existsSync(path.join(report.outDir, "health", "20260715-110046-A000000.csv"))).toBe(false);
-    // The reverse mapping is available for the operator via the manifest only.
-    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    // METADATA BOUNDARY: `manifest.json` is INSIDE the prepared workspace, so the
+    // reverse mapping must NOT live there — the raw identifier appears nowhere in it.
+    // The manifest carries the delivered name plus the file's stable public identity.
+    const manifestRaw = readFileSync(path.join(report.outDir, "manifest.json"), "utf8");
+    const manifest = JSON.parse(manifestRaw);
     expect(manifest.filenamesPseudonymized).toBeGreaterThanOrEqual(1);
-    const manifestEntry = manifest.files.find((f: { originalRelpath?: string }) =>
-      f.originalRelpath?.includes("A000000"),
+    expect(manifestRaw).not.toContain("A000000");
+    const manifestEntry = manifest.files.find(
+      (f: { relpath: string }) => f.relpath === entry!.relpath,
     );
-    expect(manifestEntry.relpath).toBe(entry!.relpath);
+    expect(manifestEntry).toBeDefined();
+    expect(manifestEntry.originalRelpath).toBeUndefined();
+    expect(manifestEntry.documentId).toMatch(/^doc-[0-9a-f]{12}$/);
+    expect(manifestEntry.documentId).toBe(entry!.documentId);
+    // The private mapping is still available IN MEMORY for the local UI.
+    expect(entry!.originalRelpath).toContain("A000000");
   });
 
   it("a workspace whose generated handoff trips its own rescan never fails: handoff sanitized, not thrown", async () => {
@@ -1214,7 +1223,15 @@ describe("prepareWorkspace", () => {
     expect(manifest.reduction.sensitiveMasked).toBe(1);
     expect(manifest.sourceModified).toBe(0);
     expect(Array.isArray(manifest.provenance)).toBe(true);
-    expect(manifest.provenance.some((p: { source: string }) => p.source === "data/students.csv")).toBe(true);
+    // Provenance records the agent-visible name + identity. `source` — the private half
+    // of the mapping — is never published into the agent-visible manifest.
+    const csvProvenance = manifest.provenance.find(
+      (p: { relpath: string }) => p.relpath === "data/students.csv",
+    );
+    expect(csvProvenance).toBeDefined();
+    expect(csvProvenance.source).toBeUndefined();
+    expect(csvProvenance.documentId).toMatch(/^doc-[0-9a-f]{12}$/);
+    expect(manifest.provenance.every((p: { source?: string }) => p.source === undefined)).toBe(true);
 
     // Report-level reduction matches manifest.
     expect(report.report.filesSummarized).toBe(1);
@@ -1348,8 +1365,15 @@ describe("prepareWorkspace", () => {
     expect(manifestRaw).not.toContain(rawDescription);
     expect(manifestRaw).not.toContain(rawSecret);
     expect(manifestRaw).not.toContain('"description"');
-    expect(manifest.files.find((file: { relpath: string }) => file.relpath === "secret.txt"))
+    // The blocked file's NAME does not cross the metadata boundary — it is identified in
+    // the manifest by its public identity, and its aggregates are still recorded there.
+    expect(manifestRaw).not.toContain("secret.txt");
+    const blocked = report.files.find((file) => file.relpath === "secret.txt");
+    expect(blocked?.omitted).toBe(true);
+    expect(manifest.files.find((file: { documentId?: string }) => file.documentId === blocked!.documentId))
       .toMatchObject({
+        relpath: `${blocked!.documentId}.txt`,
+        displayName: `${blocked!.documentId}.txt`,
         findingCategoryCounts: expect.any(Object),
         findingSeverityCounts: expect.any(Object),
         unresolvedHighRiskCount: 0,

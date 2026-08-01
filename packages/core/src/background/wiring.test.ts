@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { LocalModelProvider } from "@yuhi/shared";
 import type { PdfTextExtractor } from "../document-artifact.js";
+import { documentIdFor, withheldDisplayName } from "../metadata-boundary.js";
 import {
   BackgroundQueue,
   CancelStore,
@@ -107,6 +108,20 @@ async function enqueue(
   return outcome.record.item.itemId;
 }
 
+/**
+ * Where a companion for a WITHHELD original must be published: under the document's
+ * public identity, never a path derived from the source filename (P0-C metadata
+ * boundary — a filename like `9999990001 評定.pdf` is itself identifying data).
+ */
+function withheldCompanion(relpath: string): string {
+  return path.join(
+    ".yuhi",
+    "context",
+    "companions",
+    `${withheldDisplayName(relpath, documentIdFor(relpath, "ctx-1"))}.md`,
+  );
+}
+
 function fakeProvider(output: string, calls?: { n: number }): LocalModelProvider {
   return {
     id: "fake",
@@ -143,10 +158,14 @@ describe("runBackgroundForRun — extraction, publish, and safety gate", () => {
 
     expect(summary.completed).toBe(1);
     expect(summary.revision).toBe(1);
-    const companion = path.join(preparedDir, "report.pdf.md");
+    // The original was never delivered, so the companion carries the document's public
+    // identity — publishing `report.pdf.md` would republish the withheld filename.
+    const companion = path.join(preparedDir, withheldCompanion("report.pdf"));
     expect(existsSync(companion)).toBe(true);
     expect(readFileSync(companion, "utf8")).toContain("Revenue increased");
     expect(existsSync(path.join(preparedDir, "report.pdf"))).toBe(false);
+    expect(existsSync(path.join(preparedDir, "report.pdf.md"))).toBe(false);
+    expect(relFilesUnder(preparedDir).some((rel) => rel.includes("report"))).toBe(false);
     expect(existsSync(privateStagingDir(parentDir, RUN))).toBe(false);
   });
 
@@ -187,7 +206,14 @@ describe("runBackgroundForRun — extraction, publish, and safety gate", () => {
 
   it("publishes a clean local summary companion at the file's own path", async () => {
     const original = putSource("memo.md", "Meeting agenda and action items.\n");
-    await enqueue({ relpath: "memo.md", kind: "summarize-local", sourceArtifactPath: original });
+    // The original WAS delivered to the agent (`publicRelpath`), so the summary
+    // replaces it in place rather than appearing under a synthetic identity.
+    await enqueue({
+      relpath: "memo.md",
+      publicRelpath: "memo.md",
+      kind: "summarize-local",
+      sourceArtifactPath: original,
+    });
     const calls = { n: 0 };
     const summary = await runBackgroundForRun({
       runId: RUN,
@@ -235,7 +261,9 @@ describe("document → OCR fallback (dependent, not parallel)", () => {
     expect(summary.completed).toBe(1);
     const queue = await BackgroundQueue.open(privateDir());
     expect(queue.list(RUN).some((i) => i.kind === "ocr")).toBe(false);
-    expect(readFileSync(path.join(preparedDir, "clean.pdf.md"), "utf8")).not.toContain("OCR SHOULD NOT RUN");
+    expect(
+      readFileSync(path.join(preparedDir, withheldCompanion("clean.pdf")), "utf8"),
+    ).not.toContain("OCR SHOULD NOT RUN");
   });
 
   it("an insufficient-text extraction enqueues a dependent OCR item that publishes once", async () => {
@@ -259,9 +287,13 @@ describe("document → OCR fallback (dependent, not parallel)", () => {
     // Exactly one final safe artifact → revision increments exactly once, one companion.
     expect(summary.revision).toBe(1);
     expect(summary.completed).toBe(1);
-    const companions = relFilesUnder(preparedDir).filter((r) => r.endsWith("scanned.pdf.md"));
+    const companions = relFilesUnder(preparedDir).filter((r) => r.endsWith(".md") && r.includes("companions"));
     expect(companions).toHaveLength(1);
-    expect(readFileSync(path.join(preparedDir, "scanned.pdf.md"), "utf8")).toContain("Recovered via OCR");
+    expect(
+      readFileSync(path.join(preparedDir, withheldCompanion("scanned.pdf")), "utf8"),
+    ).toContain("Recovered via OCR");
+    // The withheld original's filename never reaches the delivered tree.
+    expect(relFilesUnder(preparedDir).some((rel) => rel.includes("scanned"))).toBe(false);
   });
 
   it("keeps local with an OCR-unavailable reason when no OCR extractor is configured", async () => {
@@ -396,9 +428,9 @@ describe("retry as a core API", () => {
       kind: "document-extraction",
       sourceArtifactPath: putSource("boom.pdf", "%PDF"),
     });
-    // Block the publish target `boom.pdf.md` with a non-empty directory → the atomic
-    // rename fails → the item is recorded `failed` (not kept-local).
-    const blocked = path.join(preparedDir, "boom.pdf.md");
+    // Block the publish target with a non-empty directory → the atomic rename fails →
+    // the item is recorded `failed` (not kept-local).
+    const blocked = path.join(preparedDir, withheldCompanion("boom.pdf"));
     mkdirSync(blocked, { recursive: true });
     writeFileSync(path.join(blocked, "occupied"), "x");
 

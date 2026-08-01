@@ -35,8 +35,20 @@ export interface BackgroundPreparationItem {
   itemId: string;
   runId: string;
   contextId: string;
-  /** Repo-relative path of the source file (public-safe). */
+  /**
+   * Repo-relative path of the SOURCE file — PRIVATE. A real filename is itself
+   * identifying data, so this must never reach a public surface; project it through
+   * `publicRelpath` / `documentId` (see `metadata-boundary.ts`).
+   */
   relpath: string;
+  /**
+   * The agent-facing path of this file, present ONLY when its original was actually
+   * delivered (Balanced's include-with-warning). Absent means the agent has no path
+   * for it and public surfaces must fall back to `documentId`.
+   */
+  publicRelpath?: string;
+  /** Stable public identity of the source document (`doc-<hex>`). */
+  documentId?: string;
   kind: BackgroundPreparationKind;
   /** Absolute path to the source artifact — INTERNAL ONLY. */
   sourceArtifactPath: string;
@@ -116,7 +128,12 @@ export interface IdempotencyInputs {
 export interface EnqueueInput extends IdempotencyInputs {
   runId: string;
   contextId: string;
+  /** PRIVATE source relpath (see {@link BackgroundPreparationItem.relpath}). */
   relpath: string;
+  /** Agent-facing path — set only when the original was delivered to the agent. */
+  publicRelpath?: string;
+  /** Stable public identity of the source document (`doc-<hex>`). */
+  documentId?: string;
   kind: BackgroundPreparationKind;
   /** Absolute path to the source artifact — INTERNAL ONLY. */
   sourceArtifactPath: string;
@@ -135,7 +152,16 @@ export interface PublicBackgroundItem {
   itemId: string;
   runId: string;
   contextId: string;
+  /**
+   * PRIVATE source relpath. Retained here because this projection also feeds
+   * in-process callers (the local UI, the worker), but it must be projected away
+   * before the item is written to an agent-visible surface — see `buildPublicStatus`.
+   */
   relpath: string;
+  /** Agent-facing path — present only when the original was delivered. */
+  publicRelpath?: string;
+  /** Stable public identity of the source document (`doc-<hex>`). */
+  documentId?: string;
   kind: BackgroundPreparationKind;
   priority: number;
   createdAt: number;

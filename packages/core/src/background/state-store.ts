@@ -212,6 +212,8 @@ export class BackgroundStateStore {
         runId: input.runId,
         contextId: input.contextId,
         relpath: input.relpath,
+        ...(input.publicRelpath ? { publicRelpath: input.publicRelpath } : {}),
+        ...(input.documentId ? { documentId: input.documentId } : {}),
         kind: input.kind,
         sourceArtifactPath: input.sourceArtifactPath,
         priority: input.priority ?? 0,
@@ -269,6 +271,8 @@ export class BackgroundStateStore {
       runId: record.item.runId,
       contextId: record.item.contextId,
       relpath: record.item.relpath,
+      ...(record.item.publicRelpath ? { publicRelpath: record.item.publicRelpath } : {}),
+      ...(record.item.documentId ? { documentId: record.item.documentId } : {}),
       kind: record.item.kind,
       priority: record.item.priority,
       createdAt: record.item.createdAt,
@@ -315,11 +319,17 @@ function normalizeRecord(value: unknown, itemId: string): BackgroundRecord | und
       runId: typeof item.runId === "string" ? item.runId : "",
       contextId: typeof item.contextId === "string" ? item.contextId : "",
       relpath: item.relpath,
+      // Reloaded after a restart the metadata boundary still has to hold: without
+      // `publicRelpath` the item is treated as having no agent-facing path, which is
+      // the safe direction (public surfaces fall back to `documentId`).
+      ...(typeof item.publicRelpath === "string" ? { publicRelpath: item.publicRelpath } : {}),
+      ...(typeof item.documentId === "string" ? { documentId: item.documentId } : {}),
       kind: item.kind as BackgroundPreparationItem["kind"],
       sourceArtifactPath:
         typeof item.sourceArtifactPath === "string" ? item.sourceArtifactPath : "",
       priority: typeof item.priority === "number" ? item.priority : 0,
       createdAt: typeof item.createdAt === "number" ? item.createdAt : 0,
+      ...(item.originalSharedWithWarning === true ? { originalSharedWithWarning: true } : {}),
     },
     idempotencyKey: v.idempotencyKey,
     idempotency: {

@@ -138,8 +138,11 @@ export function buildProgressiveContextView(
   const bySource = new Map<string, PublicStatusItem>();
   const rank = (value: string): number => value === "completed" ? 5 : value === "processing" ? 4 : value === "pending" ? 3 : value === "failed" ? 2 : 1;
   for (const item of status.items) {
-    const current = bySource.get(item.relpath);
-    if (!current || rank(item.status) >= rank(current.status)) bySource.set(item.relpath, item);
+    // Identity, not name: a withheld original has no agent-visible `relpath`, so the
+    // per-source dedup keys on the stable `documentId` (see `metadata-boundary.ts`).
+    const key = item.documentId ?? item.relpath ?? item.displayName ?? "";
+    const current = bySource.get(key);
+    if (!current || rank(item.status) >= rank(current.status)) bySource.set(key, item);
   }
   const sources = [...bySource.values()];
   const pending = sources.filter((item) => item.status === "pending" || item.status === "processing").length;

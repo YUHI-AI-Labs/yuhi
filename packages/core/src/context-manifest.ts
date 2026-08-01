@@ -30,8 +30,14 @@ export type ContextRepresentation = "full" | "compressed" | "excluded";
 
 /** One file line in the PUBLIC Context Manifest — repo-relative, metadata only. */
 export interface ContextManifestFileEntry {
-  /** Repo-relative POSIX path. Absolute paths are rejected by the projector. */
+  /**
+   * Repo-relative POSIX path for a DELIVERED file, or the kind-only public label of a
+   * withheld one (`doc-<hex>.pdf`) — the filename of a file whose original the agent
+   * never received does not cross the metadata boundary. Absolute paths are rejected.
+   */
   relpath: string;
+  /** Stable public identity of the source document (`doc-<hex>`), when recorded. */
+  documentId?: string;
   action: string;
   status: string;
   transmission: string;
@@ -117,6 +123,7 @@ export function toPublicContextManifest(raw: unknown): ContextManifest {
   const files: ContextManifestFileEntry[] = rawFiles
     .map((file) => ({
       relpath: str(file.relpath),
+      ...(typeof file.documentId === "string" ? { documentId: file.documentId } : {}),
       action: str(file.action),
       status: str(file.status),
       transmission: str(file.transmission),

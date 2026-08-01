@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { lstat, mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import { PdfDocumentInspector, runDetectors } from "@yuhi/scanner";
+import { documentIdFor } from "./metadata-boundary.js";
 import { runLocalPreparation } from "./route-executor.js";
 import type { DocumentInspector, LocalModelProvider } from "@yuhi/shared";
 
@@ -40,6 +40,12 @@ export interface BackgroundDocumentOptions {
   summaryStatusNote?: string;
   /** Hard wall-clock cap per document so a slow/stuck file never traps the user. Default 60s. */
   perDocumentTimeoutMs?: number;
+  /**
+   * Salt for deriving each document's public identity (the prepared run's policy hash).
+   * Pass the SAME salt the run's manifest used so the summary artifact lines up with the
+   * `documentId` on the other agent-visible surfaces.
+   */
+  salt?: string;
   signal?: AbortSignal;
   onProgress?: (event: {
     phase: "inspect" | "summarize" | "complete";
@@ -202,11 +208,9 @@ export async function prepareDocumentsInBackground(
         summariesRejected += 1;
         ordered[index] = { ...metadata, summary: "rejected" };
       } else {
-        const stem = path.basename(relpath, path.extname(relpath))
-          .replace(/[^A-Za-z0-9._-]+/g, "-")
-          .replace(/^-+|-+$/g, "") || "document";
-        const suffix = createHash("sha256").update(relpath).digest("hex").slice(0, 8);
-        const summaryRelpath = `.yuhi/context/${stem}.${suffix}.summary.md`;
+        // METADATA BOUNDARY: the artifact's NAME is agent-visible, so it comes from the
+        // document's identity — a source basename carries the identifier itself.
+        const summaryRelpath = `.yuhi/context/${documentIdFor(relpath, options.salt ?? "")}.summary.md`;
         await atomicWrite(path.join(root, summaryRelpath), markdown);
         summariesCreated += 1;
         ordered[index] = { ...metadata, summary: "created", summaryRelpath };

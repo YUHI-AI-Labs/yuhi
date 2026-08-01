@@ -59,6 +59,12 @@ import {
 } from "./background/index.js";
 import { writePrivateRunSourceBinding } from "./patch/private-state.js";
 import {
+  buildWithheldRedactions,
+  documentIdFor,
+  redactMetadata,
+  withheldDisplayName,
+} from "./metadata-boundary.js";
+import {
   buildPublicPreparedContextSummary,
   type PublicPreparedContextSummary,
 } from "./public-prepared-summary.js";
@@ -268,9 +274,16 @@ export interface PreparedFileEntry {
   relpath: string;
   /**
    * The original repo-relative path when `relpath` was pseudonymized to strip an
-   * identifier from the filename. Manifest-only mapping — never surfaced to Claude.
+   * identifier from the filename. PRIVATE mapping — held in memory for the local UI
+   * and never written to an agent-visible surface (see `metadata-boundary.ts`).
    */
   originalRelpath?: string;
+  /**
+   * Stable public identity of this file's source document (`doc-<hex>`). This is what
+   * agent-visible surfaces use to line an entry up across manifest / status / summary
+   * when its filename may not cross the boundary.
+   */
+  documentId?: string;
   /** The policy action that routed this file. */
   action: Action;
   /** Preparation outcome; "skipped" for verbatim/omitted files that weren't run. */
@@ -875,13 +888,34 @@ function normalizedSourcePath(relpath: string): string {
 }
 
 /**
+ * True when a pure-digit token reads as a date or time rather than an ID: `20260715`
+ * (YYYYMMDD), `202607` (YYYYMM), `0722` (MMDD), `110046` (HHMMSS). Calendar-valid
+ * only — `9999990001` has no 99th month, so it is not a date.
+ */
+function isDateLikeDigits(token: string): boolean {
+  const asMonth = (value: string): boolean => Number(value) >= 1 && Number(value) <= 12;
+  const asDay = (value: string): boolean => Number(value) >= 1 && Number(value) <= 31;
+  if (token.length === 8) {
+    return asMonth(token.slice(4, 6)) && asDay(token.slice(6, 8));
+  }
+  if (token.length === 6) {
+    // YYYYMM, or a HHMMSS timestamp (`110046`).
+    if (asMonth(token.slice(4, 6))) return true;
+    return Number(token.slice(0, 2)) <= 23 && Number(token.slice(2, 4)) <= 59 && Number(token.slice(4, 6)) <= 59;
+  }
+  return token.length <= 4;
+}
+
+/**
  * A path token is a direct identifier if it looks like a keyed ID (letter prefix
- * + digits, e.g. `A000000`, `EMP12345`) or contains an email. Pure-digit tokens
- * (dates like `20260715`, times like `110046`, counts) are intentionally NOT
- * treated as identifiers, so useful non-identifying context in the name survives.
+ * + digits, e.g. `A000000`, `EMP12345`), contains an email, or is a long pure-digit
+ * run that is NOT a date/time (`9999990001` — a real student number; school exports
+ * arrive as `9999990001 評定-0722.xlsx`). Short digit groups and calendar-valid dates
+ * stay intact so useful non-identifying context in the name survives.
  */
 function isIdentifierToken(token: string): boolean {
   if (token.includes("@")) return true;
+  if (/^\d{5,}$/.test(token) && !isDateLikeDigits(token)) return true;
   return /^[A-Za-z]{1,6}\d{3,}[A-Za-z0-9]*$/.test(token);
 }
 
@@ -1463,11 +1497,11 @@ export async function prepareWorkspace(
       documentIndex.push({ ...metadata, status: "rejected" });
       return;
     }
-    const stem = path.basename(relpath, path.extname(relpath))
-      .replace(/[^A-Za-z0-9._-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "document";
-    const suffix = createHash("sha256").update(relpath).digest("hex").slice(0, 8);
-    const summaryRelpath = `.yuhi/context/${stem}.${suffix}.summary.md`;
+    // METADATA BOUNDARY: this artifact's NAME is agent-visible, and `.yuhi/` paths are
+    // deliberately skipped by the filename de-identification pass below — so the name
+    // must come from the document's identity, never from the source basename (which is
+    // where the identifier lives: `9999990001 評定-0722.xlsx`).
+    const summaryRelpath = `.yuhi/context/${documentIdFor(relpath, salt)}.summary.md`;
     const markdown =
       `# Document Summary\n\n${prepared.output.trim()}\n\n---\n\n` +
       `Generated locally by Yuhi. The extracted source text was not stored.\n`;
@@ -3008,6 +3042,48 @@ export async function prepareWorkspace(
     }
   }
 
+  // ===== AGENT-VISIBLE METADATA BOUNDARY =====
+  // The withheld set is final here (policy blocks, safety-mode escalation, and both
+  // final gates have all run). Give every entry its stable public identity, then build
+  // the redaction list for the names that may NOT cross into the prepared workspace:
+  // a real filename is identifying data (`9999990001 評定-0722.xlsx`), so withholding
+  // a file's bytes while publishing its name would disclose the identifier anyway.
+  // `files` itself keeps the private paths — the local UI shows the user their own
+  // filenames; only what is WRITTEN at or below `outDir` goes through the boundary.
+  for (const entry of files) {
+    entry.documentId = documentIdFor(entry.originalRelpath ?? entry.relpath, salt);
+  }
+  const metadataRedactions = buildWithheldRedactions({
+    withheld: files
+      .filter((entry) => entry.omitted === true)
+      .map((entry) => ({
+        sourceRelpath: entry.originalRelpath ?? entry.relpath,
+        documentId: entry.documentId ?? documentIdFor(entry.relpath, salt),
+      })),
+    delivered: files.filter((entry) => entry.omitted !== true).map((entry) => entry.relpath),
+  });
+  /** Project one agent-visible surface through the boundary before writing it. */
+  const publicSurface = <T,>(value: T): T => redactMetadata(value, metadataRedactions);
+  /** The public label for an entry: a delivered name, or a kind-only withheld label. */
+  const publicEntryName = (entry: PreparedFileEntry): string =>
+    entry.omitted === true
+      ? withheldDisplayName(
+          entry.originalRelpath ?? entry.relpath,
+          entry.documentId ?? documentIdFor(entry.relpath, salt),
+        )
+      : entry.relpath;
+  /**
+   * The public label for a SOURCE path. Surfaces built from source paths (the document
+   * index) must print the DELIVERED name — the source name may have been pseudonymized
+   * away or withheld entirely, and printing it would undo either control.
+   */
+  const publicSourceName = (sourceRelpath: string): string => {
+    const entry = files.find((file) => (file.originalRelpath ?? file.relpath) === sourceRelpath);
+    return entry
+      ? publicEntryName(entry)
+      : withheldDisplayName(sourceRelpath, documentIdFor(sourceRelpath, salt));
+  };
+
   extractedDocuments.clear();
   detail("context", "Generating local context", documentIndex.length, documentIndex.length);
   if (documentIndex.length === 0) {
@@ -3020,7 +3096,7 @@ export async function prepareWorkspace(
     const documentEntries =
       documentIndex.length > 0
         ? documentIndex.flatMap((document) => [
-            `### ${document.relpath}`,
+            `### ${publicSourceName(document.relpath)}`,
             "",
             `- Inspection: ${
               document.method === "ocr"
@@ -3059,7 +3135,7 @@ export async function prepareWorkspace(
       "",
       ...documentEntries,
     ].join("\n");
-    await writeMirrored(outDir, ".yuhi/context/document-index.md", index);
+    await writeMirrored(outDir, ".yuhi/context/document-index.md", publicSurface(index));
   }
 
   const beforeChars = files.reduce((n, f) => (f.omitted ? n : n + f.beforeChars), 0);
@@ -3291,7 +3367,7 @@ export async function prepareWorkspace(
       runDetectors(masked, handoffScan).length === 0 ? masked : listingFreeHandoff;
     progress("Agent handoff: sanitized ID-like content from generated listings; handoff still written.");
   }
-  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", safeHandoff);
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", publicSurface(safeHandoff));
 
   // Degraded-completion summary for the local-model reliability fix. Present when the
   // inline model timed out / was disabled, so the CLI / VS Code reach "Ready … with
@@ -3352,6 +3428,11 @@ export async function prepareWorkspace(
             runId,
             contextId,
             relpath: pending.relpath,
+            // The public half of the boundary: an agent-facing path ONLY when the
+            // original was actually delivered (Balanced's include-with-warning). The
+            // public status and any published companion use this, never `relpath`.
+            ...(pending.entry.omitted !== true ? { publicRelpath: pending.entry.relpath } : {}),
+            ...(pending.entry.documentId ? { documentId: pending.entry.documentId } : {}),
             kind: pending.kind,
             sourceArtifactPath: pending.sourceArtifactPath,
             sourceContentHash: pending.sourceContentHash,
@@ -3420,11 +3501,11 @@ export async function prepareWorkspace(
     reductionByLargeArtifactRepresentation: largeArtifactReduction,
   });
   finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
-  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", finalHandoff);
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", publicSurface(finalHandoff));
   await writeMirrored(
     outDir,
     ".yuhi/yuhi-mode-summary.json",
-    JSON.stringify(yuhiModeSummary, null, 2) + "\n",
+    publicSurface(JSON.stringify(yuhiModeSummary, null, 2) + "\n"),
   );
 
   const manifest = {
@@ -3448,8 +3529,14 @@ export async function prepareWorkspace(
       const lookupPath = f.originalRelpath ?? f.relpath;
       const decision = plan.evaluation.decisions.find((d) => d.relpath === lookupPath);
       return {
-        relpath: f.relpath,
-        ...(f.originalRelpath ? { originalRelpath: f.originalRelpath } : {}),
+        // METADATA BOUNDARY: `manifest.json` sits INSIDE the prepared workspace, so it
+        // is agent-visible. A delivered file keeps the (already de-identified) name the
+        // agent can see anyway; a WITHHELD file is reduced to its identity plus a
+        // kind-only label, and `originalRelpath` — the private pseudonym mapping — is
+        // never written here at all.
+        relpath: publicEntryName(f),
+        documentId: f.documentId ?? documentIdFor(lookupPath, salt),
+        ...(f.omitted ? { displayName: publicEntryName(f) } : {}),
         action: f.action,
         status: f.status,
         outcome: f.outcome,
@@ -3506,12 +3593,23 @@ export async function prepareWorkspace(
     }),
     reduction: report,
     filenamesPseudonymized,
+    // NOTE: `provenance` below is projected the same way — `source` (the raw original
+    // path) is the private half of the mapping and is dropped, not published.
     finalRescan: {
       identifierLeaks: finalIdentifierLeaks,
       credentialKeptLocal: finalCredentialKeptLocal,
       verified: files.filter((f) => f.finalRescanVerified === true).length,
     },
-    provenance,
+    provenance: provenance.map((record) => {
+      const entry = files.find(
+        (file) => file.relpath === record.relpath || file.originalRelpath === record.source,
+      );
+      return {
+        relpath: entry ? publicEntryName(entry) : record.relpath,
+        ...(entry?.documentId ? { documentId: entry.documentId } : {}),
+        action: record.action,
+      };
+    }),
     sourceModified: originalSourceFilesModified,
     status: launchAllowed ? "ready" : "blocked",
     launchAllowed,
@@ -3635,7 +3733,13 @@ export async function prepareWorkspace(
         : {}),
     },
   };
-  await writeFile(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  // Structural projection above is the primary control; the boundary pass is the
+  // backstop that also covers free-text fields (a policy `reason`, an error note).
+  await writeFile(
+    path.join(outDir, "manifest.json"),
+    JSON.stringify(publicSurface(manifest), null, 2) + "\n",
+    "utf8",
+  );
   // Patch/source mapping is private operational state. It must never be written to
   // manifest/session/public status or anywhere below the agent-visible workspace.
   // Failure never delays Yuhi Mode startup; the agent-launch gate will fail closed

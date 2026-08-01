@@ -162,7 +162,7 @@ async function readOptionalRegularFile(filename: string): Promise<Buffer | undef
 
 interface PreparedManifestFile {
   relpath?: unknown;
-  originalRelpath?: unknown;
+  omitted?: unknown;
   transformed?: unknown;
   transformations?: unknown;
   contextRepresentation?: unknown;
@@ -219,6 +219,9 @@ async function representationMap(
     if (Array.isArray(manifest.files)) {
       for (const raw of manifest.files as PreparedManifestFile[]) {
         if (typeof raw.relpath !== "string") continue;
+        // An omitted entry has no delivered artifact — its public label must never
+        // claim a representation for whatever happens to sit at that name.
+        if (raw.omitted === true) continue;
         const relpath = safeRelpath(raw.relpath);
         const transformations = Array.isArray(raw.transformations) ? raw.transformations : [];
         const representation: PreparedRepresentation =

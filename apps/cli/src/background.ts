@@ -160,7 +160,9 @@ export async function performBackgroundStatus(opts: BackgroundCommonOptions): Pr
   }
   for (const item of status.items) {
     const reason = item.reasonCode ? `  ${item.reasonCode}` : "";
-    out(`  ${item.relpath}  ${item.kind}  ${item.status}${reason}`);
+    // A withheld original is listed by its public label, never by its filename.
+    const label = item.relpath ?? item.displayName ?? item.documentId ?? "(document)";
+    out(`  ${label}  ${item.kind}  ${item.status}${reason}`);
   }
   return 0;
 }

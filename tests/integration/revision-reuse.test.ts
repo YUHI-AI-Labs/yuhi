@@ -96,7 +96,8 @@ function itemsFromPublicStatus(
     itemId: "",
     runId: "",
     contextId: baseContextId,
-    relpath: it.relpath,
+    // A withheld original has no agent-visible path; its identity stands in for one.
+    relpath: it.relpath ?? it.documentId ?? "",
     kind: it.kind,
     priority: 0,
     createdAt: 0,
@@ -146,6 +147,9 @@ describe("same-run Claude ↔ Codex revision reuse (E2E)", () => {
         runId: RUN,
         contextId: CONTEXT_ID,
         relpath: rel,
+        // Both originals were DELIVERED to the agent, so the companion replaces the
+        // file at its own agent-visible path (see `metadata-boundary.ts`).
+        publicRelpath: rel,
         kind: "summarize-local",
         sourceArtifactPath: path.join(sourceDir, rel),
         sourceContentHash: `hash-${rel}`,
