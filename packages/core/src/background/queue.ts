@@ -98,6 +98,36 @@ export class BackgroundQueue {
     return updated ? this.store.projectItem(updated) : undefined;
   }
 
+  /**
+   * Re-queue terminal items in bulk, keeping each item's SAME itemId + idempotency
+   * key (never a duplicate). `completed` items are never retried. When
+   * `failedOnly` is true, only `failed` / `timed-out` items are re-queued; otherwise
+   * all non-completed terminal items (also `cancelled` / `kept-local`) are. Returns
+   * the public projection of the items that were moved back to `pending`.
+   */
+  async retryTerminal(
+    options: { failedOnly?: boolean; runId?: string } = {},
+  ): Promise<PublicBackgroundItem[]> {
+    const retryable = new Set<string>(
+      options.failedOnly
+        ? ["failed", "timed-out"]
+        : ["failed", "timed-out", "cancelled", "kept-local"],
+    );
+    const requeued: PublicBackgroundItem[] = [];
+    for (const record of this.store.all()) {
+      if (options.runId !== undefined && record.item.runId !== options.runId) continue;
+      if (!retryable.has(record.status)) continue; // completed / pending / processing skipped
+      const updated = await this.store.update(record.item.itemId, {
+        status: "pending",
+        reasonCode: "background-pending",
+        preparedRelpath: undefined,
+        elapsedMs: 0,
+      });
+      if (updated) requeued.push(this.store.projectItem(updated));
+    }
+    return requeued;
+  }
+
   /** Records still needing processing (priority-ordered). */
   pending(runId?: string): BackgroundRecord[] {
     return this.store.pending(runId);

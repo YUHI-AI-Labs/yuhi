@@ -76,6 +76,17 @@ async function atomicWrite(target: string, content: string): Promise<void> {
 }
 
 /**
+ * @deprecated v0.3.5 — SUPERSEDED by the {@link runBackgroundForRun} path
+ * (`./background/wiring.ts`). Document PDF/DOCX/PPTX extraction + OCR now flow through
+ * the same persistent {@link BackgroundPreparationQueue} as summarize-local: each
+ * document is enqueued in the foreground as a `document-extraction` item and its
+ * sanitized companion is produced, safety-gated (normalize → pseudonymize → inspect →
+ * policy), and atomically published by the background worker — counting toward the
+ * Context Revision. `prepareWorkspace` no longer builds companions inline, so callers
+ * should drive background document work via `runBackgroundForRun` and must NOT also run
+ * this function on the same documents (that would double-process them). Retained only
+ * for backward compatibility with existing callers until they migrate.
+ *
  * Optional intelligence over copies already present in a Prepared Workspace.
  * Raw extracted text remains in memory and is discarded after each document.
  */

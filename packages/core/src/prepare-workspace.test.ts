@@ -30,6 +30,8 @@ import {
   buildPreparedMetrics,
   buildPreparedRuntimeBoundary,
 } from "./prepared-metrics.js";
+import { runBackgroundForRun } from "./background/index.js";
+import type { PdfTextExtractor } from "./document-artifact.js";
 
 let dir: string;
 let managedDir: string;
@@ -115,6 +117,13 @@ function fakeProvider(): LocalModelProvider {
   };
 }
 
+/** v0.3.5: documents are heavy-extracted in the BACKGROUND. This fakes the PDF text
+ *  extractor `runBackgroundForRun` uses so the sanitized companion is produced without
+ *  a real pdftotext/OCR binary. */
+function pdfExtractor(text: string, method: "pdf-text" | "ocr" = "pdf-text"): PdfTextExtractor {
+  return async () => ({ text, method, pageCount: 2 });
+}
+
 function pdfInspector(text: string, method: "pdf-text" | "ocr" = "pdf-text"): DocumentInspector {
   return {
     canInspect: (file) => file.relpath.endsWith(".pdf"),
@@ -176,20 +185,29 @@ describe("prepareWorkspace — deterministic Context ID (v0.3.4)", () => {
 });
 
 describe("prepareWorkspace", () => {
-  it("delivers a sanitized companion for a PDF and never places the original in the workspace", async () => {
+  it("enqueues a PDF for background extraction, then publishes a sanitized companion (original never shared)", async () => {
     writeFileSync(path.join(dir, "pending.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
-    const report = await prepareWorkspace(dir, {
-      deferDocumentInspection: true,
-      documentInspector: pdfInspector("Synthetic public document body."),
-    });
-    // The ORIGINAL PDF is never delivered; a sanitized Markdown companion is.
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+
+    // FOREGROUND: zero heavy extraction — no companion yet; the doc is queued pending.
     expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(false);
-    expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(true);
+    expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(false);
     const entry = report.files.find((f) => f.document);
     expect(entry?.document?.originalSharedWithAgent).toBe(false);
-    expect(entry?.document?.deliveredArtifactType).toBe("sanitized-pdf-companion");
+    expect(entry?.document?.extractionStatus).toBe("pending");
+    expect(entry?.outcome).toBe("background-processing-pending");
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+
+    // BACKGROUND: the sanitized companion is produced + published; original absent.
+    const summary = await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor("Synthetic public document body."),
+    });
+    expect(summary.completed).toBe(1);
+    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(true);
   });
 
   it("always writes document-index.md even when no documents require summarization", async () => {
@@ -252,61 +270,65 @@ describe("prepareWorkspace", () => {
     writeFileSync(path.join(dir, "architecture.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
-    const report = await prepareWorkspace(dir, {
-      documentInspector: pdfInspector(rawExtracted),
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor(rawExtracted),
     });
 
-    // Companion delivered; original PDF absent.
+    // Companion published; original PDF absent.
     expect(existsSync(path.join(report.outDir, "architecture.pdf"))).toBe(false);
     const companion = readFileSync(path.join(report.outDir, "architecture.pdf.md"), "utf8");
-    expect(companion).toContain("Yuhi document companion");
-    // Structured identifiers in the extracted body are redacted in the companion.
+    // Structured identifiers in the extracted body are redacted out of the companion.
     expect(companion).not.toContain("taro.yamada@example.ac.jp");
     expect(companion).not.toContain("A000000");
-    // The absolute source path is never written into the companion.
+    // The absolute source path is never written into the companion or the public status.
     expect(companion).not.toContain(dir);
-    // The handoff never exposes original document paths, and is created.
+    // The foreground handoff never exposes original document paths, and is created.
     const handoff = readFileSync(path.join(report.outDir, ".yuhi/context/AGENT_HANDOFF.md"), "utf8");
     expect(handoff).toContain("Yuhi Agent Handoff");
     expect(handoff).not.toContain(dir);
     expect(report.tabularAcceptance?.agentHandoffCreated).toBe(true);
   });
 
-  it("delivers a usable sanitized companion even when the local summary model is unavailable", async () => {
+  it("publishes a usable sanitized companion in the background even when the local summary model is unavailable", async () => {
     writeFileSync(path.join(dir, "offline.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
-    const provider = fakeProvider();
-    provider.generate = async () => {
-      throw new Error("synthetic local model unavailable");
-    };
 
-    const report = await prepareWorkspace(dir, {
-      providerFactory: () => provider,
-      documentInspector: pdfInspector("Synthetic public document content."),
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    // The document companion does NOT need the local summary model; run the background
+    // with NO providerFactory — extraction + publish still succeed.
+    const summary = await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor("Synthetic public document content."),
     });
 
-    // Summary (Ollama) is optional enrichment: the sanitized companion is delivered and
-    // the workspace is launchable even when the model fails. The original stays local.
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(summary.completed).toBe(1);
     expect(existsSync(path.join(report.outDir, "offline.pdf"))).toBe(false);
     expect(existsSync(path.join(report.outDir, "offline.pdf.md"))).toBe(true);
   });
 
-  it("redacts a secret in extracted PDF text out of the delivered companion (no raw secret reaches the agent)", async () => {
+  it("redacts a secret in extracted PDF text out of the published companion (no raw secret reaches the agent)", async () => {
     writeFileSync(path.join(dir, "safe.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const secret = "OPENAI_API_KEY=sk-synthetic-doc-leak-123456789";
 
-    const report = await prepareWorkspace(dir, {
-      documentInspector: pdfInspector("Public content. OPENAI_API_KEY=sk-synthetic-doc-leak-123456789 end."),
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor(`Public content. ${secret} end.`),
     });
 
-    // The sanitized companion is delivered, the original PDF is not, and the secret
-    // present in the extracted body is redacted out of the companion and the manifest.
+    // The sanitized companion is published, the original PDF is not, and the secret in
+    // the extracted body is redacted out of every delivered byte under the prepared root.
     expect(existsSync(path.join(report.outDir, "safe.pdf"))).toBe(false);
     const companion = readFileSync(path.join(report.outDir, "safe.pdf.md"), "utf8");
     expect(companion).not.toContain("sk-synthetic-doc-leak-123456789");
-    expect(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"))
-      .not.toContain("sk-synthetic-doc-leak-123456789");
+    expect(deliveredText(report.outDir)).not.toContain("sk-synthetic-doc-leak-123456789");
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
@@ -327,47 +349,55 @@ describe("prepareWorkspace", () => {
     ).toContain("Inspection: Text document");
   });
 
-  it("delivers a safe placeholder for a DOCX/PPTX and never places the original in the workspace", async () => {
-    // A corrupt Office file must yield a placeholder (never the raw original) and must
-    // not fail the whole preparation (per-file isolation).
+  it("keeps a corrupt DOCX/PPTX local (never the original, never a companion) with an honest reason", async () => {
+    // A corrupt Office file cannot be extracted; it must NOT be delivered raw, and must
+    // not fail the whole preparation (per-file isolation). In v0.3.5 the heavy work runs
+    // in the background and, when extraction fails, the document is kept local.
     writeFileSync(path.join(dir, "notes.docx"), Buffer.from("PK\x03\x04 not really a docx"));
     writeFileSync(path.join(dir, "deck.pptx"), Buffer.from("PK\x03\x04 not really a pptx"));
     put("keep.md", "safe content\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
-    const report = await prepareWorkspace(dir);
-
-    for (const [orig, companion] of [["notes.docx", "notes.docx.md"], ["deck.pptx", "deck.pptx.md"]]) {
-      expect(existsSync(path.join(report.outDir, orig!))).toBe(false); // original never delivered
-      expect(existsSync(path.join(report.outDir, companion!))).toBe(true);
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    // Foreground: originals never delivered; each doc is queued pending.
+    for (const orig of ["notes.docx", "deck.pptx"]) {
+      expect(existsSync(path.join(report.outDir, orig))).toBe(false);
     }
     for (const e of report.files.filter((f) => f.document)) {
       expect(e.document?.originalSharedWithAgent).toBe(false);
-      expect(e.document?.deliveredArtifactType).toBe("safe-placeholder");
+      expect(e.outcome).toBe("background-processing-pending");
+    }
+
+    // Background: extraction of a corrupt Office doc fails → kept local, no companion.
+    const summary = await runBackgroundForRun({ runId: report.runId, preparedDir: report.outDir });
+    expect(summary.completed).toBe(0);
+    for (const [orig, companion] of [["notes.docx", "notes.docx.md"], ["deck.pptx", "deck.pptx.md"]]) {
+      expect(existsSync(path.join(report.outDir, orig!))).toBe(false);
+      expect(existsSync(path.join(report.outDir, companion!))).toBe(false);
     }
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
-  it("delivers a safe placeholder (never the original) for a PDF that cannot be extracted", async () => {
-    // No document inspector + no pdftotext in the test env → extraction is unavailable.
-    // The PDF must NOT be delivered raw; a safe placeholder is delivered instead.
+  it("keeps a PDF local when it cannot be extracted and OCR is unavailable (never the original)", async () => {
+    // No text extractor and no OCR extractor in the background → the PDF is kept local
+    // (extraction insufficient → OCR fallback → OCR unavailable). Never delivered raw.
     writeFileSync(path.join(dir, "synthetic.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
-    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
-
-    // Original PDF absent; placeholder companion present.
-    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(false);
-    expect(existsSync(path.join(report.outDir, "synthetic.pdf.md"))).toBe(true);
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
     const entry = report.files.find((f) => f.document);
-    expect(entry?.document?.deliveredArtifactType).toBe("safe-placeholder");
     expect(entry?.document?.originalSharedWithAgent).toBe(false);
-    expect(entry?.outcome).toBe("included-unverified");
-    const placeholder = readFileSync(path.join(report.outDir, "synthetic.pdf.md"), "utf8");
-    expect(placeholder).toContain("Original file shared with agent: no");
+    expect(entry?.outcome).toBe("background-processing-pending");
+
+    // Background with NO extractors: extraction insufficient → OCR fallback → OCR
+    // unavailable. The original PDF is never shared and no companion is published.
+    const summary = await runBackgroundForRun({ runId: report.runId, preparedDir: report.outDir });
+    expect(summary.completed).toBe(0);
+    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "synthetic.pdf.md"))).toBe(false);
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
-    // The raw PDF bytes never leak into the manifest.
+    // The raw PDF bytes never leak into the foreground manifest.
     expect(JSON.stringify(JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"))))
       .not.toContain("synthetic\\n");
   });

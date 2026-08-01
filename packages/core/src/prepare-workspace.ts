@@ -2,7 +2,7 @@ import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, 
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { isSafelyYuhiManaged, writeWorkspaceMarker } from "./workspace-marker.js";
-import { buildDocumentArtifact, PDF_INSPECTION_LIMIT_BYTES, OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES, type DocumentSourceType } from "./document-artifact.js";
+import { PDF_INSPECTION_LIMIT_BYTES, OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES, type DocumentSourceType } from "./document-artifact.js";
 import { availableParallelism, totalmem } from "node:os";
 import { homedir, platform } from "node:os";
 import path from "node:path";
@@ -34,7 +34,7 @@ import {
   YUHI_VERSION,
 } from "@yuhi/shared";
 import { computeContextId, type ContextIdSourceFile } from "./context-id.js";
-import { runDetectors, redactText, PdfDocumentInspector } from "@yuhi/scanner";
+import { runDetectors, redactText } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
 // Type-only import — erased at build, so it never loads the compression parser. The
@@ -48,7 +48,13 @@ import {
   type SafetyMode,
 } from "./safety-mode.js";
 import { runLocalPreparation } from "./route-executor.js";
-import { BackgroundQueue, type BackgroundPreparationKind } from "./background/index.js";
+import {
+  BackgroundQueue,
+  privateBackgroundDir,
+  buildPublicStatus,
+  writePublicStatus,
+  type BackgroundPreparationKind,
+} from "./background/index.js";
 
 /** The pipeline every summarize target is run through (local model → mask → gate). */
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
@@ -292,7 +298,7 @@ export interface PreparedFileEntry {
     sourceType: DocumentSourceType;
     sourceSize: number;
     extractionMethod: string;
-    extractionStatus: "extracted" | "unsupported" | "failed" | "skipped-oversize";
+    extractionStatus: "extracted" | "unsupported" | "failed" | "skipped-oversize" | "pending";
     deliveredArtifactType:
       | "sanitized-pdf-companion"
       | "sanitized-docx-companion"
@@ -1405,26 +1411,9 @@ export async function prepareWorkspace(
     return { status: "created", summaryRelpath };
   };
 
-  // Local PDF text extractor for building sanitized companions in the fast phase.
-  // Falls back to a placeholder when pdftotext/OCR are unavailable or produce no text.
-  const pdfInspector = options.documentInspector ?? new PdfDocumentInspector();
-  const extractPdfText = async (
-    absPath: string,
-  ): Promise<{ text: string; method: "pdf-text" | "ocr" | "none"; pageCount?: number }> => {
-    let text = "";
-    try {
-      const result = await pdfInspector.inspect({ relpath: path.basename(absPath), absPath }, (t) => {
-        text = t;
-      });
-      return {
-        text,
-        method: result.extractionMethod,
-        ...(result.pageCount !== undefined ? { pageCount: result.pageCount } : {}),
-      };
-    } catch {
-      return { text: "", method: "none" };
-    }
-  };
+  // v0.3.5: PDF/DOCX/PPTX heavy extraction (incl. OCR) no longer runs in the foreground.
+  // Documents are enqueued as `document-extraction` items and their sanitized companions
+  // are produced + safety-gated + published by `runBackgroundForRun` after launch.
   let documentsWithoutOriginal = 0;
 
   /**
@@ -1489,75 +1478,71 @@ export async function prepareWorkspace(
       continue;
     }
 
-    // ===== DOCUMENT COMPANION ROUTING (PDF / DOCX / DOCM / PPTX / PPTM) =====
-    // The ORIGINAL document binary is NEVER placed in the Prepared Workspace. Yuhi
-    // extracts the text locally, sanitizes it, and delivers a Markdown companion (or a
-    // safe placeholder when extraction is impossible / oversized / macro-only). The
-    // original stays in the source workspace, untouched. Runs AFTER the explicit
-    // block/credential/local-only handling above (those `continue` earlier), so a
+    // ===== DOCUMENT ROUTING (PDF / DOCX / DOCM / PPTX / PPTM) → BACKGROUND QUEUE =====
+    // v0.3.5: the ORIGINAL document binary is NEVER placed in the Prepared Workspace,
+    // and its HEAVY extraction (PDF text / OCR / DOCX-PPTX unzip) NEVER runs in the
+    // foreground — that would delay entry into Yuhi Mode. Instead we register a
+    // persistent `document-extraction` item; AFTER launch `runBackgroundForRun` builds
+    // the sanitized companion, runs it through the IDENTICAL safety gate (normalize →
+    // pseudonymize → secret/PII inspect → policy), and atomically publishes
+    // `<relpath>.md` under the prepared root (counting toward the Context Revision).
+    // The entry becomes `background-processing-pending` ONLY after a successful enqueue;
+    // if enqueue fails it stays kept-local (honest reason) and the original is never
+    // shared. Runs AFTER the explicit block/credential/local-only handling above, so a
     // hard-blocked document never reaches here — size never overrides a security block.
     const docType = info ? documentSourceType(relpath) : undefined;
     if (info && docType && !info.flags.isSymlink) {
-      const artifact = await buildDocumentArtifact({
-        sourceType: docType,
-        absPath: info.absPath,
-        sizeBytes: info.size,
-        readBuffer: () => readFile(info.absPath),
-        extractPdfText,
-      });
-      const companionRelpath = `${relpath}.md`; // identifier tokens de-identified by the rename pass
-      await writeMirrored(outDir, companionRelpath, artifact.markdown);
-      provenance.push({ relpath: companionRelpath, source: relpath, action: "prepare-locally" });
       documentsWithoutOriginal += 1;
-      if (artifact.kind === "companion") sensitiveMasked += artifact.redactionCount > 0 ? 1 : 0;
-      else unsupportedOrUnverifiedFiles += 1;
-      const deliveredArtifactType =
-        artifact.kind === "companion"
-          ? (`sanitized-${docType === "docm" ? "docx" : docType === "pptm" ? "pptx" : docType}-companion` as const)
-          : ("safe-placeholder" as const);
       const before = tokenEstimate(String(info.size));
-      const after = tokenEstimate(artifact.markdown);
       beforeTokens += before.tokens;
-      afterTokens += after.tokens;
-      approx = approx || after.approx;
-      files.push({
-        relpath: companionRelpath,
+      const entry: PreparedFileEntry = {
+        relpath, // the ORIGINAL document path — NOT delivered; the companion is `<relpath>.md`
         originalRelpath: relpath,
         action: "prepare-locally",
-        status: "ok",
-        outcome: artifact.kind === "companion" ? "included-transformed" : "included-unverified",
-        transmission: "approved",
+        status: "skipped",
+        // Provisional kept-local; flipped to `background-processing-pending` on a
+        // successful enqueue in the post-loop registration block.
+        outcome: "local-only-unverified",
+        transmission: "blocked",
         beforeChars: info.size,
-        afterChars: artifact.markdown.length,
-        transformed: artifact.kind === "companion",
-        transformations: artifact.kind === "companion" ? ["summarized"] : [],
-        maskedValues: artifact.redactionCount,
+        afterChars: 0,
+        transformed: false,
+        omitted: true,
+        limitation: "inspection-unavailable",
         document: {
           sourceType: docType,
           sourceSize: info.size,
-          extractionMethod: artifact.extractionMethod,
-          extractionStatus: artifact.extractionStatus,
-          deliveredArtifactType,
+          extractionMethod: "none",
+          extractionStatus: "pending",
+          deliveredArtifactType: "none",
           originalSharedWithAgent: false,
-          redactionCount: artifact.redactionCount,
-          residualNameRisk: artifact.residualNameRisk,
-          macroDetected: artifact.macroDetected,
-          embeddedObjectCount: artifact.embeddedObjectCount,
-          imageCount: artifact.imageCount,
-          hiddenContentDetected: artifact.hiddenContentDetected,
-          extractedParagraphCount: artifact.extractedParagraphCount,
-          extractedTableCount: artifact.extractedTableCount,
-          extractedSlideCount: artifact.extractedSlideCount,
-          extractedNotesCount: artifact.extractedNotesCount,
+          redactionCount: 0,
+          residualNameRisk: false,
+          macroDetected: false,
+          embeddedObjectCount: 0,
+          imageCount: 0,
+          hiddenContentDetected: false,
+          extractedParagraphCount: 0,
+          extractedTableCount: 0,
+          extractedSlideCount: 0,
+          extractedNotesCount: 0,
         },
-        ...(artifact.warnings.length ? { error: artifact.warnings.join(" ") } : {}),
-        ...(artifact.kind === "placeholder"
-          ? { limitation: "transformation-unavailable" as const }
-          : {}),
+      };
+      files.push(entry);
+      backgroundEnqueue.push({
+        entry,
+        // A single `document-extraction` item covers PDF text WITH OCR fallback (the
+        // injected extractor decides pdf-text vs. OCR) and DOCX/PPTX unzip — all heavy
+        // work runs in the background behind the safety-gated publisher.
+        kind: "document-extraction",
+        relpath,
+        sourceArtifactPath: info.absPath,
+        // Cheap, stable idempotency seed — never load the (possibly large) document
+        // into memory in the foreground just to hash it.
+        sourceContentHash: info.sha256 ?? createHash("sha256").update(`${relpath}:${info.size}`).digest("hex"),
+        processorVersion: `document-extraction@${YUHI_VERSION}`,
       });
-      progress(
-        `Document ${relpath}: delivered ${artifact.kind === "companion" ? "sanitized companion" : "safe placeholder"}; original kept local.`,
-      );
+      progress(`Document ${relpath}: queued for background extraction; original kept local.`);
       decisionsProcessed += 1;
       if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
         progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
@@ -3095,14 +3080,18 @@ export async function prepareWorkspace(
   });
 
   // ===== v0.3.5 FOREGROUND → BACKGROUND QUEUE REGISTRATION =====
-  // Persist each deferred item into the run's queue so the heavy work (summarize-local
-  // / document extraction / OCR) runs AFTER Yuhi Mode has launched. The foreground made
-  // ZERO heavy-processor calls; this is only durable JSON book-keeping. A file's status
+  // Persist each deferred item into the run's PRIVATE queue (under the managed base,
+  // NOT the agent-visible prepared root) so the heavy work (summarize-local / document
+  // extraction / OCR) runs AFTER Yuhi Mode has launched. The foreground made ZERO
+  // heavy-processor calls; this is only durable JSON book-keeping. A file's status
   // becomes `background-processing-pending` ONLY after its enqueue succeeds — an enqueue
   // failure leaves it kept-local (never mislabeled), and its original stays local-only.
   if (backgroundEnqueue.length > 0) {
     try {
-      const queue = await BackgroundQueue.open(path.join(outDir, ".yuhi", "background"));
+      // Private state lives OUTSIDE every agent-visible root; the agent never sees the
+      // queue records (which carry absolute source paths). `managedBase` contains all
+      // run dirs, so `<managedBase>/.internal/background/<runId>` is not a prepared root.
+      const queue = await BackgroundQueue.open(privateBackgroundDir(managedBase, runId));
       for (const pending of backgroundEnqueue) {
         try {
           await queue.enqueue({
@@ -3121,6 +3110,9 @@ export async function prepareWorkspace(
           // Enqueue failed for this item → keep it local-only; do not mislabel it.
         }
       }
+      // Seed the PUBLIC, path-safe status file the agent/CLI/UI reads (all pending).
+      // Contains only counts + safe per-item fields — never an absolute/staging path.
+      await writePublicStatus(outDir, buildPublicStatus(queue.list(runId))).catch(() => {});
     } catch {
       // The queue could not be opened → every deferred file stays kept-local. The run
       // still launches; nothing is delivered un-inspected.

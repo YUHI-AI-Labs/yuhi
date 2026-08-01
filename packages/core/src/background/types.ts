@@ -76,6 +76,12 @@ export const BACKGROUND_REASON_CODES = [
   "background-timeout",
   "background-provider-unavailable",
   "background-extraction-failed",
+  // Distinct from a generic provider outage: the OCR capability was not configured/
+  // available, so a scanned/image-only document could not be recovered.
+  "background-ocr-unavailable",
+  // The document-extraction step recovered too little text and handed the document off
+  // to a dependent OCR item (this item itself published nothing — kept local).
+  "background-ocr-deferred",
   "background-safety-rejected",
   "background-publication-failed",
   "background-state-corrupt",

@@ -58,6 +58,7 @@ export {
 export {
   BackgroundWorker,
   ProviderUnavailableError,
+  KeepLocalError,
   DEFAULT_WORKER_CONFIG,
   type BackgroundProcessor,
   type ProcessorMap,
@@ -65,12 +66,30 @@ export {
   type WorkerDeps,
   type RunOptions,
   type RunSummary,
+  type CancelSource,
 } from "./worker.js";
+
+export { CancelStore } from "./cancel-store.js";
+
+export {
+  privateBackgroundDir,
+  privateStagingDir,
+  publicStatusPath,
+  buildPublicStatus,
+  writePublicStatus,
+  readPublicStatus,
+  type PublicStatusItem,
+  type PublicBackgroundStatus,
+} from "./status.js";
 
 export {
   runBackgroundForRun,
+  requestBackgroundCancel,
+  retryBackgroundItem,
+  retryBackgroundTerminal,
   type BackgroundRunSummary,
   type RunBackgroundForRunInput,
+  type BackgroundControlInput,
 } from "./wiring.js";
 
 export {

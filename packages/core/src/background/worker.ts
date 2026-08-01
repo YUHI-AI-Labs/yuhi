@@ -49,6 +49,18 @@ export class ProviderUnavailableError extends Error {
   }
 }
 
+/**
+ * Throw from a processor to signal a SAFE keep-local outcome (not a failure): the
+ * item published nothing on purpose — e.g. document-extraction recovered too little
+ * text and handed off to a dependent OCR item. Carries the privacy-safe reason code.
+ */
+export class KeepLocalError extends Error {
+  constructor(readonly reasonCode: BackgroundReasonCode, message = "kept local") {
+    super(message);
+    this.name = "KeepLocalError";
+  }
+}
+
 function isUnavailable(error: unknown): boolean {
   return (
     error instanceof ProviderUnavailableError ||
@@ -56,6 +68,12 @@ function isUnavailable(error: unknown): boolean {
       error !== null &&
       (error as { code?: unknown }).code === "provider-unavailable")
   );
+}
+
+/** Minimal persisted-cancel view the worker consults while running. */
+export interface CancelSource {
+  /** True when this item (or the whole run) has been cancelled durably. */
+  isCancelled(itemId: string): boolean;
 }
 
 export interface WorkerConfig {
@@ -85,6 +103,10 @@ export interface WorkerDeps {
   processors: ProcessorMap;
   publisher: BackgroundPublisher;
   config?: Partial<WorkerConfig>;
+  /** Persisted cancellation the worker checks between and around provider calls. */
+  cancelStore?: CancelSource;
+  /** Called after each item reaches a terminal state (used to rewrite public status). */
+  onSettled?: () => void | Promise<void>;
 }
 
 export interface RunOptions {
@@ -171,6 +193,8 @@ export class BackgroundWorker {
   private readonly processors: ProcessorMap;
   private readonly publisher: BackgroundPublisher;
   private readonly baseConfig: WorkerConfig;
+  private readonly cancelStore: CancelSource | undefined;
+  private readonly onSettled: (() => void | Promise<void>) | undefined;
 
   constructor(deps: WorkerDeps) {
     this.queue = deps.queue;
@@ -178,6 +202,22 @@ export class BackgroundWorker {
     this.processors = deps.processors;
     this.publisher = deps.publisher;
     this.baseConfig = mergeConfig(DEFAULT_WORKER_CONFIG, deps.config);
+    this.cancelStore = deps.cancelStore;
+    this.onSettled = deps.onSettled;
+  }
+
+  /** True when a durable cancel (item-level or run-level) applies to this item. */
+  private cancelled(itemId: string): boolean {
+    return this.cancelStore?.isCancelled(itemId) === true;
+  }
+
+  /** Fire the settle hook (rewrite public status) — best-effort, never throws. */
+  private async settled(): Promise<void> {
+    try {
+      await this.onSettled?.();
+    } catch {
+      /* status write is best-effort */
+    }
   }
 
   /**
@@ -213,6 +253,18 @@ export class BackgroundWorker {
       let progressed = false;
       for (const record of pending) {
         const kind = record.item.kind;
+
+        // Durable cancel for this specific pending item → mark cancelled, no call.
+        if (this.cancelled(record.item.itemId)) {
+          await store.update(record.item.itemId, {
+            status: "cancelled",
+            reasonCode: "background-cancelled",
+            elapsedMs: 0,
+          });
+          await this.settled();
+          progressed = true;
+          continue;
+        }
 
         // Budget spent → shed remaining work to kept-local, no provider call.
         if (budgetExceeded()) {
@@ -316,6 +368,12 @@ export class BackgroundWorker {
           return { openedCircuit: isSummarize };
 
         case "error": {
+          // A processor's explicit keep-local signal (e.g. document-extraction handed
+          // off to OCR) is NOT a failure — publish nothing, record the safe reason.
+          if (outcome.error instanceof KeepLocalError) {
+            await this.finalize(record, "kept-local", outcome.error.reasonCode, outcome.elapsedMs);
+            return { openedCircuit: false };
+          }
           if (isSummarize && isUnavailable(outcome.error)) {
             await this.finalize(
               record,
@@ -324,6 +382,14 @@ export class BackgroundWorker {
               outcome.elapsedMs,
             );
             return { openedCircuit: true };
+          }
+          // A non-summarize provider outage (e.g. OCR unavailable) is a SAFE keep-local
+          // with a distinct reason — never a hard failure.
+          if (isUnavailable(outcome.error)) {
+            const reason: BackgroundReasonCode =
+              kind === "ocr" ? "background-ocr-unavailable" : "background-provider-unavailable";
+            await this.finalize(record, "kept-local", reason, outcome.elapsedMs);
+            return { openedCircuit: false };
           }
           await this.finalize(
             record,
@@ -335,6 +401,12 @@ export class BackgroundWorker {
         }
 
         case "ok": {
+          // A cancel that landed WHILE the provider ran → discard the result. The late
+          // value is never published; the item is recorded cancelled.
+          if (this.cancelled(item.itemId)) {
+            await this.finalize(record, "cancelled", "background-cancelled", outcome.elapsedMs);
+            return { openedCircuit: false };
+          }
           const published = await this.publisher.publish(item, outcome.value);
           if (published.status === "published") {
             await this.finalize(
@@ -367,6 +439,7 @@ export class BackgroundWorker {
       reasonCode: "background-provider-unavailable",
       elapsedMs: 0,
     });
+    await this.settled();
   }
 
   /**
@@ -389,6 +462,7 @@ export class BackgroundWorker {
       elapsedMs,
       preparedRelpath,
     });
+    await this.settled();
   }
 }
 

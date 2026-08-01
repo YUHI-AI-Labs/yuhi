@@ -13,6 +13,7 @@ import {
   mkdirSync,
   rmSync,
   writeFileSync,
+  readFileSync,
   readdirSync,
   existsSync,
   statSync,
@@ -22,8 +23,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { LocalModelProvider } from "@yuhi/shared";
+import type { PdfTextExtractor } from "./document-artifact.js";
 import { prepareWorkspace } from "./prepare-workspace.js";
-import { BackgroundQueue } from "./background/index.js";
+import {
+  BackgroundQueue,
+  runBackgroundForRun,
+  privateBackgroundDir,
+  publicStatusPath,
+  readPublicStatus,
+} from "./background/index.js";
 
 let dir: string;
 let managedDir: string;
@@ -98,13 +106,23 @@ describe("v0.3.5 foreground → background queue registration", () => {
     // The original is NOT delivered into the prepared workspace.
     expect(existsSync(path.join(report.outDir, "notes", "report.md"))).toBe(false);
 
-    // A persistent background item was written to the run's queue.
-    const queue = await BackgroundQueue.open(path.join(report.outDir, ".yuhi", "background"));
+    // A persistent background item was written to the run's PRIVATE queue (under the
+    // managed base, NOT the agent-visible prepared root).
+    const queue = await BackgroundQueue.open(privateBackgroundDir(managedDir, report.runId));
     const items = queue.list(report.runId);
     expect(items).toHaveLength(1);
     expect(items[0]?.kind).toBe("summarize-local");
     expect(items[0]?.relpath).toBe("notes/report.md");
     expect(items[0]?.status).toBe("pending");
+
+    // Private queue state is NOT reachable from the agent-visible prepared root.
+    expect(existsSync(path.join(report.outDir, ".yuhi", "background"))).toBe(false);
+    // The PUBLIC status file IS in the prepared root and carries no absolute path.
+    const raw = readFileSync(publicStatusPath(report.outDir), "utf8");
+    expect(raw).not.toContain(managedDir);
+    expect(raw).not.toContain("sourceArtifactPath");
+    const status = await readPublicStatus(report.outDir);
+    expect(status?.counts.pending).toBe(1);
   });
 
   it("keeps the file local (not pending) when the enqueue cannot be persisted", async () => {
@@ -123,10 +141,11 @@ describe("v0.3.5 foreground → background queue registration", () => {
           statSync(path.join(managedDir, name)).isDirectory(),
         );
         if (!runId) return;
-        const bg = path.join(managedDir, runId, ".yuhi", "background");
-        mkdirSync(path.dirname(bg), { recursive: true });
-        // Place a regular file at `.yuhi/background` so mkdir(.../background/items) fails.
-        writeFileSync(bg, "blocker");
+        // Place a regular FILE where the PRIVATE queue dir must be, so opening the
+        // queue (mkdir <privateDir>/items) fails → the enqueue guard keeps it local.
+        const priv = privateBackgroundDir(managedDir, runId);
+        mkdirSync(path.dirname(priv), { recursive: true });
+        writeFileSync(priv, "blocker");
       },
     });
 
@@ -137,5 +156,52 @@ describe("v0.3.5 foreground → background queue registration", () => {
     expect(entry?.outcome).not.toBe("background-processing-pending");
     expect(entry?.omitted).toBe(true);
     expect(existsSync(path.join(report.outDir, "notes", "report.md"))).toBe(false);
+  });
+
+  it("enqueues a document (PDF) for background extraction with ZERO foreground extraction", async () => {
+    put("docs/report.pdf", "%PDF-1.4 fake bytes never parsed in the foreground\n");
+
+    const report = await prepareWorkspace(dir, {
+      managedWorkspaceBase: managedDir,
+      deferDocumentInspection: true,
+    });
+
+    // No companion or original delivered in the foreground; heavy extraction did not run.
+    expect(existsSync(path.join(report.outDir, "docs", "report.pdf.md"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "docs", "report.pdf"))).toBe(false);
+
+    const entry = report.files.find((f) => (f.originalRelpath ?? f.relpath) === "docs/report.pdf");
+    expect(entry?.outcome).toBe("background-processing-pending");
+    expect(entry?.omitted).toBe(true);
+    expect(entry?.document?.sourceType).toBe("pdf");
+    expect(entry?.document?.extractionStatus).toBe("pending");
+    expect(entry?.document?.originalSharedWithAgent).toBe(false);
+
+    // A persistent document-extraction item is in the run's queue.
+    const queue = await BackgroundQueue.open(privateBackgroundDir(managedDir, report.runId));
+    const item = queue.list(report.runId).find((i) => i.relpath === "docs/report.pdf");
+    expect(item?.kind).toBe("document-extraction");
+    expect(item?.status).toBe("pending");
+
+    // The source PDF is untouched by the foreground pass.
+    expect(existsSync(path.join(dir, "docs", "report.pdf"))).toBe(true);
+
+    // Background processing (faked extractor) publishes the sanitized companion atomically.
+    const extractor: PdfTextExtractor = async () => ({
+      text: "Quarterly numbers are within plan. No blockers.",
+      method: "pdf-text",
+      pageCount: 1,
+    });
+    const summary = await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: extractor,
+    });
+
+    expect(summary.completed).toBe(1);
+    const companion = path.join(report.outDir, "docs", "report.pdf.md");
+    expect(existsSync(companion)).toBe(true);
+    // The ORIGINAL PDF is still never shared into the prepared workspace.
+    expect(existsSync(path.join(report.outDir, "docs", "report.pdf"))).toBe(false);
   });
 });

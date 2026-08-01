@@ -5,19 +5,22 @@
  * is deliberately processor-agnostic: every heavy step and every safety primitive is
  * injected. This module supplies the REAL implementations — document/OCR extraction,
  * local summarization, and the normalize → pseudonymize → inspect → policy safety
- * gate — and exposes {@link runBackgroundForRun}: open the run's persistent queue,
- * drain it under all reliability bounds, and return a path-safe public summary.
+ * gate — and exposes {@link runBackgroundForRun}: open the run's PRIVATE persistent
+ * queue, drain it under all reliability bounds, publish safe companions atomically
+ * into the agent-visible root, and keep a PUBLIC path-safe status file current.
  *
- * Security invariants preserved here:
- *  - The ORIGINAL document/source (`item.sourceArtifactPath`, an absolute internal
- *    path) is NEVER copied into the agent-visible workspace. Only the sanitized,
- *    safety-verified companion text is ever published (by the publisher).
- *  - Pre-inspection bytes are written to a private staging dir OUTSIDE the prepared
- *    (agent-visible) root, then atomically renamed in on full success only.
- *  - Providers (Ollama / OCR) are injected; when one is unavailable the processor
- *    throws {@link ProviderUnavailableError} so the item is kept local (never a
- *    best-effort raw publish), and the summarize circuit opens for the run.
- *  - The returned summary carries counts only — never an absolute path.
+ * Boundaries preserved here:
+ *  - PRIVATE state (queue records, cancel flag, pre-inspection staging) lives OUTSIDE
+ *    every agent-visible root, under `<managedBase>/.internal/background/<runId>/`.
+ *    Absolute `sourceArtifactPath`s, staging paths, provider details, and raw errors
+ *    never leave that private dir.
+ *  - The agent reads ONLY `<preparedDir>/.yuhi/background-status.json` (counts +
+ *    path-safe per-item fields + revision) — never the private state.
+ *  - The ORIGINAL document/source is NEVER copied into the agent-visible workspace;
+ *    only the sanitized, safety-verified companion is ever published.
+ *  - document-extraction → OCR is a DEPENDENT fallback: OCR runs only when text
+ *    extraction recovered too little; a successful extraction never triggers OCR, and
+ *    the two never double-publish the same artifact.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -46,29 +49,39 @@ import {
 } from "./publisher.js";
 import {
   BackgroundWorker,
+  KeepLocalError,
   ProviderUnavailableError,
   type BackgroundProcessor,
   type ProcessorMap,
   type WorkerConfig,
 } from "./worker.js";
-import { systemBackgroundClock, type BackgroundClock, type BackgroundPreparationItem } from "./types.js";
+import { CancelStore } from "./cancel-store.js";
+import {
+  buildPublicStatus,
+  privateBackgroundDir,
+  privateStagingDir,
+  writePublicStatus,
+} from "./status.js";
+import { reduceProgressiveContextState } from "./revision.js";
+import {
+  systemBackgroundClock,
+  type BackgroundClock,
+  type BackgroundPreparationItem,
+  type PublicBackgroundItem,
+} from "./types.js";
 
 /**
  * Public, path-safe summary of a background run. Counts only — NO absolute paths, no
- * file contents, no reason strings beyond the aggregate tallies. Safe for the CLI /
- * VS Code / an agent to display.
+ * file contents, no reason strings beyond the aggregate tallies.
  */
 export interface BackgroundRunSummary {
-  /** Items whose sanitized companion was published into the prepared workspace. */
   completed: number;
-  /** Items that errored during extraction/publication (original never shared). */
   failed: number;
-  /** Items withheld safely (safety-rejected, provider-unavailable, budget/circuit). */
   keptLocal: number;
-  /** Items still pending after the run (e.g. cancelled batch). */
   pending: number;
-  /** Provider-backed calls the worker actually started this run. */
   callsMade: number;
+  /** Revision after this run (== number of safely-published artifacts). */
+  revision: number;
 }
 
 export interface RunBackgroundForRunInput {
@@ -76,6 +89,12 @@ export interface RunBackgroundForRunInput {
   runId: string;
   /** Absolute path to the prepared workspace root (== PrepareReport.outDir). */
   preparedDir: string;
+  /**
+   * Managed base that CONTAINS the prepared root (== the dir prepare-workspace uses).
+   * Private state lives under `<managedBase>/.internal/...`, never under `preparedDir`.
+   * Defaults to `dirname(preparedDir)` (the prepared root is `<managedBase>/<runId>`).
+   */
+  managedBase?: string;
   /** Cooperative cancellation for the whole batch. */
   signal?: AbortSignal;
   /** Injectable clock/timer (tests drive time with no real sleeps). */
@@ -84,22 +103,26 @@ export interface RunBackgroundForRunInput {
   config?: YuhiConfig;
   /**
    * Local-model provider factory for `summarize-local`. Omit (or return undefined) to
-   * mark the local model UNAVAILABLE — every summarize item is then kept local with
-   * zero provider calls. FAKED/injected in tests; never a real network/model here.
+   * mark the local model UNAVAILABLE (summarize items kept local, zero calls).
    */
   providerFactory?: () => LocalModelProvider | undefined;
   /**
-   * PDF text / OCR extractor. Omit to mark OCR unavailable (OCR items kept local).
-   * Injected in tests so no real pdftotext/OCR binary or network is used.
+   * PDF text extractor for `document-extraction` (pdf-text). Omit → document text
+   * extraction unavailable (PDF documents keep local / fall back to OCR if possible).
    */
   pdfTextExtractor?: PdfTextExtractor;
-  /** Per-run worker bound overrides (per-item timeout, budget, call cap, concurrency). */
+  /**
+   * OCR extractor for the DEPENDENT `ocr` fallback. Omit → OCR unavailable (a scanned
+   * PDF that yielded no text is kept local with reason `background-ocr-unavailable`).
+   */
+  ocrExtractor?: PdfTextExtractor;
+  /** Per-run worker bound overrides. */
   workerConfig?: Partial<WorkerConfig>;
 }
 
 const SUMMARIZE_PIPELINE = ["summarize-local", "pseudonymize", "safety-check"] as const;
+const OCR_FALLBACK_PROCESSOR_VERSION = "ocr-fallback@1:extraction-insufficient";
 
-/** Map a repo-relative path to a document source type (extension based). */
 function documentSourceTypeOf(relpath: string): DocumentSourceType | undefined {
   const ext = relpath.slice(relpath.lastIndexOf(".")).toLowerCase();
   if (ext === ".pdf") return "pdf";
@@ -110,7 +133,6 @@ function documentSourceTypeOf(relpath: string): DocumentSourceType | undefined {
   return undefined;
 }
 
-/** Best-effort direct-identifier values from a delimited (CSV/TSV) table. */
 function extractTabularIdentifiers(content: string): string[] {
   try {
     const table = parseDelimitedTable(content);
@@ -130,15 +152,9 @@ function extractTabularIdentifiers(content: string): string[] {
   }
 }
 
-// Email / phone / labelled-name PII the structural detectors may not flag on free text.
 const PERSONAL_DATA_PATTERN =
   /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|(?:\+\d{1,3}[- ]?)?(?:\(\d{2,4}\)[- ]?)?\d{2,4}[- ]\d{2,4}[- ]\d{3,4}|(?:氏名|full\s*name|address|住所)\s*[:：]/i;
 
-/**
- * Build the real safety primitives injected into the publisher. Each wraps the same
- * production module the foreground pipeline uses, so a background publish is gated by
- * the identical normalize → pseudonymize → secret/PII inspect → policy checks.
- */
 function buildSafetyPrimitives(config?: YuhiConfig): {
   normalizer: Normalizer;
   pseudonymizer: Pseudonymizer;
@@ -151,8 +167,6 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
   const rules = config?.rules ?? [];
 
   const normalizer: Normalizer = {
-    // Canonicalize line endings + Unicode form before de-identification so detectors
-    // and pseudonymization see a stable representation.
     normalize: (text) => text.replace(/\r\n?/g, "\n").normalize("NFC"),
   };
 
@@ -168,12 +182,10 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
   };
 
   const inspector: SafetyInspector = {
-    // Inspect ALREADY-pseudonymized text. ANY secret/PII finding ⇒ keep-local.
     inspect: (text) => {
-      const findings: SafetyFinding[] = runDetectors(text, {
-        entropyThreshold,
-        keywords,
-      }).map((f) => ({ category: f.detector }));
+      const findings: SafetyFinding[] = runDetectors(text, { entropyThreshold, keywords }).map(
+        (f) => ({ category: f.detector }),
+      );
       if (PERSONAL_DATA_PATTERN.test(text)) findings.push({ category: "personal-data" });
       return { ok: findings.length === 0, findings };
     },
@@ -186,7 +198,6 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
         [{ relpath, findings: [] }],
       );
       const action = evaluation.decisions[0]?.action ?? defaultAction;
-      // Only actions that permit external (agent) delivery may be published.
       const allowed = !(
         action === "block" ||
         action === "local-only" ||
@@ -200,19 +211,32 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
   return { normalizer, pseudonymizer, inspector, policy };
 }
 
-/**
- * Build the REAL processor map. `document-extraction` and `ocr` run the shared
- * document companion builder (original never shared); `summarize-local` runs the
- * local preparation pipeline behind an injected provider.
- */
-function buildProcessors(input: RunBackgroundForRunInput): ProcessorMap {
-  const { providerFactory, pdfTextExtractor, config } = input;
-  const mode = config?.budget?.reduction_mode ?? "balanced";
+/** Cheap, stable idempotency seed for a source file — never loads it into memory. */
+async function sourceSeed(absPath: string, relpath: string): Promise<string> {
+  try {
+    const stat = await fs.stat(absPath);
+    return `${relpath}:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+  } catch {
+    return `${relpath}:missing`;
+  }
+}
 
-  const extractDocument = async (
+/**
+ * Build the REAL processor map. `document-extraction` runs the shared companion
+ * builder with the text extractor; on insufficient text for a PDF it ENQUEUES a
+ * dependent `ocr` item (keeping this item local, publishing nothing). `ocr` runs the
+ * companion builder with the OCR extractor. `summarize-local` runs the local
+ * preparation pipeline behind an injected provider.
+ */
+function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue): ProcessorMap {
+  const { providerFactory, pdfTextExtractor, ocrExtractor, config } = input;
+  const mode = config?.budget?.reduction_mode ?? "balanced";
+  const policyHash = config?.scan ? "cfg" : "default";
+
+  const extractWith = async (
     item: BackgroundPreparationItem,
-    forceExtractor: PdfTextExtractor | undefined,
-  ): Promise<RawExtraction> => {
+    extractor: PdfTextExtractor | undefined,
+  ): Promise<{ text: string; kind: "companion" | "placeholder" }> => {
     const sourceType = documentSourceTypeOf(item.relpath) ?? "pdf";
     const stat = await fs.stat(item.sourceArtifactPath);
     const artifact = await buildDocumentArtifact({
@@ -220,21 +244,47 @@ function buildProcessors(input: RunBackgroundForRunInput): ProcessorMap {
       absPath: item.sourceArtifactPath,
       sizeBytes: stat.size,
       readBuffer: () => fs.readFile(item.sourceArtifactPath),
-      ...(forceExtractor ? { extractPdfText: forceExtractor } : {}),
+      ...(extractor ? { extractPdfText: extractor } : {}),
     });
-    // The sanitized companion (or safe placeholder) markdown — never the original.
-    return { text: artifact.markdown, preparedRelpath: `${item.relpath}.md` };
+    return { text: artifact.markdown, kind: artifact.kind };
   };
 
   const documentExtraction: BackgroundProcessor = {
-    run: (item) => extractDocument(item, pdfTextExtractor),
+    run: async (item): Promise<RawExtraction> => {
+      const { text, kind } = await extractWith(item, pdfTextExtractor);
+      if (kind === "companion") {
+        // Sufficient text recovered → publish the sanitized companion. No OCR.
+        return { text, preparedRelpath: `${item.relpath}.md` };
+      }
+      // Insufficient text (scanned / image-only / no extractor). For a PDF, hand off
+      // to a DEPENDENT OCR item; this item publishes nothing and is kept local.
+      const sourceType = documentSourceTypeOf(item.relpath);
+      if (sourceType === "pdf") {
+        await queue.enqueue({
+          runId: item.runId,
+          contextId: item.contextId,
+          relpath: item.relpath,
+          kind: "ocr",
+          sourceArtifactPath: item.sourceArtifactPath,
+          // The OCR item's idempotency key includes the source seed AND the
+          // extractor-result condition (via processorVersion), so it is DISTINCT from
+          // the extraction item (which also differs by `kind`).
+          sourceContentHash: await sourceSeed(item.sourceArtifactPath, item.relpath),
+          processorVersion: OCR_FALLBACK_PROCESSOR_VERSION,
+          policyHash,
+          priority: item.priority,
+        });
+        throw new KeepLocalError("background-ocr-deferred");
+      }
+      // A non-PDF that could not be extracted (unsupported/malformed Office doc) →
+      // keep local; OCR would not help.
+      throw new KeepLocalError("background-extraction-failed");
+    },
   };
 
   const summarizeLocal: BackgroundProcessor = {
-    run: async (item, signal) => {
+    run: async (item, signal): Promise<RawExtraction> => {
       const provider = providerFactory?.();
-      // Provider vanished between build and run ⇒ keep local; the worker (summarize
-      // path) treats ProviderUnavailableError as kept-local and opens the circuit.
       if (!provider) throw new ProviderUnavailableError("local model provider unavailable");
       const content = await fs.readFile(item.sourceArtifactPath, "utf8");
       const prepared = await runLocalPreparation(content, [...SUMMARIZE_PIPELINE], {
@@ -242,59 +292,63 @@ function buildProcessors(input: RunBackgroundForRunInput): ProcessorMap {
         mode,
         signal,
       });
-      // A provider outage surfaces as an error result (runLocalPreparation never
-      // throws it) — translate to unavailable so the item is kept local, not "failed".
       if (prepared.status === "error") {
         throw new ProviderUnavailableError(prepared.error ?? "local preparation error");
       }
-      // On any other non-approved outcome, return the (unverified) text and let the
-      // publisher's safety gate reject it → keep-local. Never a best-effort publish.
       return { text: prepared.output, preparedRelpath: item.relpath };
     },
   };
 
   const processors: ProcessorMap = { "document-extraction": documentExtraction };
-  // OCR is only wired when an extractor is configured. When it is absent, the worker
-  // finds no processor for the `ocr` kind and keeps the item local (never "failed"):
-  // an unavailable OCR provider must be a safe keep-local, not an error.
-  if (pdfTextExtractor) {
-    processors.ocr = { run: (item) => extractDocument(item, pdfTextExtractor) };
-  }
-  // Likewise summarize-local is only wired when a provider factory is supplied; absent,
-  // the worker keeps each summarize item local and opens the circuit — zero calls.
-  if (providerFactory) {
-    processors["summarize-local"] = summarizeLocal;
-  }
+  // OCR is always wired; when the OCR extractor is absent it throws
+  // ProviderUnavailableError, which the worker records as a kept-local item with the
+  // distinct reason `background-ocr-unavailable`.
+  processors.ocr = {
+    run: async (item): Promise<RawExtraction> => {
+      if (!ocrExtractor) throw new ProviderUnavailableError("OCR extractor unavailable");
+      const { text, kind } = await extractWith(item, ocrExtractor);
+      if (kind !== "companion") throw new KeepLocalError("background-extraction-failed");
+      return { text, preparedRelpath: `${item.relpath}.md` };
+    },
+  };
+  if (providerFactory) processors["summarize-local"] = summarizeLocal;
   return processors;
 }
 
+/** Derive the revision (published-artifact count) + revisionId for the public status. */
+function revisionOf(items: readonly PublicBackgroundItem[]): { revision: number; revisionId: string } {
+  const state = reduceProgressiveContextState({
+    baseContextId: "",
+    basePreparedFiles: [],
+    backgroundItems: items,
+  });
+  return { revision: state.revision, revisionId: state.revisionId };
+}
+
+/** Resolve the managed base that contains the prepared root. */
+function resolveManagedBase(input: { preparedDir: string; managedBase?: string }): string {
+  return path.resolve(input.managedBase ?? path.dirname(path.resolve(input.preparedDir)));
+}
+
 /**
- * Open the run's persistent queue, wire the REAL processors + safety-gated publisher,
- * drain the queue under all reliability bounds, and return a path-safe public summary.
- *
- * The queue state lives under `<preparedDir>/.yuhi/background`. Pre-inspection bytes
- * are staged in a private dir OUTSIDE the agent-visible root (a sibling of
- * `preparedDir`, same filesystem so the publish rename is atomic) and cleaned up
- * afterwards.
+ * Open the run's PRIVATE queue, wire the REAL processors + safety-gated publisher,
+ * drain the queue under all reliability bounds, keep the PUBLIC status current, and
+ * return a path-safe summary. Private state (records, staging, cancel flag) lives
+ * outside the agent-visible root; the agent sees only the public status file.
  */
 export async function runBackgroundForRun(
   input: RunBackgroundForRunInput,
 ): Promise<BackgroundRunSummary> {
-  const { runId, preparedDir, signal, config } = input;
+  const { runId, signal } = input;
   const clock = input.clock ?? systemBackgroundClock;
+  const agentVisibleRoot = path.resolve(input.preparedDir);
+  const managedBase = resolveManagedBase(input);
+  const privateDir = privateBackgroundDir(managedBase, runId);
+  const stagingDir = privateStagingDir(managedBase, runId);
 
-  const agentVisibleRoot = path.resolve(preparedDir);
-  const baseDir = path.join(agentVisibleRoot, ".yuhi", "background");
-  // Staging MUST be outside the agent-visible root (the publisher fails closed if it
-  // is inside). A sibling under the same parent keeps it on the same filesystem so the
-  // publish `rename` stays atomic (no cross-device EXDEV).
-  const stagingDir = path.join(
-    path.dirname(agentVisibleRoot),
-    `.yuhi-bg-staging-${path.basename(agentVisibleRoot)}`,
-  );
-
-  const queue = await BackgroundQueue.open(baseDir, clock);
-  const { normalizer, pseudonymizer, inspector, policy } = buildSafetyPrimitives(config);
+  const queue = await BackgroundQueue.open(privateDir, clock);
+  const cancelStore = new CancelStore(privateDir);
+  const { normalizer, pseudonymizer, inspector, policy } = buildSafetyPrimitives(input.config);
   const publisher = new BackgroundPublisher({
     normalizer,
     pseudonymizer,
@@ -302,11 +356,19 @@ export async function runBackgroundForRun(
     policy,
     targets: { agentVisibleRoot, stagingDir },
   });
+
+  const refreshStatus = async (): Promise<void> => {
+    const items = queue.list(runId);
+    await writePublicStatus(agentVisibleRoot, buildPublicStatus(items, revisionOf(items)));
+  };
+
   const worker = new BackgroundWorker({
     queue,
     clock,
-    processors: buildProcessors(input),
+    processors: buildProcessors(input, queue),
     publisher,
+    cancelStore,
+    onSettled: refreshStatus,
     ...(input.workerConfig ? { config: input.workerConfig } : {}),
   });
 
@@ -340,10 +402,88 @@ export async function runBackgroundForRun(
           break;
       }
     }
-
-    return { completed, failed, keptLocal, pending, callsMade: summary.callsMade };
+    await refreshStatus();
+    return {
+      completed,
+      failed,
+      keptLocal,
+      pending,
+      callsMade: summary.callsMade,
+      revision: revisionOf(summary.results).revision,
+    };
   } finally {
     // Private staging is transient; never leave pre-inspection bytes around.
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** Common inputs for the cancel/retry control-plane APIs. */
+export interface BackgroundControlInput {
+  runId: string;
+  preparedDir: string;
+  managedBase?: string;
+  clock?: BackgroundClock;
+}
+
+/**
+ * Persistently request cancellation so the worker (this process or another) aborts
+ * promptly and any late provider result is discarded. Also updates the item/run
+ * status and refreshes the public status. Pass `itemId` for a single item; omit for
+ * a whole-run cancel.
+ */
+export async function requestBackgroundCancel(
+  input: BackgroundControlInput & { itemId?: string },
+): Promise<void> {
+  const managedBase = resolveManagedBase(input);
+  const privateDir = privateBackgroundDir(managedBase, input.runId);
+  const cancelStore = new CancelStore(privateDir);
+  const queue = await BackgroundQueue.open(privateDir, input.clock ?? systemBackgroundClock);
+  if (input.itemId) {
+    await cancelStore.requestItem(input.itemId);
+    await queue.cancel(input.itemId);
+  } else {
+    await cancelStore.requestRun();
+    for (const item of queue.list(input.runId)) {
+      if (item.status === "pending" || item.status === "processing") {
+        await queue.cancel(item.itemId);
+      }
+    }
+  }
+  const items = queue.list(input.runId);
+  await writePublicStatus(path.resolve(input.preparedDir), buildPublicStatus(items, revisionOf(items)));
+}
+
+/**
+ * Retry a single terminal item, keeping its SAME itemId + idempotency key (no
+ * duplicate). A `completed` item is never retried (returns it unchanged).
+ */
+export async function retryBackgroundItem(
+  input: BackgroundControlInput & { itemId: string },
+): Promise<PublicBackgroundItem | undefined> {
+  const managedBase = resolveManagedBase(input);
+  const privateDir = privateBackgroundDir(managedBase, input.runId);
+  const queue = await BackgroundQueue.open(privateDir, input.clock ?? systemBackgroundClock);
+  const result = await queue.retry(input.itemId);
+  const items = queue.list(input.runId);
+  await writePublicStatus(path.resolve(input.preparedDir), buildPublicStatus(items, revisionOf(items)));
+  return result;
+}
+
+/**
+ * Bulk-retry terminal items, keeping each item's SAME itemId + idempotency key.
+ * `failedOnly: true` restricts to `failed` / `timed-out`; `completed` is never retried.
+ */
+export async function retryBackgroundTerminal(
+  input: BackgroundControlInput & { failedOnly?: boolean },
+): Promise<PublicBackgroundItem[]> {
+  const managedBase = resolveManagedBase(input);
+  const privateDir = privateBackgroundDir(managedBase, input.runId);
+  const queue = await BackgroundQueue.open(privateDir, input.clock ?? systemBackgroundClock);
+  const requeued = await queue.retryTerminal({
+    runId: input.runId,
+    ...(input.failedOnly !== undefined ? { failedOnly: input.failedOnly } : {}),
+  });
+  const items = queue.list(input.runId);
+  await writePublicStatus(path.resolve(input.preparedDir), buildPublicStatus(items, revisionOf(items)));
+  return requeued;
 }
