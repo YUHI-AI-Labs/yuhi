@@ -22,6 +22,7 @@ import {
   resolvePreparedRunReference,
   readPreparedRunSession,
   writePreparedRunSession,
+  runBackgroundForRun,
   createWorkspaceForDir,
   listWorkspaces,
   inspectWorkspace,
@@ -72,6 +73,13 @@ import {
   formatCliPrepareResult,
 } from "./prepare-output.js";
 import { performLaunch } from "./launch.js";
+import {
+  performBackgroundStatus,
+  performBackgroundStart,
+  performBackgroundCancel,
+  performBackgroundRetry,
+  maybeWaitBackground,
+} from "./background.js";
 
 interface Globals {
   json: boolean;
@@ -586,6 +594,7 @@ async function main(): Promise<void> {
     .option("--safety-mode <mode>", "balanced | strict | maximum-privacy (default: balanced)")
     .option("--compress", "opt-in v0.3.3 structure compression of the delivered context", false)
     .option("--token-budget <n>", "best-effort token budget for the delivered context")
+    .option("--wait-background", "opt-in: run deferred background preparation to completion before returning", false)
     .action(
       action(async (cmd) => {
         const { g, dir } = getContext(cmd);
@@ -643,6 +652,22 @@ async function main(): Promise<void> {
           ...(tokenBudget !== null ? { tokenBudget } : {}),
         });
         await writePreparedRunSession(res);
+
+        // Opt-in: wait for deferred background preparation to finish before
+        // returning. Default `yuhi prepare` is unchanged (enqueue only, no wait).
+        await maybeWaitBackground({
+          wait: Boolean(cmd.opts().waitBackground),
+          runId: res.runId,
+          preparedDir: res.outDir,
+          run: ({ runId, preparedDir, signal }) =>
+            runBackgroundForRun({
+              runId,
+              preparedDir,
+              config: loaded.config,
+              providerFactory,
+              ...(signal ? { signal } : {}),
+            }),
+        });
 
         const result = buildCliPrepareResult(res);
         if (g.json) printJson(result);
@@ -927,6 +952,73 @@ async function main(): Promise<void> {
         }),
       );
   }
+
+  // ---- background ----  v0.3.5 Progressive Context control surface
+  const background = program
+    .command("background")
+    .description("Observe and steer deferred background preparation for a prepared run");
+  background
+    .command("status")
+    .description("Show background preparation status from the public status file")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundStatus({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          json: g.json,
+        });
+      }),
+    );
+  background
+    .command("start")
+    .description("Run deferred background preparation to completion (cancellable with Ctrl-C)")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundStart({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          json: g.json,
+        });
+      }),
+    );
+  background
+    .command("cancel")
+    .description("Cancel the whole run, or a single item with --item")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .option("--item <itemId>", "cancel only this item")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundCancel({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          ...(opts.item ? { itemId: String(opts.item) } : {}),
+          json: g.json,
+        });
+      }),
+    );
+  background
+    .command("retry")
+    .description("Re-queue terminal items (never completed ones)")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .option("--item <itemId>", "retry only this item")
+    .option("--failed-only", "restrict a bulk retry to failed / timed-out items", false)
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundRetry({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          ...(opts.item ? { itemId: String(opts.item) } : {}),
+          failedOnly: Boolean(opts.failedOnly),
+          json: g.json,
+        });
+      }),
+    );
 
   await program.parseAsync(mainArgv);
 }
