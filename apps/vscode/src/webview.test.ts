@@ -245,10 +245,12 @@ describe("renderSavingsHtml (product workflow)", () => {
       },
     ];
     const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
-    // New kept-local detail: WHAT was detected, the STATUS, and the concrete REASON.
-    expect(rendered).toContain("Detected");
-    expect(rendered).toContain("Transformation verification failed");
-    expect(rendered).toContain("No verified local PDF inspection is available"); // PDF reason
+    // Kept-local detail states what happened and what follows — never a bare
+    // "Unknown verification failure", which reads to a user as "Yuhi is broken".
+    expect(rendered).toContain("Not verified yet");
+    expect(rendered).toContain("This PDF hasn't been verified yet."); // PDF reason
+    expect(rendered).toContain("Yuhi could not verify this file's contents yet.");
+    expect(rendered).not.toContain("Unknown verification failure");
     expect(rendered).toContain("Some files need attention.");
     // Never leaks a private source filename that the caller did not put in the data.
     expect(rendered).not.toContain("private-report.pdf");
@@ -461,7 +463,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(html).not.toContain("<details open");
   });
 
-  it("presents kept-local files as 'excluded by recommendation' without blocking launch", () => {
+  it("presents kept-local files as 'kept on this computer' without blocking launch", () => {
     const fixture = data();
     fixture.acceptance = {
       ...fixture.acceptance,
@@ -474,7 +476,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("READY");
     expect(rendered).not.toContain("WITH WARNINGS");
     expect(rendered).toContain("Ready for Claude Code");
-    expect(rendered).toContain("Excluded by recommendation");
+    expect(rendered).toContain("Kept on this computer");
     expect(rendered).toContain(">Open with Claude Code</button>"); // launch still allowed
     expect(rendered).not.toContain("LIMITED");
     expect(rendered).not.toContain("Preparation was limited");
@@ -497,7 +499,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("Sensitive values handled");
     expect(rendered).toContain("Runtime configuration preserved");
     expect(rendered).toContain("Credential configuration prepared locally");
-    expect(rendered).toContain("Transformed copies verified");
+    expect(rendered).toContain("Safe copies verified");
     expect(rendered).toContain("Credential values");
     expect(rendered).toContain("Not included in Prepared Workspace");
     expect(rendered).toContain("runtime environment");
@@ -559,7 +561,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("Repository Ready");
     expect(rendered).toContain("Prepared artifacts");
     expect(rendered).toContain("2,165");
-    expect(rendered).toContain("Estimated accessible-content reduction");
+    expect(rendered).toContain("Estimated repository reduction");
     expect(rendered).toContain("agent-accessible content, not model token savings");
     // Copy/export exist and are click-wired to post their id back to the host.
     // Assert the behavioural contract (button id present + referenced by a click

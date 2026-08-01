@@ -91,7 +91,7 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).toContain("YUHI MODE");
     expect(out).toContain("This window is the Prepared Workspace");
     expect(out).toContain("11 files available");
-    expect(out).toContain("1 file excluded by recommendation");
+    expect(out).toContain("1 file kept on this computer");
     expect(out).toContain("1 document processing in the background");
     // Impact metrics are celebrated.
     expect(out).toContain("Yuhi protected your data");
@@ -102,7 +102,7 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).toContain("files transformed");
     expect(out).toContain(">3<"); // the transformed-file count value
     expect(out).toContain("Open Claude Code");
-    expect(out).toContain("Review file decisions");
+    expect(out).toContain("Review files");
     // Blue accent via the charts-blue theme variable.
     expect(out).toContain("var(--vscode-charts-blue");
   });

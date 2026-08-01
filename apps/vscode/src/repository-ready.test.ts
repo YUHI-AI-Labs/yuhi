@@ -49,8 +49,8 @@ describe("renderRepositoryReadyCard", () => {
     expect(out).toContain("128");
     expect(out).toContain("131");
     expect(out).toContain("2,165");
-    // Reduction is labelled as accessible-content, explicitly NOT token savings.
-    expect(out).toContain("Estimated accessible-content reduction");
+    // Reduction is labelled as a repository estimate, explicitly NOT token savings.
+    expect(out).toContain("Estimated repository reduction");
     expect(out).toContain("94%");
     expect(out).toContain("agent-accessible content, not model token savings");
   });

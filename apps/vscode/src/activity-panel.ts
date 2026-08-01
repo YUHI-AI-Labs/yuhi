@@ -264,7 +264,7 @@ function renderRepositoryOptimization(summary: YuhiModeSummary | undefined): str
       stat("—", "blocked (known risk)") +
       stat("—", "compact representations") +
       `</div>` +
-      `<div class="optim-note">Only structure is compressed — implementation bodies are summarized. ` +
+      `<div class="optim-note">Only structure is compressed — implementation details are removed while APIs are preserved. ` +
       `Originals are preserved (never modified). The agent can still read the full original on demand.</div>` +
       `</div>`
     );
@@ -290,7 +290,7 @@ function renderRepositoryOptimization(summary: YuhiModeSummary | undefined): str
     stat(c.blocked.toLocaleString(), "blocked (known risk)") +
     stat(c.compact.toLocaleString(), "compact representations") +
     `</div>` +
-    `<div class="optim-note">Only structure is compressed — implementation bodies are summarized. ` +
+    `<div class="optim-note">Only structure is compressed — implementation details are removed while APIs are preserved. ` +
     `Originals are preserved (never modified). The agent can still read the full original on demand.</div>` +
     `</div>`
   );
@@ -454,7 +454,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           ? line("warn", `${warningFiles} available with warning`)
           : "") +
         (filesExcluded > 0
-          ? line("warn", `${filesExcluded} file${filesExcluded === 1 ? "" : "s"} excluded by recommendation`)
+          ? line("warn", `${filesExcluded} file${filesExcluded === 1 ? "" : "s"} kept on this computer`)
           : "") +
         (pending > 0
           ? line("active", `${pending} document${pending === 1 ? "" : "s"} processing in the background`)
@@ -504,7 +504,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           impact +
           progressive +
           changes +
-          button("details", "Review file decisions") +
+          button("details", "Review files") +
           launch,
       };
     }

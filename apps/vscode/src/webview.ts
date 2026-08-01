@@ -408,9 +408,10 @@ function renderCompressionSection(data: ReviewData): string {
   const c = data.compression;
   if (!c) return "";
   const facts: [string, string][] = [
-    ["Original", compactTokens(c.originalTokens)],
-    ["Prepared", compactTokens(c.preparedTokens)],
-    ["Reduced", `${c.reductionPercent}%`],
+    ["Original size", compactTokens(c.originalTokens)],
+    ["Prepared size", compactTokens(c.preparedTokens)],
+    // Honest, not raw: show the real value, never 15 decimal places of it.
+    ["Reduction", `${c.reductionPercent.toFixed(1)}%`],
     ["Full files", String(c.fullFiles)],
     ["Compressed", String(c.compressedFiles)],
     ["Excluded", String(c.excludedFiles)],
@@ -449,8 +450,8 @@ function renderCompressionSection(data: ReviewData): string {
     `<div class="inside">` +
     `<div class="eyebrow">YUHI · CONTEXT COMPRESSION</div>` +
     `<h2 style="margin:6px 0 4px">Context Compression</h2>` +
-    `<p class="sub">Implementation bodies were dropped from the delivered copies to reduce tokens; ` +
-    `signatures are kept. Source files were never changed.</p>` +
+    `<p class="sub">Implementation details were removed while APIs and structure were preserved. ` +
+    `Source files were never changed.</p>` +
     `<div class="advanced-grid">${rows}</div>` +
     bestEffort +
     compressedList +
@@ -602,10 +603,10 @@ document.getElementById("heroFacts").innerHTML=DATA.outcome==="Partial"
       // Only claim "handled/verified" when the FINAL-artifact gate found no surviving
       // identifier. A single leak makes both claims false — never show them then.
       ...(m.sensitiveValuesMasked>0&&identifierLeaks.length===0?[li("ok","✓","Sensitive values handled")]:[]),
-      ...(transformed>0&&identifierLeaks.length===0?[li("ok","✓","Transformed copies verified")]:[]),
+      ...(transformed>0&&identifierLeaks.length===0?[li("ok","✓","Safe copies verified")]:[]),
       ...(environmentPrepared?[li("ok","✓","Runtime configuration preserved")]:[]),
       // Honest, prominent warning when a delivered file still contains identifiers.
-      ...(identifierLeaks.length?[li("warn","⚠",identifierLeaks.length+" "+(identifierLeaks.length===1?"file":"files")+" could NOT be fully de-identified — delivered with a warning; review before sharing",'<button type="button" class="act" id="showWithheld">Review file decisions ›</button>')]:[]),
+      ...(identifierLeaks.length?[li("warn","⚠",identifierLeaks.length+" "+(identifierLeaks.length===1?"file":"files")+" could NOT be fully de-identified — delivered with a warning; review before sharing",'<button type="button" class="act" id="showWithheld">Review files ›</button>')]:[]),
       // Background work — progress, not a warning.
       ...(backgroundPending>0?[li("run",'<span class="spin">◐</span>',"Background work · "+backgroundPending+" document"+(backgroundPending===1?"":"s")+" being inspected")]:[]),
       // Included unchanged — binaries / unsupported / non-sensitive files passed
@@ -613,15 +614,15 @@ document.getElementById("heroFacts").innerHTML=DATA.outcome==="Partial"
       ...(benignUnverified.length?[li("muted","•","Included unchanged · "+benignUnverified.length+" binary or unsupported "+(benignUnverified.length===1?"file":"files"))]:[]),
       // Excluded by recommendation — kept on this computer for safety. Informational,
       // NOT a blocker: launch proceeds; the user may include them from the review list.
-       ...(withheld>0?[li("warn","⚠",withheld+" "+(withheld===1?"file":"files")+" excluded by recommendation",'<button type="button" class="act" id="showWithheld">Review file decisions ›</button>')]:[]),
+       ...(withheld>0?[li("warn","⚠",withheld+" "+(withheld===1?"file":"files")+" kept on this computer",'<button type="button" class="act" id="showWithheld">Review files ›</button>')]:[]),
     ].join("");
 // The one line that answers "can I open Claude Code now?".
 const reassure=document.getElementById("reassure");
 if(DATA.outcome!=="Partial"){
   reassure.hidden=false;
-  reassure.innerHTML='<span class="ic" aria-hidden="true">✓</span><span><b>Safe to start now.</b> '+(backgroundPending>0?"Document inspection keeps running in the background after Claude Code opens — you do not need to wait.":"Nothing is sent anywhere; Claude Code opens in the local Prepared Workspace.")+'</span>';
+  reassure.innerHTML='<span class="ic" aria-hidden="true">✓</span><span><b>Safe to start now.</b> '+(backgroundPending>0?"Document inspection keeps running in the background after Claude Code opens — you do not need to wait.":"Nothing has been shared yet; Claude Code opens in the local Prepared Workspace.")+'</span>';
 }
-document.getElementById("localNote").textContent=DATA.outcome==="Partial"||DATA.outcome==="Failed"?"Review the items that need attention to continue.":identifierLeaks.length?identifierLeaks.length+" "+(identifierLeaks.length===1?"file":"files")+" could not be fully de-identified and "+(identifierLeaks.length===1?"is":"are")+" delivered with a warning — open the review list and check before sharing.":withheld>0?"Claude Code can start now. "+withheld+" "+(withheld===1?"file was":"files were")+" excluded by recommendation — include from the review list if the task needs "+(withheld===1?"it":"them")+".":benignUnverified.length?"Binary and unsupported files are included unchanged; nothing sensitive was detected in them.":"Your workspace is ready.";
+document.getElementById("localNote").textContent=DATA.outcome==="Partial"||DATA.outcome==="Failed"?"Review the items that need attention to continue.":identifierLeaks.length?identifierLeaks.length+" "+(identifierLeaks.length===1?"file":"files")+" could not be fully de-identified and "+(identifierLeaks.length===1?"is":"are")+" delivered with a warning — open the review list and check before sharing.":withheld>0?"Claude Code can start now. "+withheld+" "+(withheld===1?"file was":"files were")+" kept on this computer — include from the review list if the task needs "+(withheld===1?"it":"them")+".":benignUnverified.length?"Binary and unsupported files are included unchanged; nothing sensitive was detected in them.":"Your workspace is ready.";
 document.getElementById("receiveTitle").textContent="Claude Code will receive "+included+" project "+(included===1?"file":"files");
 document.getElementById("projectCount").textContent="· "+included;
 const fileList=items=>items.length?items.map(p=>'<li title="'+esc(p)+'"><span class="file-icon">□</span><code>'+esc(p)+'</code></li>').join(""):'<li class="note">None</li>';
@@ -641,7 +642,11 @@ document.getElementById("workSummary").innerHTML=facts([
   ["Files staying on this computer",String(withheld)],
   ["Original files modified","0"],
 ]);
-const restricted=DATA.files.filter(f=>f.sensitivity==="Restricted"),limited=DATA.files.filter(f=>f.limitationShown),box=document.getElementById("privacyDecision");
+// A limitation is NOT the same as an exclusion: Balanced/Strict deliver an
+// uninspectable original WITH a warning, and those files carry a limitation too.
+// Split them, or the panel claims "Claude receives: Nothing" for files the agent
+// can actually read in full.
+const restricted=DATA.files.filter(f=>f.sensitivity==="Restricted"),limited=DATA.files.filter(f=>f.limitationShown&&f.omitted),limitedButDelivered=DATA.files.filter(f=>f.limitationShown&&!f.omitted),box=document.getElementById("privacyDecision");
 const pdfInspected=a.pdfInspected??0,ocrProcessed=a.ocrProcessed??0,unverifiedDocuments=a.unverifiedDocuments??0;
 const summariesCreated=a.documentSummariesCreated??0,summariesRejected=a.documentSummariesRejected??0,documentBefore=a.documentContextBeforeTokens??0,documentAfter=a.documentContextAfterTokens??0,textDocuments=a.textDocumentsInspected??0,handoffCreated=a.agentHandoffCreated??false;
 const documentReduction=documentBefore>0?Math.max(0,Math.round((documentBefore-documentAfter)/documentBefore*1000)/10):0;
@@ -667,14 +672,25 @@ const environmentFiles=DATA.files.filter(f=>[
 ].includes(f.rule));
 // Bug 3: say WHAT was detected (in plain terms), from the finding categories.
 const DETECTED_LABELS={"direct-identifier-column":"Direct identifiers (names / IDs)","education-performance":"Grades / performance","health":"Health data","salary":"Salary","disciplinary":"Disciplinary records","email":"Email addresses","phone":"Phone numbers","student-id":"Student IDs","employee-id":"Employee IDs","national-id":"National IDs","bank-account":"Bank accounts","credential":"Credentials","access-token":"Access tokens","private-key":"Private keys","malformed-sensitive-table":"Sensitive tabular data"};
-const detectedLabels=f=>{const keys=Object.keys(f.findingCategoryCounts||{});const labels=[...new Set(keys.map(k=>DETECTED_LABELS[k]||k))];return labels.length?labels.join(", "):"Sensitive data";};
+const detectedLabels=f=>{const keys=Object.keys(f.findingCategoryCounts||{});const labels=[...new Set(keys.map(k=>DETECTED_LABELS[k]||k))];return labels.length?labels.join(", "):"";};
+// OS junk and archives are not failures. A generic "we could not verify" line on a
+// .DS_Store reads as "Yuhi is broken" — name what happened and what follows instead.
+const baseName=f=>String(f.path||"").split("/").pop();
+const isSystemMetadata=f=>[".DS_Store","Thumbs.db","desktop.ini",".localized"].includes(baseName(f))||String(f.path||"").split("/").includes("__MACOSX");
+const isArchive=f=>/\\.(zip|tar|tgz|gz|bz2|xz|7z|rar|jar)$/i.test(String(f.path||""));
 // Bug 4: expose the concrete verification-failure reason for a kept-local file.
-const failureReasonText=f=>{switch(f.failureCategory){case "conflicting-identifiers":return "Identifier mapping conflict — two rows' identifiers pointed to different people";case "reidentification-risk":return "Verification mismatch — the transformed output did not pass Yuhi's exact-output privacy rescan";case "structural":return "Unsupported table/spreadsheet structure — Yuhi could not parse it safely (e.g. merged cells, formulas)";case "unresolved-secret":return "Unresolved credential detected in the file";default:return f.fileType==="PDF"?"No verified local PDF inspection is available":"Unknown verification failure";}};
-const limitationDetails=()=>limited.map(f=>"<p><b>"+esc(f.path)+"</b></p>"+facts([["Type",typeLabel(f.fileType)],["Detected",detectedLabels(f)],["Status","Transformation verification failed"],["Reason",failureReasonText(f)],["Claude receives","Nothing"]])).join("");
+const failureReasonText=f=>{if(isSystemMetadata(f))return "Operating-system metadata — not part of your repository content.";if(isArchive(f))return "Archive inspection is not supported yet.";switch(f.failureCategory){case "conflicting-identifiers":return "Identifier mapping conflict — two rows' identifiers pointed to different people";case "reidentification-risk":return "Verification mismatch — the transformed output did not pass Yuhi's exact-output privacy rescan";case "structural":return "Unsupported table/spreadsheet structure — Yuhi could not parse it safely (e.g. merged cells, formulas)";case "unresolved-secret":return "Unresolved credential detected in the file";default:return f.fileType==="PDF"?"This PDF hasn't been verified yet. Yuhi will inspect it in the background.":"Yuhi could not verify this file's contents yet.";}};
+const limitationStatus=f=>isSystemMetadata(f)?"Ignored system file":isArchive(f)?"Not inspected":f.failureCategory?"Transformation verification failed":f.fileType==="PDF"?"Not verified yet":"Not verified";
+const fileFacts=(f,status,receives)=>{const detected=detectedLabels(f);return "<p><b>"+esc(f.path)+"</b></p>"+facts([["Type",typeLabel(f.fileType)]].concat(detected?[["Detected",detected]]:[]).concat([["Status",status],["Reason",failureReasonText(f)],["Claude receives",receives]]))};
+const limitationDetails=()=>limited.map(f=>fileFacts(f,limitationStatus(f),"Nothing")).join("");
+// Delivered, but not verified. The agent CAN read these — never say "Nothing".
+const deliveredWithWarningDetails=()=>limitedButDelivered.map(f=>fileFacts(f,limitationStatus(f),"Original file (not verified yet)")).join("");
+const withWarningSection=()=>limitedButDelivered.length?"<p><b>Available with a warning · "+limitedButDelivered.length+" "+(limitedButDelivered.length===1?"file":"files")+"</b></p><p>Yuhi could not verify "+(limitedButDelivered.length===1?"this file":"these files")+" yet, so "+(limitedButDelivered.length===1?"it is":"they are")+" delivered as-is with a warning. Claude Code can read "+(limitedButDelivered.length===1?"it":"them")+" now; inspection continues in the background.</p><details><summary>Which "+(limitedButDelivered.length===1?"file":"files")+"</summary>"+deliveredWithWarningDetails()+"</details>":"";
 const unverifiedDetails=()=>unverifiedIncluded.map(f=>"<p><b>"+esc(f.path)+"</b></p>"+facts([["Type",typeLabel(f.fileType)],["Status",warnStatus(f)],["Claude receives","Original file"],["Action","Included with warning"]])).join("");
 if(DATA.outcome==="Partial"){box.hidden=false;box.innerHTML="<p><b>Some files need attention.</b></p><p>Yuhi kept them on this computer. Continue with the files that are ready, or open details to learn more.</p><details><summary>Technical reason</summary>"+facts([["Malformed tables",String(a.malformedTables)],["Unverified transformations",String(a.unverifiedTransformations)],["Files requiring attention",String((a.unsupportedOrUnverifiedFiles??0)+(a.restrictedUnresolvedFiles??0))],["Raw fallback used","No"]])+limitationDetails()+"</details>"}
-else if(withheld>0){box.hidden=false;box.innerHTML="<p><b>Excluded by recommendation · "+withheld+" "+(withheld===1?"file":"files")+"</b></p><p>Yuhi recommends keeping "+(withheld===1?"this file":"these files")+" on this computer because it could not verifiably de-identify "+(withheld===1?"it":"them")+". This does not block launch — Claude Code starts with everything else. You can include "+(withheld===1?"it":"any of them")+" from the list below.</p>"+facts([["Files excluded by recommendation",String(withheld)],["Claude receives","Nothing from these files"]])+"<details><summary>Why "+(withheld===1?"is this file":"are these files")+" excluded?</summary>"+limitationDetails()+"</details>"}
+else if(withheld>0){box.hidden=false;box.innerHTML="<p><b>Kept on this computer · "+withheld+" "+(withheld===1?"file":"files")+"</b></p><p>Yuhi kept "+(withheld===1?"this file":"these files")+" on this computer. This does not block launch — Claude Code starts with everything else. You can include "+(withheld===1?"it":"any of them")+" from the list below.</p>"+facts([["Files kept on this computer",String(withheld)],["Claude receives","Nothing from these files"]])+"<details><summary>Why "+(withheld===1?"is this file":"are these files")+" kept back?</summary>"+limitationDetails()+"</details>"+withWarningSection()}
 else if(unverifiedIncluded.length){box.hidden=false;box.innerHTML="<p><b>Included unchanged · "+unverifiedIncluded.length+" binary or unsupported "+(unverifiedIncluded.length===1?"file":"files")+"</b></p><p>No action needed. Yuhi found nothing sensitive to transform in "+(unverifiedIncluded.length===1?"this file":"these files")+", so "+(unverifiedIncluded.length===1?"it was":"they were")+" passed to Claude Code unchanged.</p>"+facts([["Prepared files",String(included)],["Transformed copies",String(transformed)],["Credential values kept out",environmentPrepared?"Yes":"None detected"],["Included unchanged",String(unverifiedIncluded.length)]])+"<details><summary>Which files</summary>"+unverifiedDetails()+"</details>"}
+else if(limitedButDelivered.length){box.hidden=false;box.innerHTML=withWarningSection()}
 else if(environmentFiles.length){box.hidden=false;box.innerHTML="<p><b>Credential configuration prepared locally</b></p><p>The Prepared Workspace does not contain the original credential values. An agent may still read credentials from its runtime environment if the user or runtime provides them.</p>"+facts([["Credential values","Not included in Prepared Workspace"],["Non-sensitive configuration","Included"],["Prepared copy","Created"],["Post-transformation scan","Passed"]])}
 else if(restricted.length){box.hidden=false;box.innerHTML="<p><b>Restricted tabular data transformed locally</b></p>"+facts([["Entities pseudonymized",String(a.entitiesPseudonymized)],["Identifier columns transformed",String(a.identifierColumnsTransformed)],["Analytical columns preserved",String(a.analyticalColumnsPreserved)],["Post-transformation scan",a.postTransformScanPassed?"Passed":"Failed"],["Raw fallback used","No"],["Original source modified","No"],["Claude receives","Verified transformed copy"]])}
 document.getElementById("runtimeFacts").innerHTML=facts([["Starts in","Prepared Workspace"],["Workspace boundary",DATA.runtime.workspaceBoundary==="enforced"?"Enforced":"Advisory"],["Filesystem enforcement",DATA.runtime.filesystemEnforcement==="claude-code-sandbox"?"Claude Code sandbox":"Not enabled"],["OS sandbox",DATA.runtime.osSandboxEnabled?"Enabled":"Not enabled"],["External-path access",DATA.runtime.externalPathAccessPossible?"May still be possible":"Blocked by policy"]]);

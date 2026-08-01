@@ -1,5 +1,6 @@
 import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { isSafelyYuhiManaged, writeWorkspaceMarker } from "./workspace-marker.js";
 import { PDF_INSPECTION_LIMIT_BYTES, OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES, type DocumentSourceType } from "./document-artifact.js";
@@ -33,6 +34,7 @@ import {
   type StudentAliasContext,
   YUHI_VERSION,
 } from "@yuhi/shared";
+import { isArchivePath, zipEncryptionFromHeader } from "@yuhi/shared";
 import { computeContextId, type ContextIdSourceFile } from "./context-id.js";
 import { runDetectors, redactText } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
@@ -249,6 +251,8 @@ function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext 
         new Map(identifiers),
       ]),
     ),
+    columnTokens: new Map(context.columnTokens),
+    columnTokenCounts: new Map(context.columnTokenCounts),
     nextEntity: context.nextEntity,
     attributeTokens: new Map(context.attributeTokens),
   };
@@ -278,6 +282,10 @@ export interface PreparedFileEntry {
     | "excluded-by-user"
     | "excluded-by-policy"
     | "local-only-unverified"
+    // v0.3.6: the original carries a KNOWN sensitive finding (not merely "not yet
+    // inspected"), so it never leaves the machine in any Safety Mode; only a
+    // verified companion may reach the agent.
+    | "local-only-known-risk"
     | "local-only-unsupported"
     | "local-only-transformation-failed"
     | "blocked-high-risk"
@@ -1086,6 +1094,8 @@ function findingCategory(detector: string): string {
   if (id.includes("bank") || id.includes("iban")) return "bank-account";
   if (id.includes("national") || id.includes("ssn")) return "national-id";
   if (id.includes("private-key")) return "private-key";
+  // An entropy hit is an unclassified credential, not a benign string.
+  if (id.includes("entropy")) return "credential";
   if (id.includes("token")) return "access-token";
   if (id.includes("key") || id.includes("secret") || id.includes("entropy")) return "credential";
   return id || "custom";
@@ -1571,8 +1581,16 @@ export async function prepareWorkspace(
       const before = tokenEstimate(String(info.size));
       beforeTokens += before.tokens;
       approx = true;
+      // "Not yet inspected" and "known to contain sensitive data" are DIFFERENT
+      // states and must not share one policy. Available-with-warning exists for
+      // the former only: a document the scanner already flagged is kept local in
+      // every mode, and the agent receives its verified companion instead.
+      const knownSensitiveFinding = decision.findings.some(
+        (finding) => finding.severity !== "low",
+      );
       const shareWithWarning =
-        safetyMode !== "maximum-privacy" || explicitlyIncludedWithWarning;
+        !knownSensitiveFinding &&
+        (safetyMode !== "maximum-privacy" || explicitlyIncludedWithWarning);
       if (shareWithWarning) {
         await copyMirrored(outDir, relpath, info.absPath);
         provenance.push({ relpath, source: relpath, action: "allow" });
@@ -1583,7 +1601,11 @@ export async function prepareWorkspace(
         originalRelpath: relpath,
         action: shareWithWarning ? "allow" : "prepare-locally",
         status: shareWithWarning ? "ok" : "skipped",
-        outcome: shareWithWarning ? "included-unverified" : "local-only-unverified",
+        outcome: shareWithWarning
+          ? "included-unverified"
+          : knownSensitiveFinding
+            ? "local-only-known-risk"
+            : "local-only-unverified",
         transmission: shareWithWarning ? "approved" : "blocked",
         beforeChars: info.size,
         afterChars: shareWithWarning ? info.size : 0,
@@ -1595,7 +1617,7 @@ export async function prepareWorkspace(
         backgroundStatus: "pending",
         originalShared: shareWithWarning,
         warningCode: "inspection-pending",
-        knownFindingsPresent: false,
+        knownFindingsPresent: knownSensitiveFinding,
         document: {
           sourceType: docType,
           sourceSize: info.size,
@@ -1633,7 +1655,9 @@ export async function prepareWorkspace(
       progress(
         shareWithWarning
           ? `Document ${relpath}: included with an inspection-pending warning; verified companion queued in background.`
-          : `Document ${relpath}: original kept local; safe companion queued in background.`,
+          : knownSensitiveFinding
+            ? `Document ${relpath}: known sensitive finding — original kept local in every mode; verified companion queued in background.`
+            : `Document ${relpath}: original kept local; safe companion queued in background.`,
       );
       decisionsProcessed += 1;
       if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
@@ -1713,6 +1737,57 @@ export async function prepareWorkspace(
       continue;
     }
 
+    // ===== ARCHIVE ROUTING =====
+    // An archive is opaque to every scanner Yuhi has. Delivering the original
+    // "with an inspection-pending warning" would hand the agent bytes that were
+    // never de-identified and — when encrypted — never CAN be. Archives therefore
+    // never reach the Prepared Workspace, and their entry names are never read,
+    // so no archive-internal identifier can reach a public surface.
+    if (info && !info.flags.isSymlink && isArchivePath(relpath)) {
+      let encryption: ReturnType<typeof zipEncryptionFromHeader> = "unknown";
+      try {
+        const handle = await open(info.absPath, "r");
+        try {
+          const head = Buffer.alloc(8);
+          const { bytesRead } = await handle.read(head, 0, 8, 0);
+          encryption = zipEncryptionFromHeader(head.subarray(0, bytesRead));
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        encryption = "unknown";
+      }
+      const reasonCode = encryption === "encrypted"
+        ? "encrypted-archive-uninspectable"
+        : "archive-uninspectable";
+      filesExcluded += 1;
+      unsupportedOrUnverifiedFiles += 1;
+      beforeTokens += tokenEstimate(String(info.size)).tokens;
+      approx = true;
+      files.push({
+        relpath,
+        action: "local-only",
+        status: "skipped",
+        outcome: "local-only-known-risk",
+        transmission: "blocked",
+        beforeChars: info.size,
+        afterChars: 0,
+        transformed: false,
+        omitted: true,
+        limitation: "inspection-unavailable",
+        availabilityStatus: "excluded-known-risk",
+        inspectionStatus: "not-applicable",
+        backgroundStatus: "none",
+        originalShared: false,
+        knownFindingsPresent: decision.findings.length > 0,
+        error: reasonCode,
+      });
+      progress(`Archive ${relpath}: ${reasonCode} — kept on this computer; contents never inspected.`);
+      decisionsProcessed += 1;
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+      continue;
+    }
+
     const unverifiedInspection = !!info && !info.inspection.contentVerified;
     const unsupportedInspection = unverifiedInspection && !info.inspection.parserAvailable;
     const unsupportedHighRisk = unverifiedInspection && decision.findings.some(
@@ -1729,6 +1804,7 @@ export async function prepareWorkspace(
       unverifiedInspection &&
       decision.action === "local-only" &&
       !unsupportedHighRisk &&
+      !isArchivePath(relpath) &&
       path.basename(relpath) !== ".DS_Store" &&
       !/(?:credential|private-key|secret-director)/i.test(decision.ruleName) &&
       !decision.findings.some((finding) => finding.severity === "high" || finding.severity === "critical");
@@ -2027,7 +2103,7 @@ export async function prepareWorkspace(
         decision.processors && decision.processors.length > 0
           ? decision.processors
           : isRedactTarget(decision)
-            ? (["pseudonymize", "safety-check"] satisfies ProcessorSpec[])
+            ? (["redact-secrets", "pseudonymize", "safety-check"] satisfies ProcessorSpec[])
             : PREPARE_PIPELINE;
       // Phase 1 (the fast blocking phase that gates Yuhi Mode) MUST NOT invoke the
       // local model. Ollama summarization is optional Phase-3 enrichment, so drop
@@ -2216,7 +2292,10 @@ export async function prepareWorkspace(
         const survivingCredential = transformedFindings.some(
           (finding) =>
             !finding.detector.startsWith("tabular-") &&
-            (finding.severity === "high" || finding.severity === "critical") &&
+            // A high-entropy string on a secret-like assignment is reported at
+            // `medium` — that is exactly the shape of an unredacted AWS secret
+            // access key, so a residual one must keep the file local.
+            finding.severity !== "low" &&
             findingCategory(finding.detector) === "credential",
         );
         // Always visible: log every stage PASS/FAIL for this file.

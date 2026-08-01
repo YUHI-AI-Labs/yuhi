@@ -87,7 +87,7 @@ function terminal(r: PreparationReport): string {
   for (const [k, v] of rs) lines.push(`  ${k.padEnd(labelW)}  ${group(v).padStart(valW)}`);
   lines.push(
     "",
-    `  Estimated accessible-content reduction: ${r.estimatedReductionPercent}%`,
+    `  Estimated repository reduction: ${r.estimatedReductionPercent}%`,
     `  Safety Mode: ${safetyModeLabel(r.safetyMode)}`,
     "",
     footer(r),
@@ -124,7 +124,7 @@ function markdown(r: PreparationReport): string {
     "| Metric | Value |",
     "| --- | ---: |",
     ...rows(r).map(([k, v]) => `| ${k} | ${group(v)} |`),
-    `| **Estimated accessible-content reduction** | **${r.estimatedReductionPercent}%** |`,
+    `| **Estimated repository reduction** | **${r.estimatedReductionPercent}%** |`,
     `| Safety Mode | ${safetyModeLabel(r.safetyMode)} |`,
     ...contextRows,
     "",
