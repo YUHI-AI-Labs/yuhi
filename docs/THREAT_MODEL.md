@@ -56,7 +56,8 @@ them (e.g. letting a file-level finding block the launch) is a defect, not a saf
 - **Explicit-override boundary (user-initiated).** The user may deliberately include an excluded
   file after a one-time risk confirmation. An override is **not** described as safe, sandboxed, or
   confined — it is an informed choice to expose that file's original content to the agent. (The
-  override UI is a planned addition; until it ships, an excluded file is never silently sent.)
+  Review UI supports per-file and per-type warning inclusion/local-only decisions. Known
+  credentials, private keys, and explicit policy blocks still win over warning inclusion.)
 
 ## Threats & mitigations
 

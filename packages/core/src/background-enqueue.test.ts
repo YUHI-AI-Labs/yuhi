@@ -174,16 +174,18 @@ describe("v0.3.5 foreground → background queue registration", () => {
       deferDocumentInspection: true,
     });
 
-    // No companion or original delivered in the foreground; heavy extraction did not run.
+    // Balanced exposes the useful original with a warning; heavy extraction did not run.
     expect(existsSync(path.join(report.outDir, "docs", "report.pdf.md"))).toBe(false);
-    expect(existsSync(path.join(report.outDir, "docs", "report.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "docs", "report.pdf"))).toBe(true);
 
     const entry = report.files.find((f) => (f.originalRelpath ?? f.relpath) === "docs/report.pdf");
     expect(entry?.outcome).toBe("background-processing-pending");
-    expect(entry?.omitted).toBe(true);
+    expect(entry?.omitted).toBe(false);
+    expect(entry?.availabilityStatus).toBe("available-with-warning");
     expect(entry?.document?.sourceType).toBe("pdf");
     expect(entry?.document?.extractionStatus).toBe("pending");
-    expect(entry?.document?.originalSharedWithAgent).toBe(false);
+    expect(entry?.document?.originalSharedWithAgent).toBe(true);
+    expect(report.publicSummary?.availableWithWarningFiles).toBe(1);
     expect(report.publicSummary?.backgroundPendingFiles).toBe(1);
     expect(report.publicSummary?.excludedForSafetyFiles).toBe(0);
     expect(
@@ -214,8 +216,8 @@ describe("v0.3.5 foreground → background queue registration", () => {
     expect(summary.completed).toBe(1);
     const companion = path.join(report.outDir, "docs", "report.pdf.md");
     expect(existsSync(companion)).toBe(true);
-    // The ORIGINAL PDF is still never shared into the prepared workspace.
-    expect(existsSync(path.join(report.outDir, "docs", "report.pdf"))).toBe(false);
+    // Balanced keeps the warning-marked original available while adding the companion.
+    expect(existsSync(path.join(report.outDir, "docs", "report.pdf"))).toBe(true);
   });
 });
 

@@ -24,6 +24,7 @@ function mkStatus(items: Item[], revision = 0): PublicBackgroundStatus {
     completed: 0,
     failed: 0,
     keptLocal: 0,
+    companionUnavailable: 0,
     cancelled: 0,
   };
   for (const it of items) {
@@ -87,7 +88,11 @@ describe("Progressive Context — phase derivation", () => {
     expect(vm).toMatchObject({
       phase: "processing",
       contextFilesReady: 11,
-      pending: 3, // processing(1) + pending(2) — the three unfinished items
+      // Corrected policy: no double-counting — one SOURCE contributes once even when it
+      // has several pipeline records. b.pdf (extraction processing + ocr pending) collapses
+      // to a single unfinished source, so the unfinished sources are b.pdf + notes.md = 2
+      // (a.pdf is completed).
+      pending: 2,
       safeArtifactsAdded: 1,
       secretsExposed: 0,
     });

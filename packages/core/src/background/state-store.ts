@@ -216,6 +216,7 @@ export class BackgroundStateStore {
         sourceArtifactPath: input.sourceArtifactPath,
         priority: input.priority ?? 0,
         createdAt: input.createdAt ?? this.clock.now(),
+        ...(input.originalSharedWithWarning ? { originalSharedWithWarning: true } : {}),
       },
       idempotencyKey: key,
       idempotency: inputs,
@@ -274,6 +275,7 @@ export class BackgroundStateStore {
       status: record.status,
       reasonCode: record.reasonCode ?? defaultReasonForStatus(record.status),
       preparedRelpath: record.preparedRelpath,
+      ...(record.item.originalSharedWithWarning ? { originalSharedWithWarning: true } : {}),
     };
   }
 

@@ -16,8 +16,8 @@
  *    never leave that private dir.
  *  - The agent reads ONLY `<preparedDir>/.yuhi/background-status.json` (counts +
  *    path-safe per-item fields + revision) — never the private state.
- *  - The ORIGINAL document/source is NEVER copied into the agent-visible workspace;
- *    only the sanitized, safety-verified companion is ever published.
+ *  - Background publication adds only sanitized, safety-verified companions. Whether
+ *    Balanced exposed an original with a warning is recorded separately by the queue.
  *  - document-extraction → OCR is a DEPENDENT fallback: OCR runs only when text
  *    extraction recovered too little; a successful extraction never triggers OCR, and
  *    the two never double-publish the same artifact.
@@ -37,6 +37,9 @@ import { resolvePolicy } from "@yuhi/policy";
 
 import { buildDocumentArtifact, type DocumentSourceType, type PdfTextExtractor } from "../document-artifact.js";
 import { runLocalPreparation } from "../route-executor.js";
+import type { PreparedFileEntry } from "../prepare-workspace.js";
+import type { PublicPreparedContextSummary } from "../public-prepared-summary.js";
+import { buildYuhiModeSummary, renderYuhiModeHandoff } from "../yuhi-mode-summary.js";
 import { BackgroundQueue } from "./queue.js";
 import {
   BackgroundPublisher,
@@ -273,6 +276,7 @@ function buildProcessors(input: RunBackgroundForRunInput, queue: BackgroundQueue
           processorVersion: OCR_FALLBACK_PROCESSOR_VERSION,
           policyHash,
           priority: item.priority,
+          originalSharedWithWarning: item.originalSharedWithWarning,
         });
         throw new KeepLocalError("background-ocr-deferred");
       }
@@ -364,7 +368,60 @@ export async function runBackgroundForRun(
 
   const refreshStatus = async (): Promise<void> => {
     const items = queue.list(runId);
-    await writePublicStatus(agentVisibleRoot, buildPublicStatus(items, revisionOf(items)));
+    const status = buildPublicStatus(items, revisionOf(items));
+    await writePublicStatus(agentVisibleRoot, status);
+    const handoffPath = path.join(agentVisibleRoot, ".yuhi", "context", "AGENT_HANDOFF.md");
+    try {
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(agentVisibleRoot, "manifest.json"), "utf8"),
+      ) as {
+        files?: PreparedFileEntry[];
+        publicSummary?: PublicPreparedContextSummary;
+        launchAllowed?: boolean;
+        yuhiModeSummary?: { contextEfficiency?: { compressionMode?: "off" | "auto" | "on"; initialAgentContextTokens?: number | null } };
+      };
+      if (!manifest.files || !manifest.publicSummary) return;
+      const mode = buildYuhiModeSummary({
+        files: manifest.files,
+        prepared: manifest.publicSummary,
+        background: status,
+        launchAllowed: manifest.launchAllowed !== false,
+        compressionMode: manifest.yuhiModeSummary?.contextEfficiency?.compressionMode ??
+          (manifest.publicSummary.compressionEnabled ? "auto" : "off"),
+        initialAgentContextTokens:
+          manifest.yuhiModeSummary?.contextEfficiency?.initialAgentContextTokens ?? null,
+      });
+      const index = [
+        "# Yuhi Document Context",
+        "",
+        "Generated locally by Yuhi. Extracted document text is not stored.",
+        "",
+        `Context revision: ${status.revision}`,
+        "",
+        "## Verified companions",
+        "",
+        ...status.items
+          .filter((item) => item.status === "completed" && item.preparedRelpath)
+          .map((item) => `- ${item.preparedRelpath}`),
+        ...(status.counts.completed === 0 ? ["- None created yet"] : []),
+        "",
+        "Original documents marked inspection-pending remain available with warnings.",
+        "",
+      ].join("\n");
+      const writes = [
+        [handoffPath, renderYuhiModeHandoff(mode)],
+        [path.join(agentVisibleRoot, ".yuhi", "context", "document-index.md"), index],
+        [path.join(agentVisibleRoot, ".yuhi", "yuhi-mode-summary.json"), JSON.stringify(mode, null, 2) + "\n"],
+      ] as const;
+      for (const [target, content] of writes) {
+        const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(tmp, content, "utf8");
+        await fs.rename(tmp, target);
+      }
+    } catch {
+      // Older/minimal runs without a handoff remain processable.
+    }
   };
 
   const worker = new BackgroundWorker({

@@ -17,6 +17,7 @@ import {
   renderProgressiveContext,
   type ProgressiveContextViewModel,
 } from "./progressive-context.js";
+import type { YuhiModeSummary } from "@yuhi/core";
 
 /** Lifecycle of the background document job, shown verbatim while it runs. */
 export type BackgroundLifecycle = "queued" | "inspecting" | "summarizing" | "verifying";
@@ -33,8 +34,10 @@ export type SafetyModeValue = "balanced" | "strict" | "maximum-privacy";
  */
 export interface PrepareSettings {
   safetyMode: SafetyModeValue;
-  compress: boolean;
+  compressionMode: "off" | "auto" | "on";
   tokenBudget: number;
+  permissionMode: "standard" | "plan" | "acceptEdits" | "auto" | "custom";
+  sandboxPreset: "standard" | "guarded" | "locked-down";
 }
 
 export type ActivityPanelData =
@@ -45,6 +48,9 @@ export type ActivityPanelData =
       phase: "yuhi-mode";
       filesAvailable: number;
       filesExcluded: number;
+      verifiedFiles?: number;
+      warningFiles?: number;
+      processingFailedFiles?: number;
       /** Documents still being inspected in the background (progress, not a warning). */
       documentsPending?: number;
       /** Whether the Claude Code VS Code extension is installed in this window. */
@@ -73,6 +79,7 @@ export type ActivityPanelData =
        */
       progressive?: ProgressiveContextViewModel;
       agentChangesDetected?: boolean;
+      yuhiModeSummary?: YuhiModeSummary;
     }
   | {
       phase: "preparing";
@@ -109,6 +116,10 @@ export type ActivityPanelData =
       contextIndex: boolean;
       /** Physical existence of .yuhi/context/AGENT_HANDOFF.md. */
       agentHandoff: boolean;
+      verifiedFiles?: number;
+      warningFiles?: number;
+      backgroundPendingFiles?: number;
+      processingFailedFiles?: number;
       reductionPercent?: number;
       estimatedTokensBefore?: number;
       estimatedTokensAfter?: number;
@@ -119,11 +130,15 @@ export type ActivityPanelData =
       };
       /** Background enrichment still running (Start allowed; badge shows activity). */
       backgroundActive?: boolean;
+      /** Impact metrics (sensitive values kept out of prepared copies, local transforms). */
+      maskedValues?: number;
+      filesTransformed?: number;
       /** v0.3.4 agent picker — replaces the single Start button when present. */
       picker?: AgentPickerData;
       /** v0.3.5 Progressive Context — honest background-processing surface. */
       progressive?: ProgressiveContextViewModel;
       agentChangesDetected?: boolean;
+      yuhiModeSummary?: YuhiModeSummary;
     };
 
 /** Message the webview posts back when a button is activated. */
@@ -176,6 +191,20 @@ function renderBudgetCard(
   );
 }
 
+function renderYuhiModeSummary(summary: YuhiModeSummary | undefined): string {
+  if (!summary) return "";
+  const a = summary.contextAvailability;
+  const e = summary.contextEfficiency;
+  const b = summary.background;
+  const value = (n: number | null): string => n === null ? "Not measured" : n.toLocaleString();
+  return `<div class="impact"><div class="impact-h">YUHI MODE — ${summary.launchStatus === "ready" ? "READY" : summary.launchStatus === "ready-with-warnings" ? "READY WITH WARNINGS" : "BLOCKED"}</div>` +
+    `<div class="gen"><b>Agent capability</b><br>Agent: ${esc(summary.agentCapabilities.selectedAgent)}<br>Auto mode: ${summary.agentCapabilities.autoModeAvailable ? "Available" : "Unavailable for selected preset"}<br>Prepared Workspace: Active<br>Source changes: Review required</div>` +
+    `<div class="gen"><b>What the agent can use</b><br>Verified files: ${a.availableVerified.toLocaleString()}<br>Available with warnings: ${a.availableWithWarning.toLocaleString()}<br>Compact representations: ${a.compactRepresentations.toLocaleString()}<br>Verified companions added: ${a.companionsAdded.toLocaleString()}<br>Known-risk files blocked: ${a.knownRisksBlocked.toLocaleString()}<br>Unavailable after failure: ${a.unavailableAfterFailure.toLocaleString()}</div>` +
+    `<div class="gen"><b>Context efficiency</b><br>Repository representation: ${value(e.repositoryTokensBefore)} → ${value(e.repositoryTokensAfter)} estimated tokens<br>${e.representationReductionPercent === null ? "Reduction not measured" : `${e.representationReductionPercent.toFixed(1)}% smaller`}<br>Initial agent context: ${value(e.initialAgentContextTokens)} estimated tokens<br>Large artifacts represented compactly: ${e.largeArtifactsRepresented.toLocaleString()}</div>` +
+    `<div class="gen"><b>Background result</b><br>Status: ${esc(b.status)}<br>Processed companions: ${b.completed.toLocaleString()}<br>Still available with warnings: ${b.companionUnavailable.toLocaleString()}<br>Pending: ${(b.pending + b.processing).toLocaleString()}<br>Original documents remain usable when shared with warnings.</div>` +
+    `<div class="hint">Yuhi preserved the agent's capabilities, made useful repository context available with explicit confidence labels, reduced unnecessary representation, and kept source changes behind review.</div></div>`;
+}
+
 /** Human labels for the three Safety Mode presets (values mirror `yuhi.safetyMode`). */
 const SAFETY_MODE_CHOICES: ReadonlyArray<readonly [SafetyModeValue, string]> = [
   ["balanced", "Balanced"],
@@ -196,6 +225,15 @@ function prepareControls(s: PrepareSettings): string {
       `<option value="${value}"${value === s.safetyMode ? " selected" : ""}>${esc(label)}</option>`,
   ).join("");
   const budgetValue = s.tokenBudget > 0 ? String(s.tokenBudget) : "";
+  const compressionOptions = ["auto", "on", "off"].map((value) =>
+    `<option value="${value}"${value === s.compressionMode ? " selected" : ""}>${value === "off" ? "Off" : value === "auto" ? "Auto (Recommended)" : "On"}</option>`,
+  ).join("");
+  const permissionOptions = [["standard", "Standard"], ["plan", "Plan"], ["acceptEdits", "Accept Edits"], ["auto", "Auto"], ["custom", "Custom"]].map(
+    ([value, label]) => `<option value="${value}"${value === s.permissionMode ? " selected" : ""}>${label}</option>`,
+  ).join("");
+  const sandboxOptions = [["standard", "Standard"], ["guarded", "Guarded (recommended)"], ["locked-down", "Locked Down"]].map(
+    ([value, label]) => `<option value="${value}"${value === s.sandboxPreset ? " selected" : ""}>${label}</option>`,
+  ).join("");
   return (
     `<div class="cfg">` +
     `<div class="ctl">` +
@@ -203,17 +241,18 @@ function prepareControls(s: PrepareSettings): string {
     `<select id="cfgSafety" class="sel">${options}</select>` +
     `</div>` +
     `<div class="ctl">` +
-    `<label for="cfgCompress">Context Compression</label>` +
-    `<label class="tog"><input type="checkbox" id="cfgCompress"${s.compress ? " checked" : ""}>` +
-    `<span>${s.compress ? "On" : "Off"}</span></label>` +
+    `<label for="cfgCompressionMode">Context Compression</label>` +
+    `<select id="cfgCompressionMode" class="sel">${compressionOptions}</select>` +
     `</div>` +
     `<div class="ctl">` +
-    `<label for="cfgBudget">Token Budget</label>` +
+    `<label for="cfgBudget">Target Context Size (Token Budget)</label>` +
     `<input type="number" id="cfgBudget" class="num" min="1" max="1000000000" step="1000" placeholder="No target"` +
-    ` value="${esc(budgetValue)}" aria-describedby="cfgBudgetHint cfgBudgetError"${s.compress ? "" : " disabled"}>` +
-    `<span id="cfgBudgetHint" class="hint">${s.compress ? "Positive whole number · blank means No target" : "Enable Context Compression to set a token budget."}</span>` +
+    ` value="${esc(budgetValue)}" aria-describedby="cfgBudgetHint cfgBudgetError"${s.compressionMode === "off" ? " disabled" : ""}>` +
+    `<span id="cfgBudgetHint" class="hint">${s.compressionMode === "off" ? "Enable Context Compression to set a token budget." : "Positive whole number · blank means No limit"}</span>` +
     `<span id="cfgBudgetError" class="inputError" role="alert"></span>` +
-    `</div>` +
+    `</div><div class="ctl"><label for="cfgPermissionMode">Permission Mode</label><select id="cfgPermissionMode" class="sel">${permissionOptions}</select></div>` +
+    `<div class="ctl"><label for="cfgSandboxPreset">Sandbox</label><select id="cfgSandboxPreset" class="sel">${sandboxOptions}</select></div>` +
+    `<div class="gen"><b>Prepare with Yuhi</b><br>✓ Fast Yuhi Mode start<br>✓ Security scan and local protection<br>✓ Context compression with FULL fallback</div>` +
     `</div>`
   );
 }
@@ -234,7 +273,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badgeClass: "idle",
         body:
           `<p class="empty">Prepare this workspace to generate local context.</p>` +
-          prepareControls(data.settings ?? { safetyMode: "balanced", compress: false, tokenBudget: 0 }) +
+          prepareControls(data.settings ?? { safetyMode: "balanced", compressionMode: "auto", tokenBudget: 200000, permissionMode: "standard", sandboxPreset: "guarded" }) +
           button("prepare", "Prepare with Yuhi", { primary: true }),
       };
     case "yuhi-mode": {
@@ -256,12 +295,22 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         (data.claudeExtensionActive
           ? line("done", "Claude Code extension active")
           : line("todo", "Claude Code extension: use Open Claude Code")) +
+        line("done", "Agent Auto Mode available inside the verified sandbox") +
         line("done", `${data.filesAvailable} file${data.filesAvailable === 1 ? "" : "s"} available`) +
+        (data.verifiedFiles !== undefined
+          ? line("done", `${data.verifiedFiles} verified`)
+          : "") +
+        ((data.warningFiles ?? 0) > 0
+          ? line("warn", `${data.warningFiles} available with warning`)
+          : "") +
         (data.filesExcluded > 0
           ? line("warn", `${data.filesExcluded} file${data.filesExcluded === 1 ? "" : "s"} excluded by recommendation`)
           : "") +
         (pending > 0
           ? line("active", `${pending} document${pending === 1 ? "" : "s"} processing in the background`)
+          : "") +
+        ((data.processingFailedFiles ?? 0) > 0
+          ? line("warn", `${data.processingFailedFiles} background processing failed`)
           : "");
       const openBtn =
         data.claudeExtensionAvailable === false
@@ -296,6 +345,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badgeClass: "mode",
         body:
           `<div class="modehdr" role="heading" aria-level="2">◆ YUHI MODE</div>` +
+          renderYuhiModeSummary(data.yuhiModeSummary) +
           reductionHero +
           budgetCard +
           checks +
@@ -381,6 +431,16 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       const warnings = data.summariesRejected > 0;
       const checks =
         line("done", `${data.filesDiscovered} files discovered`) +
+        (data.verifiedFiles !== undefined ? line("done", `${data.verifiedFiles} verified`) : "") +
+        ((data.warningFiles ?? 0) > 0
+          ? line("warn", `${data.warningFiles} available with warning`)
+          : "") +
+        ((data.backgroundPendingFiles ?? 0) > 0
+          ? line("active", `${data.backgroundPendingFiles} processing in the background`)
+          : "") +
+        ((data.processingFailedFiles ?? 0) > 0
+          ? line("warn", `${data.processingFailedFiles} processing failed`)
+          : "") +
         line("done", `${data.documentsInspected} documents inspected`) +
         (warnings
           ? line(
@@ -390,8 +450,15 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           : "") +
         line(data.contextIndex ? "done" : "todo", "Context index created") +
         line(data.agentHandoff ? "done" : "todo", "Agent handoff ready");
+      const preparationImpact =
+        `<div class="impact"><div class="impact-h">What Yuhi prepared</div><div class="impact-grid">` +
+        `<div class="stat"><b>${(data.maskedValues ?? 0).toLocaleString()}</b><span>sensitive values kept out of prepared copies</span></div>` +
+        `<div class="stat"><b>${(data.filesTransformed ?? 0).toLocaleString()}</b><span>files transformed locally</span></div>` +
+        `</div></div>`;
       const gen = data.contextIndex
-        ? `<div class="gen">Context generated → <b>.yuhi/context/</b><br>document-index.md · summaries/ · AGENT_HANDOFF.md</div>`
+        ? data.documentsInspected > 0
+          ? `<div class="gen">Context generated → <b>.yuhi/context/</b><br>document-index.md · verified companions · AGENT_HANDOFF.md</div>`
+          : `<div class="gen"><b>Initial context index ready.</b><br>No verified document companion has been created yet. Background enrichment starts after Yuhi Mode opens.</div>`
         : "";
       // v0.3.5 — the honest Progressive Context surface, shown on the Ready surface too.
       const progressive = data.progressive ? renderProgressiveContext(data.progressive) : "";
@@ -407,9 +474,11 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
             : "Ready",
         badgeClass: data.backgroundActive ? "busy" : warnings ? "warn" : "ok",
         body:
+          renderYuhiModeSummary(data.yuhiModeSummary) +
           reductionHero +
           budgetCard +
           checks +
+          preparationImpact +
           gen +
           progressive +
           changes +
@@ -665,18 +734,22 @@ export function renderActivityPanel(
     // Pre-Prepare settings — persist the same yuhi.* config the prepare path reads.
     const safety = document.getElementById("cfgSafety");
     if (safety) safety.addEventListener("change", () => vscode.postMessage({ type: "setSafetyMode", value: safety.value }));
-    const compress = document.getElementById("cfgCompress");
+    const compress = document.getElementById("cfgCompressionMode");
     const budget = document.getElementById("cfgBudget");
     const budgetHint = document.getElementById("cfgBudgetHint");
     const budgetError = document.getElementById("cfgBudgetError");
     if (compress) compress.addEventListener("change", () => {
-      if (budget) budget.disabled = !compress.checked;
-      if (budgetHint) budgetHint.textContent = compress.checked
-        ? "Positive whole number · blank means No target"
-        : "Enable Context Compression to set a token budget.";
+      if (budget) budget.disabled = compress.value === "off";
+      if (budgetHint) budgetHint.textContent = compress.value === "off"
+        ? "Enable Context Compression to set a token budget."
+        : "Positive whole number · blank means No limit";
       if (budgetError) budgetError.textContent = "";
-      vscode.postMessage({ type: "setCompress", value: compress.checked });
+      vscode.postMessage({ type: "setCompressionMode", value: compress.value });
     });
+    const permission = document.getElementById("cfgPermissionMode");
+    if (permission) permission.addEventListener("change", () => vscode.postMessage({ type: "setPermissionMode", value: permission.value }));
+    const sandbox = document.getElementById("cfgSandboxPreset");
+    if (sandbox) sandbox.addEventListener("change", () => vscode.postMessage({ type: "setSandboxPreset", value: sandbox.value }));
     if (budget) {
       let budgetTimer;
       budget.addEventListener("input", () => {

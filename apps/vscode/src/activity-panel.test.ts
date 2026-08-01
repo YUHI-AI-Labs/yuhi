@@ -71,12 +71,30 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).not.toMatch(/\b24\b|\b\d+ files discovered\b|\b\d+ documents inspected\b/);
     expect(out).toContain("Prepare with Yuhi");
     expect(out).toContain('id="prepare"');
+    expect(out).toMatch(/id="cfgCompressionMode"[^>]*>[\s\S]*?<option value="auto" selected>Auto \(Recommended\)<\/option>/);
+    expect(out).toMatch(/id="cfgBudget"[^>]*value="200000"/);
+  });
+
+  it("separates verified, warning-available, pending, and failed counts in Yuhi Mode", () => {
+    const out = html({
+      phase: "yuhi-mode",
+      filesAvailable: 12,
+      filesExcluded: 2,
+      verifiedFiles: 8,
+      warningFiles: 4,
+      documentsPending: 3,
+      processingFailedFiles: 1,
+    });
+    expect(out).toContain("8 verified");
+    expect(out).toContain("4 available with warning");
+    expect(out).toContain("3 documents processing in the background");
+    expect(out).toContain("1 background processing failed");
   });
 
   it("disables Token Budget while compression is off and preserves its value", () => {
     const out = html({
       phase: "not-prepared",
-      settings: { safetyMode: "balanced", compress: false, tokenBudget: 100_000 },
+      settings: { safetyMode: "balanced", compressionMode: "off", tokenBudget: 100_000, permissionMode: "standard", sandboxPreset: "guarded" },
     });
     expect(out).toMatch(/id="cfgBudget"[^>]*value="100000"[^>]*disabled/);
     expect(out).toContain("Enable Context Compression to set a token budget.");
@@ -85,7 +103,7 @@ describe("Yuhi activity panel (webview)", () => {
   it("enables Token Budget with compression and validates/saves input", () => {
     const out = html({
       phase: "not-prepared",
-      settings: { safetyMode: "balanced", compress: true, tokenBudget: 100_000 },
+      settings: { safetyMode: "balanced", compressionMode: "auto", tokenBudget: 100_000, permissionMode: "auto", sandboxPreset: "guarded" },
     });
     expect(out).toMatch(/id="cfgBudget"[^>]*value="100000"/);
     expect(out).not.toMatch(/id="cfgBudget"[^>]*disabled/);

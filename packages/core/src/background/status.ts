@@ -50,6 +50,7 @@ export interface PublicStatusItem {
   reasonCode?: BackgroundReasonCode;
   /** Repo-relative path of the published companion (safe); present when completed. */
   preparedRelpath?: string;
+  originalSharedWithWarning?: boolean;
 }
 
 /** The whole PUBLIC status document. Path-safe by construction. */
@@ -62,6 +63,7 @@ export interface PublicBackgroundStatus {
     completed: number;
     failed: number;
     keptLocal: number;
+    companionUnavailable: number;
     cancelled: number;
   };
   revision: number;
@@ -81,6 +83,7 @@ export function buildPublicStatus(
     completed: 0,
     failed: 0,
     keptLocal: 0,
+    companionUnavailable: 0,
     cancelled: 0,
   };
   const projected: PublicStatusItem[] = [];
@@ -102,8 +105,10 @@ export function buildPublicStatus(
         counts.cancelled += 1;
         break;
       default:
-        // kept-local / timed-out — withheld, safe terminal states.
-        counts.keptLocal += 1;
+        // A missing companion is not "kept local" when Balanced already made the
+        // original available with an explicit warning.
+        if (item.originalSharedWithWarning) counts.companionUnavailable += 1;
+        else counts.keptLocal += 1;
         break;
     }
     projected.push({
@@ -112,6 +117,7 @@ export function buildPublicStatus(
       status: item.status,
       ...(item.reasonCode ? { reasonCode: item.reasonCode } : {}),
       ...(item.preparedRelpath ? { preparedRelpath: item.preparedRelpath } : {}),
+      ...(item.originalSharedWithWarning ? { originalSharedWithWarning: true } : {}),
     });
   }
   return {

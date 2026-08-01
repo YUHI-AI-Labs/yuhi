@@ -54,6 +54,8 @@ export interface ProgressiveContextViewModel {
   pending: number;
   /** Terminal-but-unpublished: kept-local + failed + timed-out + cancelled. */
   keptLocal: number;
+  /** Originals are already warning-available, but no verified companion was produced. */
+  companionUnavailable: number;
   /** Safely-published companions (== completed). */
   safeArtifactsAdded: number;
   /** The delivered Context Revision to display. */
@@ -100,7 +102,7 @@ export function deriveProgressivePhase(status: PublicBackgroundStatus): Progress
     const moved = c.processing + c.completed + keptLocalCount(status) > 0;
     return moved ? "processing" : "initial";
   }
-  if (keptLocalCount(status) > 0) return "limited";
+  if (keptLocalCount(status) > 0 || status.counts.companionUnavailable > 0) return "limited";
   return "completed";
 }
 
@@ -133,13 +135,28 @@ export function buildProgressiveContextView(
   status: PublicBackgroundStatus,
   opts: { contextFilesReady: number; revision?: number } = { contextFilesReady: 0 },
 ): ProgressiveContextViewModel {
-  const c = status.counts;
+  const bySource = new Map<string, PublicStatusItem>();
+  const rank = (value: string): number => value === "completed" ? 5 : value === "processing" ? 4 : value === "pending" ? 3 : value === "failed" ? 2 : 1;
+  for (const item of status.items) {
+    const current = bySource.get(item.relpath);
+    if (!current || rank(item.status) >= rank(current.status)) bySource.set(item.relpath, item);
+  }
+  const sources = [...bySource.values()];
+  const pending = sources.filter((item) => item.status === "pending" || item.status === "processing").length;
+  const completed = sources.filter((item) => item.status === "completed").length;
+  const companionUnavailable = sources.filter(
+    (item) => item.originalSharedWithWarning && !["pending", "processing", "completed"].includes(item.status),
+  ).length;
+  const keptLocal = sources.filter(
+    (item) => !item.originalSharedWithWarning && !["pending", "processing", "completed"].includes(item.status),
+  ).length;
   return {
     phase: deriveProgressivePhase(status),
     contextFilesReady: Math.max(0, opts.contextFilesReady),
-    pending: c.pending + c.processing,
-    keptLocal: keptLocalCount(status),
-    safeArtifactsAdded: c.completed,
+    pending,
+    keptLocal,
+    companionUnavailable,
+    safeArtifactsAdded: completed,
     revision: opts.revision ?? status.revision,
     secretsExposed: 0,
     perKind: perKindProgress(status),
@@ -191,6 +208,7 @@ export function renderProgressiveContext(vm: ProgressiveContextViewModel): strin
         pcLine("done", `Context files ready: ${vm.contextFilesReady}`) +
         pcLine("active", `Background processing: ${vm.pending} pending`) +
         pcLine("todo", `Kept local: ${vm.keptLocal}`) +
+        pcLine("todo", `Companion unavailable: ${vm.companionUnavailable}`) +
         pcLine("done", `Secrets exposed: ${vm.secretsExposed}`);
       break;
     case "processing":
@@ -214,6 +232,9 @@ export function renderProgressiveContext(vm: ProgressiveContextViewModel): strin
       body =
         pcLine("done", `Safe artifacts added: ${vm.safeArtifactsAdded}`) +
         pcLine("warn", `Still kept local: ${vm.keptLocal}`) +
+        (vm.companionUnavailable > 0
+          ? pcLine("warn", `${vm.companionUnavailable} warning-available file${vm.companionUnavailable === 1 ? " has" : "s have"} no verified companion`)
+          : "") +
         pcButton(PROGRESSIVE_REFRESH_ID, "Refresh Context");
       break;
   }

@@ -9,6 +9,7 @@ import { buildAiReadinessReport } from "./ai-readiness-report.js";
 import { buildPreparationReport, type PreparationReport } from "./preparation-report.js";
 import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
 import type { PublicPreparedContextSummary } from "./public-prepared-summary.js";
+import type { YuhiModeSummary } from "./yuhi-mode-summary.js";
 
 /** Why a Prepared Workspace is stale relative to the current inputs. */
 export type PreparationFreshnessReason =
@@ -101,6 +102,7 @@ export interface SafePreparedRunSummary {
    */
   compression?: CompressionReport;
   publicSummary?: PublicPreparedContextSummary;
+  yuhiModeSummary?: YuhiModeSummary;
 }
 
 export function buildSafePreparedRunSummary(report: PrepareReport): SafePreparedRunSummary {
@@ -164,6 +166,7 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     preparationReport,
     ...(report.compression ? { compression: report.compression } : {}),
     ...(report.publicSummary ? { publicSummary: report.publicSummary } : {}),
+    ...(report.yuhiModeSummary ? { yuhiModeSummary: report.yuhiModeSummary } : {}),
   };
 }
 

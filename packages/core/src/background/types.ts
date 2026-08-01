@@ -44,6 +44,8 @@ export interface BackgroundPreparationItem {
   priority: number;
   /** Epoch ms (measured on the injected clock at enqueue time). */
   createdAt: number;
+  /** True when Balanced already exposed the original with an inspection warning. */
+  originalSharedWithWarning?: boolean;
 }
 
 /**
@@ -121,6 +123,7 @@ export interface EnqueueInput extends IdempotencyInputs {
   priority?: number;
   itemId?: string;
   createdAt?: number;
+  originalSharedWithWarning?: boolean;
 }
 
 /**
@@ -140,6 +143,7 @@ export interface PublicBackgroundItem {
   reasonCode?: BackgroundReasonCode;
   /** Repo-relative path of the published artifact, when published. */
   preparedRelpath?: string;
+  originalSharedWithWarning?: boolean;
 }
 
 /**

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { PreparedMetrics, PublicPreparedContextSummary } from "@yuhi/core";
+import type { PreparedMetrics, PublicPreparedContextSummary, YuhiModeSummary } from "@yuhi/core";
 import {
   renderActivityPanel,
   type ActivityPanelData,
@@ -27,6 +27,7 @@ export interface PreparedDetail {
     status: "within-budget" | "best-effort" | "no-budget";
   };
   publicSummary?: PublicPreparedContextSummary;
+  yuhiModeSummary?: YuhiModeSummary;
 }
 
 /**
@@ -53,8 +54,10 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         if (
           this.data.phase === "not-prepared" &&
           (e.affectsConfiguration("yuhi.safetyMode") ||
-            e.affectsConfiguration("yuhi.compress") ||
-            e.affectsConfiguration("yuhi.tokenBudget"))
+            e.affectsConfiguration("yuhi.compressionMode") ||
+            e.affectsConfiguration("yuhi.tokenBudget") ||
+            e.affectsConfiguration("yuhi.permissionMode") ||
+            e.affectsConfiguration("yuhi.sandboxPreset"))
         ) {
           this.setNotPrepared();
         }
@@ -122,8 +125,20 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
-      case "setCompress":
-        void this.updateConfig("compress", message.value === true);
+      case "setCompressionMode":
+        if (message.value === "off" || message.value === "auto" || message.value === "on") {
+          void this.updateConfig("compressionMode", message.value);
+        }
+        break;
+      case "setPermissionMode":
+        if (message.value === "standard" || message.value === "plan" || message.value === "acceptEdits" || message.value === "auto" || message.value === "custom") {
+          void this.updateConfig("permissionMode", message.value);
+        }
+        break;
+      case "setSandboxPreset":
+        if (message.value === "standard" || message.value === "guarded" || message.value === "locked-down") {
+          void this.updateConfig("sandboxPreset", message.value);
+        }
         break;
       case "setTokenBudget": {
         if (message.value === null || message.value === "") {
@@ -204,7 +219,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       blocking,
       ...(blocking
         ? {
-            compressionEnabled: readPrepareSettings().compress,
+            compressionEnabled: readPrepareSettings().compressionMode !== "off",
             tokenBudget: readPrepareSettings().tokenBudget,
           }
         : {}),
@@ -271,6 +286,14 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       summariesRejected: detail?.summariesRejected ?? 0,
       contextIndex,
       agentHandoff,
+      ...(detail?.publicSummary
+        ? {
+            verifiedFiles: detail.publicSummary.verifiedFiles,
+            warningFiles: detail.publicSummary.availableWithWarningFiles,
+            backgroundPendingFiles: detail.publicSummary.backgroundPendingFiles,
+            processingFailedFiles: detail.publicSummary.processingFailedFiles,
+          }
+        : {}),
       ...(detail?.publicSummary?.reductionPercent !== null && detail?.publicSummary?.reductionPercent !== undefined
         ? { reductionPercent: detail.publicSummary.reductionPercent }
         : {}),
@@ -281,6 +304,9 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         ? { estimatedTokensAfter: detail.publicSummary.preparedEstimatedTokens }
         : {}),
       ...(detail?.compression ? { compression: detail.compression } : {}),
+      ...(detail?.yuhiModeSummary ? { yuhiModeSummary: detail.yuhiModeSummary } : {}),
+      maskedValues: metrics.sensitiveValuesMasked,
+      filesTransformed: metrics.preparedFilesModified,
       ...(detail?.backgroundActive ? { backgroundActive: true } : {}),
     });
   }
@@ -289,6 +315,9 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   setYuhiMode(detail: {
     filesAvailable: number;
     filesExcluded: number;
+    verifiedFiles?: number;
+    warningFiles?: number;
+    processingFailedFiles?: number;
     documentsPending?: number;
     claudeExtensionAvailable?: boolean;
     claudeExtensionActive?: boolean;
@@ -304,11 +333,17 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     filesTransformed?: number;
     /** v0.3.4 agent picker reconstructed from the on-disk manifest (Context ID). */
     picker?: AgentPickerData;
+    yuhiModeSummary?: YuhiModeSummary;
   }): void {
     this.set({
       phase: "yuhi-mode",
       filesAvailable: detail.filesAvailable,
       filesExcluded: detail.filesExcluded,
+      ...(detail.verifiedFiles !== undefined ? { verifiedFiles: detail.verifiedFiles } : {}),
+      ...(detail.warningFiles !== undefined ? { warningFiles: detail.warningFiles } : {}),
+      ...(detail.processingFailedFiles !== undefined
+        ? { processingFailedFiles: detail.processingFailedFiles }
+        : {}),
       ...(detail.documentsPending !== undefined ? { documentsPending: detail.documentsPending } : {}),
       ...(detail.claudeExtensionAvailable !== undefined
         ? { claudeExtensionAvailable: detail.claudeExtensionAvailable }
@@ -327,6 +362,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       ...(detail.compression ? { compression: detail.compression } : {}),
       ...(detail.filesTransformed !== undefined ? { filesTransformed: detail.filesTransformed } : {}),
       ...(detail.picker ? { picker: detail.picker } : {}),
+      ...(detail.yuhiModeSummary ? { yuhiModeSummary: detail.yuhiModeSummary } : {}),
     });
   }
 
@@ -356,6 +392,11 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     if (progressive) next.progressive = progressive;
     else delete next.progressive;
     this.set(next);
+  }
+
+  applyYuhiModeSummary(summary: YuhiModeSummary): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    this.set({ ...this.data, yuhiModeSummary: summary });
   }
 
   /** The agent id currently shown as launching, if any (drives the "Launching…" label). */
@@ -389,10 +430,15 @@ function readPrepareSettings(): PrepareSettings {
   const rawMode = cfg.get<string>("safetyMode");
   const safetyMode: SafetyModeValue =
     rawMode === "strict" || rawMode === "maximum-privacy" ? rawMode : "balanced";
-  const compress = cfg.get<boolean>("compress") === true;
+  const rawCompression = cfg.get<string>("compressionMode");
+  const compressionMode = rawCompression === "off" || rawCompression === "on" ? rawCompression : "auto";
   const rawBudget = cfg.get<number>("tokenBudget");
-  const tokenBudget = typeof rawBudget === "number" && rawBudget > 0 ? Math.floor(rawBudget) : 0;
-  return { safetyMode, compress, tokenBudget };
+  const tokenBudget = typeof rawBudget === "number" && rawBudget > 0 ? Math.floor(rawBudget) : 200000;
+  const rawPermission = cfg.get<string>("permissionMode");
+  const permissionMode = rawPermission === "plan" || rawPermission === "acceptEdits" || rawPermission === "auto" || rawPermission === "custom" ? rawPermission : "standard";
+  const rawSandbox = cfg.get<string>("sandboxPreset");
+  const sandboxPreset = rawSandbox === "standard" || rawSandbox === "locked-down" ? rawSandbox : "guarded";
+  return { safetyMode, compressionMode, tokenBudget, permissionMode, sandboxPreset };
 }
 
 function nonce(): string {

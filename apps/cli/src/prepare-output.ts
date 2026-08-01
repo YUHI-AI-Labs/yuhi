@@ -36,10 +36,16 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     ].join("\n");
   }
   const context = result.publicSummary;
+  const mode = result.yuhiModeSummary;
   const contextLines = context
     ? [
         "Context preparation",
         `Context Compression: ${context.compressionEnabled ? "On" : "Off"}`,
+        `Verified files: ${context.verifiedFiles}`,
+        `Available with warning: ${context.availableWithWarningFiles}`,
+        `Background pending: ${context.backgroundPendingFiles}`,
+        `Excluded known risks: ${context.excludedForSafetyFiles}`,
+        `Processing failures: ${context.processingFailedFiles}`,
         `Original estimated tokens: ${context.originalEstimatedTokens ?? "Not measured"}`,
         `Prepared estimated tokens: ${context.preparedEstimatedTokens ?? "Not measured"}`,
         `Tokens reduced: ${context.reducedTokens ?? "Not measured"}`,
@@ -54,6 +60,25 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
         "",
       ]
     : [];
+  const modeLines = mode
+    ? [
+        `Yuhi Mode: ${mode.launchStatus}`,
+        `Agent: ${mode.agentCapabilities.selectedAgent}`,
+        `Auto mode available: ${mode.agentCapabilities.autoModeAvailable ? "Yes" : "No"}`,
+        `Available verified: ${mode.contextAvailability.availableVerified}`,
+        `Available with warnings: ${mode.contextAvailability.availableWithWarning}`,
+        `Compact representations: ${mode.contextAvailability.compactRepresentations}`,
+        `Companions added: ${mode.contextAvailability.companionsAdded}`,
+        `Known risks blocked: ${mode.contextAvailability.knownRisksBlocked}`,
+        `Unavailable after failure: ${mode.contextAvailability.unavailableAfterFailure}`,
+        `Repository representation: ${mode.contextEfficiency.repositoryTokensBefore ?? "Not measured"} → ${mode.contextEfficiency.repositoryTokensAfter ?? "Not measured"} estimated tokens`,
+        `Initial agent context: ${mode.contextEfficiency.initialAgentContextTokens ?? "Not measured"} estimated tokens`,
+        `Background status: ${mode.background.status}`,
+        `Original workspace modified: ${mode.protection.originalWorkspaceModified ? "Yes" : "No"}`,
+        `Safe Apply required: ${mode.protection.safeApplyRequired ? "Yes" : "No"}`,
+        "",
+      ]
+    : [];
   return [
     // Lead with the shareable, public-safe Repository Report — the proof of value.
     formatPreparationReport(result.preparationReport, "terminal"),
@@ -62,6 +87,7 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     "",
     "Prepared by Yuhi",
     "",
+    ...modeLines,
     ...contextLines,
     "Status: Success",
     `Workflow: ${result.workflowState}`,

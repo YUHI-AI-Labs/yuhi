@@ -23,36 +23,46 @@ Yuhi recommends an action
 The user makes the final decision
 ```
 
+The current product principle is:
+
+```text
+Start Yuhi Mode first.
+Make useful context available.
+Disclose uncertainty honestly.
+Improve it in the background.
+Let the user decide.
+```
+
 ### Default file behavior
 
 - **Safe**: include automatically.
-- **Caution / Unverified**: keep the unverified original local, register safe
-  background processing when supported, and continue launching Yuhi Mode. Publish
-  only a verified companion or summary; never publish the unverified original as a
-  speed fallback.
+- **Caution / Unverified (Balanced)**: include the useful original with an explicit
+  `inspection-pending` warning, register background processing, and continue launching
+  Yuhi Mode. Never label it verified.
+- **Caution / Unverified (Strict)**: include ordinary documents with an explicit
+  warning and continue background inspection. Known credentials and private keys stay
+  blocked. Do not turn Strict into Maximum Privacy.
+- **Caution / Unverified (Maximum Privacy)**: keep the original local and publish only
+  a verified companion.
 - **High risk**: exclude by recommendation, but continue launching. Let the user
   explicitly choose `Include anyway`, `Keep excluded`, or, when supported,
   `Use transformed copy`.
 
-The unverified-file invariant is absolute:
+The unverified-file invariant is:
 
 ```text
 inspection unavailable or unsuccessful
-  → keep original local
-  → process safely in background when supported
-  → continue to Yuhi Mode
-
-NOT
-
-inspection unavailable or unsuccessful
-  → share the unverified original with a warning
-  → delay Yuhi Mode for optional heavy inspection
+  → Balanced: include with warning when no known credential/policy block exists
+  → Strict: include ordinary documents with warning; block known credentials
+  → Maximum Privacy: keep original local
+  → process safely in background
+  → never delay Yuhi Mode for optional heavy inspection
 ```
 
-Only an actual high-risk finding or explicit policy rule counts as excluded for
-safety. Parser absence, OCR failure, background pending, and processing failure are
-distinct local-only states and must not be counted as exclusions. The UI and handoff
-must report those states separately using public-safe counts only.
+Only an actual high-risk finding, user exclusion, or explicit policy rule counts as
+excluded. Inspection pending, warning availability, background processing, and
+processing failure are distinct states. UI and handoff report them separately using
+public-safe counts only.
 
 The governing invariant is:
 
@@ -168,6 +178,25 @@ Avoid implementations that stop the entire flow for one excludable file, wait fo
 optional inspection before opening Claude Code, or trap the user on an internal
 state or confirmation screen after a valid Prepared Workspace is ready.
 
+### Agent capability and context efficiency
+
+Yuhi controls repository preparation and Safe Apply, not Claude Code's general
+permission model. Standard, Plan, Accept Edits, Auto, and Custom permission modes
+remain user choices. Standard and Guarded sandbox presets must not inject
+`disableAutoMode` or globally force bypass permissions off. Only the explicitly
+selected Locked Down preset may impose those restrictions.
+
+Context Compression defaults to `Auto (Recommended)` with a 200,000-token
+best-effort target. `Auto` and `On` accept a Token Budget; `Off` retains the saved
+value but does not apply it. Compression and parser failures always fall back to the
+FULL original. A token target must never delete a useful repository file. Compact
+representations are additive companions; the original remains available.
+
+All public surfaces use the Core `YuhiModeSummary`. It deduplicates each source file
+across Preparation and Background and separates repository-representation estimates
+from the initial agent-context estimate. Never present repository totals as actual
+provider usage or billing savings.
+
 ## Known conflicts requiring an explicit design update
 
 Do not silently reinterpret these conflicts:
@@ -185,6 +214,6 @@ Do not silently reinterpret these conflicts:
    as safe, verified, or confined merely because the agent starts in the Prepared
    Workspace.
 4. Current surfaces may conflate background-pending, processing failure, unsupported,
-   and excluded-for-safety. Keep unverified originals local, but fix routing,
+   and excluded-for-safety. Apply the Safety Mode-specific routing above, and keep manifests,
    manifests, Review UI, handoff wording, and regression tests so those states remain
    distinct and do not block Yuhi Mode.

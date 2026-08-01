@@ -15,6 +15,7 @@ export * from "./prepare-workspace.js";
 export * from "./prepared-run.js";
 export * from "./prepared-metrics.js";
 export * from "./public-prepared-summary.js";
+export * from "./yuhi-mode-summary.js";
 export * from "./patch/index.js";
 export * from "./workflow-state.js";
 export * from "./background-documents.js";

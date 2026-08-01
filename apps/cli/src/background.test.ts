@@ -46,7 +46,8 @@ function sampleStatus(): PublicBackgroundStatus {
       processing: 0,
       completed: 1,
       failed: 1,
-      keptLocal: 0,
+    keptLocal: 0,
+    companionUnavailable: 0,
       cancelled: 0,
     },
     revision: 1,
@@ -111,7 +112,7 @@ describe("background status", () => {
     const parsed = JSON.parse(out.join("\n")) as PublicBackgroundStatus;
     expect(parsed).toEqual({
       schemaVersion: 1,
-      counts: { total: 0, pending: 0, processing: 0, completed: 0, failed: 0, keptLocal: 0, cancelled: 0 },
+      counts: { total: 0, pending: 0, processing: 0, completed: 0, failed: 0, keptLocal: 0, companionUnavailable: 0, cancelled: 0 },
       revision: 0,
       items: [],
     });

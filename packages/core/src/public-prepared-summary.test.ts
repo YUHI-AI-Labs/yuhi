@@ -17,15 +17,18 @@ describe("PublicPreparedContextSummary", () => {
   it("keeps background pending distinct from excluded and failed", () => {
     const summary = buildPublicPreparedContextSummary({
       files: [
-        file({ relpath: "src/app.ts" }),
-        file({ relpath: "docs/report.pdf", outcome: "background-processing-pending", omitted: true, status: "skipped", transmission: "blocked" }),
+        file({ relpath: "src/app.ts", availabilityStatus: "available-verified" }),
+        file({ relpath: "docs/warning.pdf", outcome: "background-processing-pending", availabilityStatus: "available-with-warning", backgroundStatus: "pending" }),
+        file({ relpath: "docs/report.pdf", outcome: "background-processing-pending", availabilityStatus: "background-processing", backgroundStatus: "pending", omitted: true, status: "skipped", transmission: "blocked" }),
         file({ relpath: "private.key", action: "block", outcome: "excluded-by-policy", omitted: true, status: "skipped", transmission: "blocked" }),
         file({ relpath: "broken.bin", action: "local-only", outcome: "local-only-unverified", omitted: true, status: "skipped", transmission: "blocked" }),
       ],
       originalWorkspaceModified: false,
     });
-    expect(summary.availableFiles).toBe(1);
-    expect(summary.backgroundPendingFiles).toBe(1);
+    expect(summary.availableFiles).toBe(2);
+    expect(summary.verifiedFiles).toBe(1);
+    expect(summary.availableWithWarningFiles).toBe(1);
+    expect(summary.backgroundPendingFiles).toBe(2);
     expect(summary.excludedForSafetyFiles).toBe(1);
     expect(summary.keptLocalAfterFailureFiles).toBe(1);
     expect(summary.secretsExposed).toBe(0);

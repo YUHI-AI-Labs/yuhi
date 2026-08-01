@@ -67,6 +67,15 @@ In VS Code, the review shows **Launch with [ Claude Code ] [ Codex ]** with each
 availability and the run's Context ID. Yuhi stays agent-agnostic: it prepares and secures
 the context; the agent you choose is what talks to the model.
 
+Yuhi Mode keeps Claude Code capabilities user-selectable (Standard, Plan, Accept
+Edits, Auto, or Custom) and offers Standard, Guarded, and Locked Down sandbox
+presets. Guarded is the default and does not disable Auto mode globally.
+
+Context Compression defaults to **Auto (Recommended)** with a best-effort 200,000
+token target. Safe compact representations are additive: the full original remains
+available, and parser or verification failures fall back to FULL rather than removing
+useful files.
+
 ## Progressive Context — start fast, context gets better in the background
 
 Yuhi's job is to get you into Yuhi Mode *fast*, so heavy preparation — PDF/DOCX extraction,
@@ -122,7 +131,7 @@ Yuhi answers a simple question — *how much of this repository should the AI re
 and then prepares exactly that:
 
 - **Blocks secrets.** Credentials and private keys are neutralized locally and never handed to the agent.
-- **Converts documents to AI-friendly content.** Supported documents (PDF / DOCX / PPTX) become sanitized Markdown companions; when safe preparation can't be verified, the source is kept local or replaced with a safe placeholder — the original is never delivered to the agent.
+- **Converts documents to AI-friendly content.** Supported documents (PDF / DOCX / PPTX) gain sanitized Markdown companions in the background. Balanced can make an original available with an explicit inspection-pending warning; Maximum Privacy keeps unverified originals local.
 - **Reduces the repository to what matters.** Oversized and irrelevant files are kept local; files Yuhi can't safely inspect are either kept local or included with an explicit *unverified* warning.
 - **Prepares your workspace in one command.** Then start Claude Code from the VS Code extension.
 

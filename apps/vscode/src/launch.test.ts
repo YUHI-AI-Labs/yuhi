@@ -223,7 +223,11 @@ describe("launch metadata and policy", () => {
     expect(PREPARED_WORKSPACE_NOTICE).not.toContain("OS-level sandbox");
     expect(PREPARED_WORKSPACE_NOTICE).not.toContain("fail-closed");
     expect(PREPARED_WORKSPACE_NOTICE).toContain("Workspace boundary: advisory");
-    expect(PREPARED_WORKSPACE_NOTICE).toContain("user-approved external paths may still be accessible");
+    // Corrected wording: runtime/sandbox behavior follows the user-selected preset, and
+    // the boundary stays honest that external paths remain reachable when permitted.
+    expect(PREPARED_WORKSPACE_NOTICE).toContain(
+      "External paths may still be accessible when the runtime or user permits them",
+    );
     expect(PREPARED_WORKSPACE_NOTICE).toContain(".yuhi/context/AGENT_HANDOFF.md");
     expect(PREPARED_WORKSPACE_NOTICE).not.toContain(root);
   });
@@ -249,24 +253,19 @@ describe("launch metadata and policy", () => {
     expect(validatePreparedPath(root, path.join(outDir, "nested"))).toBe(false);
   });
 
-  it("installs a project-scoped fail-closed Claude sandbox policy", async () => {
+  it("installs the default Guarded policy without disabling Auto or bypass globally", async () => {
     const { root, outDir } = await fixture();
     const target = await writeAndVerifyClaudeSandboxPolicy(root, outDir);
     expect(target).toBe(path.join(outDir, CLAUDE_SANDBOX_RELPATH));
     const policy = JSON.parse(await readFile(target, "utf8"));
     expect(policy).toEqual(CLAUDE_SANDBOX_POLICY);
-    expect(policy.sandbox.allowUnsandboxedCommands).toBe(false);
+    expect(policy.sandbox.allowUnsandboxedCommands).toBe(true);
+    expect(policy.sandbox.autoAllowBashIfSandboxed).toBe(true);
     expect(policy.sandbox.excludedCommands).toEqual([]);
-    expect(policy.sandbox.filesystem).toEqual({
-      denyRead: ["~/", "/tmp", "/private/tmp"],
-      allowRead: ["."],
-    });
-    expect(policy.permissions.deny).toEqual([
-      "Read(//tmp/**)",
-      "Read(//private/tmp/**)",
-    ]);
-    expect(policy.permissions.disableBypassPermissionsMode).toBe("disable");
-    expect(policy.permissions.disableAutoMode).toBe("disable");
+    expect(policy.sandbox.filesystem).toEqual({ allowRead: ["."] });
+    expect(policy.permissions.deny).toBeUndefined();
+    expect(policy.permissions.disableBypassPermissionsMode).toBeUndefined();
+    expect(policy.permissions.disableAutoMode).toBeUndefined();
     await expect(readFile(path.join(root, CLAUDE_SANDBOX_RELPATH), "utf8")).rejects.toThrow();
   });
 
@@ -359,7 +358,9 @@ describe("launch metadata and policy", () => {
     expect(outDir.startsWith(external)).toBe(false);
     expect(raw).not.toContain(external);
     expect(session.runtime.externalPathAccessPossible).toBe(true);
-    expect(PREPARED_WORKSPACE_NOTICE).toContain("user-approved external paths may still be accessible");
+    expect(PREPARED_WORKSPACE_NOTICE).toContain(
+      "External paths may still be accessible when the runtime or user permits them",
+    );
   });
 });
 

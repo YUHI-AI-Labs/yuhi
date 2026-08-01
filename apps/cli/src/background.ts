@@ -79,6 +79,7 @@ function emptyStatus(): PublicBackgroundStatus {
       completed: 0,
       failed: 0,
       keptLocal: 0,
+      companionUnavailable: 0,
       cancelled: 0,
     },
     revision: 0,
@@ -124,6 +125,7 @@ function formatCounts(counts: PublicBackgroundStatus["counts"]): string {
     `completed ${counts.completed}`,
     `failed ${counts.failed}`,
     `kept-local ${counts.keptLocal}`,
+    `companion-unavailable ${counts.companionUnavailable}`,
     `cancelled ${counts.cancelled}`,
   ].join(" · ");
 }

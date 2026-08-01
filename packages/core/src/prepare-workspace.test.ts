@@ -185,28 +185,29 @@ describe("prepareWorkspace — deterministic Context ID (v0.3.4)", () => {
 });
 
 describe("prepareWorkspace", () => {
-  it("enqueues a PDF for background extraction, then publishes a sanitized companion (original never shared)", async () => {
+  it("includes a PDF with warning, then publishes a sanitized companion in background", async () => {
     writeFileSync(path.join(dir, "pending.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
     const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
 
     // FOREGROUND: zero heavy extraction — no companion yet; the doc is queued pending.
-    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(true);
     expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(false);
     const entry = report.files.find((f) => f.document);
-    expect(entry?.document?.originalSharedWithAgent).toBe(false);
+    expect(entry?.document?.originalSharedWithAgent).toBe(true);
+    expect(entry?.availabilityStatus).toBe("available-with-warning");
     expect(entry?.document?.extractionStatus).toBe("pending");
     expect(entry?.outcome).toBe("background-processing-pending");
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
 
-    // BACKGROUND: the sanitized companion is produced + published; original absent.
+    // BACKGROUND: the verified companion is added without blocking the original workflow.
     const summary = await runBackgroundForRun({
       runId: report.runId,
       preparedDir: report.outDir,
       pdfTextExtractor: pdfExtractor("Synthetic public document body."),
     });
     expect(summary.completed).toBe(1);
-    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(true);
     expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(true);
   });
 
@@ -277,8 +278,8 @@ describe("prepareWorkspace", () => {
       pdfTextExtractor: pdfExtractor(rawExtracted),
     });
 
-    // Companion published; original PDF absent.
-    expect(existsSync(path.join(report.outDir, "architecture.pdf"))).toBe(false);
+    // Companion published; Balanced retains the warning-marked original.
+    expect(existsSync(path.join(report.outDir, "architecture.pdf"))).toBe(true);
     const companion = readFileSync(path.join(report.outDir, "architecture.pdf.md"), "utf8");
     // Structured identifiers in the extracted body are redacted out of the companion.
     expect(companion).not.toContain("taro.yamada@example.ac.jp");
@@ -307,7 +308,7 @@ describe("prepareWorkspace", () => {
 
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
     expect(summary.completed).toBe(1);
-    expect(existsSync(path.join(report.outDir, "offline.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "offline.pdf"))).toBe(true);
     expect(existsSync(path.join(report.outDir, "offline.pdf.md"))).toBe(true);
   });
 
@@ -323,9 +324,8 @@ describe("prepareWorkspace", () => {
       pdfTextExtractor: pdfExtractor(`Public content. ${secret} end.`),
     });
 
-    // The sanitized companion is published, the original PDF is not, and the secret in
-    // the extracted body is redacted out of every delivered byte under the prepared root.
-    expect(existsSync(path.join(report.outDir, "safe.pdf"))).toBe(false);
+    // The sanitized companion is published and the extracted secret is not copied into it.
+    expect(existsSync(path.join(report.outDir, "safe.pdf"))).toBe(true);
     const companion = readFileSync(path.join(report.outDir, "safe.pdf.md"), "utf8");
     expect(companion).not.toContain("sk-synthetic-doc-leak-123456789");
     expect(deliveredText(report.outDir)).not.toContain("sk-synthetic-doc-leak-123456789");
@@ -349,7 +349,7 @@ describe("prepareWorkspace", () => {
     ).toContain("Inspection: Text document");
   });
 
-  it("keeps a corrupt DOCX/PPTX local (never the original, never a companion) with an honest reason", async () => {
+  it("includes corrupt DOCX/PPTX with warnings and reports failed background processing", async () => {
     // A corrupt Office file cannot be extracted; it must NOT be delivered raw, and must
     // not fail the whole preparation (per-file isolation). In v0.3.5 the heavy work runs
     // in the background and, when extraction fails, the document is kept local.
@@ -359,12 +359,13 @@ describe("prepareWorkspace", () => {
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
     const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
-    // Foreground: originals never delivered; each doc is queued pending.
+    // Foreground: Balanced includes originals with warnings; each doc is queued pending.
     for (const orig of ["notes.docx", "deck.pptx"]) {
-      expect(existsSync(path.join(report.outDir, orig))).toBe(false);
+      expect(existsSync(path.join(report.outDir, orig))).toBe(true);
     }
     for (const e of report.files.filter((f) => f.document)) {
-      expect(e.document?.originalSharedWithAgent).toBe(false);
+      expect(e.document?.originalSharedWithAgent).toBe(true);
+      expect(e.availabilityStatus).toBe("available-with-warning");
       expect(e.outcome).toBe("background-processing-pending");
     }
 
@@ -372,13 +373,13 @@ describe("prepareWorkspace", () => {
     const summary = await runBackgroundForRun({ runId: report.runId, preparedDir: report.outDir });
     expect(summary.completed).toBe(0);
     for (const [orig, companion] of [["notes.docx", "notes.docx.md"], ["deck.pptx", "deck.pptx.md"]]) {
-      expect(existsSync(path.join(report.outDir, orig!))).toBe(false);
+      expect(existsSync(path.join(report.outDir, orig!))).toBe(true);
       expect(existsSync(path.join(report.outDir, companion!))).toBe(false);
     }
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
-  it("keeps a PDF local when it cannot be extracted and OCR is unavailable (never the original)", async () => {
+  it("keeps a Balanced PDF available with warning when OCR is unavailable", async () => {
     // No text extractor and no OCR extractor in the background → the PDF is kept local
     // (extraction insufficient → OCR fallback → OCR unavailable). Never delivered raw.
     writeFileSync(path.join(dir, "synthetic.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
@@ -387,14 +388,14 @@ describe("prepareWorkspace", () => {
 
     const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
     const entry = report.files.find((f) => f.document);
-    expect(entry?.document?.originalSharedWithAgent).toBe(false);
+    expect(entry?.document?.originalSharedWithAgent).toBe(true);
     expect(entry?.outcome).toBe("background-processing-pending");
 
     // Background with NO extractors: extraction insufficient → OCR fallback → OCR
     // unavailable. The original PDF is never shared and no companion is published.
     const summary = await runBackgroundForRun({ runId: report.runId, preparedDir: report.outDir });
     expect(summary.completed).toBe(0);
-    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(true);
     expect(existsSync(path.join(report.outDir, "synthetic.pdf.md"))).toBe(false);
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
     // The raw PDF bytes never leak into the foreground manifest.
@@ -402,19 +403,21 @@ describe("prepareWorkspace", () => {
       .not.toContain("synthetic\\n");
   });
 
-  it("keeps uninspectable binaries and private keys local without blocking launch", async () => {
+  it("includes an uninspectable binary with warning but keeps private keys local", async () => {
     writeFileSync(path.join(dir, "model.bin"), Buffer.from([0x00, 0xff, 0x12, 0x34]));
     writeFileSync(path.join(dir, "private.key"), Buffer.from([0x00, 0xff, 0x55, 0xaa]));
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
 
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
-    expect(existsSync(path.join(report.outDir, "model.bin"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "model.bin"))).toBe(true);
     expect(report.files.find((item) => item.relpath === "model.bin")).toMatchObject({
-      outcome: "local-only-unsupported",
-      transmission: "blocked",
+      outcome: "included-unverified",
+      transmission: "approved",
+      availabilityStatus: "available-with-warning",
+      originalShared: true,
     });
-    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).toBe(true);
+    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).toBe(false);
     expect(existsSync(path.join(report.outDir, "private.key"))).toBe(false);
     expect(report.files.find((item) => item.relpath === "private.key")).toMatchObject({
       action: "local-only",
@@ -755,7 +758,7 @@ describe("prepareWorkspace", () => {
     expect(existsSync(path.join(report.outDir, "synthetic-companion.txt"))).toBe(true);
   });
 
-  it("never raw-fallbacks a sensitive tabular file that cannot be transformed", async () => {
+  it("includes a non-credential malformed table with an explicit unverified warning", async () => {
     const raw = 'full name,student id,grade\n"unterminated,S-1,A';
     put("malformed.csv", raw);
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
@@ -763,13 +766,15 @@ describe("prepareWorkspace", () => {
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
     const entry = report.files.find((item) => item.relpath === "malformed.csv");
     expect(entry).toMatchObject({
-      status: "skipped",
-      omitted: true,
-      outcome: "local-only-unverified",
+      status: "ok",
+      omitted: false,
+      outcome: "included-unverified",
+      availabilityStatus: "available-with-warning",
+      originalShared: true,
     });
     expect(entry?.failureCategory).toBeTruthy(); // honest reason preserved
     expect(entry?.error).toBeTruthy();
-    expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(true);
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
@@ -1065,10 +1070,10 @@ describe("prepareWorkspace", () => {
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
     const partial = await prepareWorkspace(dir, { provider: fakeProvider() });
-    // The malformed table remains local; an explicit exclusion still creates a fresh
+    // The malformed table is warning-included; an explicit exclusion creates a fresh
     // immutable run with a distinct user decision.
     expect(partial.files.find((file) => file.relpath === "malformed.csv")?.outcome).toBe(
-      "local-only-unverified",
+      "included-unverified",
     );
     const oldManifest = readFileSync(path.join(partial.outDir, "manifest.json"), "utf8");
 
@@ -1292,10 +1297,11 @@ describe("prepareWorkspace", () => {
     const salaryDecision = report.decisions?.find((d) => d.relpath === "data/salaries.csv");
     expect(salaryDecision?.action).toBe("local-only");
     expect(salaryDecision?.ruleName).toBe("salary-restricted");
-    expect(existsSync(path.join(report.outDir, "logo.bin"))).toBe(false);
+    expect(existsSync(path.join(report.outDir, "logo.bin"))).toBe(true);
     expect(report.files.find((f) => f.relpath === "logo.bin")).toMatchObject({
-      outcome: "local-only-unsupported",
-      transmission: "blocked",
+      outcome: "included-unverified",
+      transmission: "approved",
+      availabilityStatus: "available-with-warning",
     });
     expect(report.report.filesSummarized).toBe(2);
     const metrics = buildPreparedMetrics(report);
@@ -1309,7 +1315,7 @@ describe("prepareWorkspace", () => {
     expect(metrics.sensitiveValuesMasked).toBe(
       report.files.reduce((total, file) => total + (file.maskedValues ?? 0), 0),
     );
-    expect(metrics.filesKeptLocal).toBe(4);
+    expect(metrics.filesKeptLocal).toBe(3);
     expect(metrics.filesExcluded).toBe(0);
   });
 

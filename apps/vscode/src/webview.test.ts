@@ -987,19 +987,21 @@ describe("Context Compression settings (v0.3.3)", () => {
   };
   const props = manifest.contributes.configuration.properties;
 
-  it("declares yuhi.compress (boolean, default false, resource-scoped)", () => {
+  it("declares yuhi.compress (boolean, default true, resource-scoped)", () => {
     const compress = props["yuhi.compress"];
     expect(compress).toBeDefined();
     expect(compress?.type).toBe("boolean");
-    expect(compress?.default).toBe(false);
+    expect(compress?.default).toBe(true);
     expect(compress?.scope).toBe("resource");
   });
 
-  it("declares yuhi.tokenBudget (number, default 0, resource-scoped)", () => {
+  it("declares yuhi.tokenBudget (number, default 200000 best-effort target, resource-scoped)", () => {
     const budget = props["yuhi.tokenBudget"];
     expect(budget).toBeDefined();
     expect(budget?.type).toBe("number");
-    expect(budget?.default).toBe(0);
+    // Corrected policy: Context Compression defaults to Auto with a 200,000-token
+    // best-effort target (0 remains a valid "No target"; the field stays optional).
+    expect(budget?.default).toBe(200_000);
     expect(budget?.scope).toBe("resource");
     expect((budget as { minimum?: number })?.minimum).toBe(0);
     expect((budget as { maximum?: number })?.maximum).toBe(1_000_000_000);

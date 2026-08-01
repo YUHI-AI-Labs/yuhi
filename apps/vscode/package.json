@@ -227,17 +227,62 @@
         },
         "yuhi.compress": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "scope": "resource",
           "description": "Compress source structure (drop implementation bodies, keep signatures) to reduce tokens."
         },
+        "yuhi.compressionMode": {
+          "type": "string",
+          "enum": ["auto", "on", "off"],
+          "enumDescriptions": [
+            "Do not create compact context representations.",
+            "Automatically create safe compact representations when useful (recommended).",
+            "Always enable safe compression; use the optional best-effort Token Budget."
+          ],
+          "default": "auto",
+          "scope": "resource",
+          "description": "How Yuhi prepares compact repository context. Auto is recommended; failed compression always falls back to the full file."
+        },
+        "yuhi.permissionMode": {
+          "type": "string",
+          "enum": ["standard", "plan", "acceptEdits", "auto", "custom"],
+          "default": "standard",
+          "scope": "resource",
+          "description": "Claude Code permission mode used in Yuhi Mode. Yuhi does not disable Auto mode globally."
+        },
+        "yuhi.sandboxPreset": {
+          "type": "string",
+          "enum": ["standard", "guarded", "locked-down"],
+          "enumDescriptions": [
+            "Use Claude Code defaults; Yuhi adds no permission restrictions.",
+            "Enable Claude's sandbox while preserving Auto mode and prompting for unsandboxed commands.",
+            "Apply Yuhi's strict sandbox restrictions; Auto or bypass capabilities may be limited."
+          ],
+          "default": "guarded",
+          "scope": "resource",
+          "description": "Runtime sandbox preset. Repository preparation and Safe Apply remain enforced independently."
+        },
         "yuhi.tokenBudget": {
           "type": "number",
-          "default": 0,
+          "default": 200000,
           "minimum": 0,
           "maximum": 1000000000,
           "scope": "resource",
           "description": "Target token budget for the prepared context. Enable Context Compression first. Use 0 for No target; positive whole numbers are best-effort targets."
+        },
+        "yuhi.alwaysIncludeWarningExtensions": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^\\.[A-Za-z0-9]+$" },
+          "default": [],
+          "scope": "resource",
+          "description": "File extensions explicitly allowed with inspection warnings. Known credentials and policy blocks still remain excluded."
+        },
+        "yuhi.alwaysExcludeExtensions": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^\\.[A-Za-z0-9]+$" },
+          "default": [],
+          "scope": "resource",
+          "description": "File extensions explicitly kept out of the Prepared Workspace."
         }
       }
     }

@@ -112,11 +112,21 @@ describe("v0.3.3 structure compression integration", () => {
     const sourceAfter = hashSourceTree(dir);
     expect([...sourceAfter.entries()].sort()).toEqual([...sourceBefore.entries()].sort());
 
-    // The delivered TS file is body-omitted: signature stays, body marker is gone.
+    // Corrected policy (additive, non-destructive): the compact representation is an
+    // ADDITIONAL initial-context artifact under .yuhi/context/compact/ — the useful
+    // ORIGINAL delivered file remains available FULL at its source path. Compression
+    // never rewrites or deletes a repository file.
     const deliveredBigTs = readFileSync(path.join(report.outDir, "src/big.ts"), "utf8");
-    expect(deliveredBigTs).toContain("computeWidgetScore(input: number[]): number");
-    expect(deliveredBigTs).not.toContain(BODY_MARKER);
-    expect(estimateTokens(deliveredBigTs)).toBeLessThan(estimateTokens(sourceBigTs));
+    expect(deliveredBigTs).toBe(sourceBigTs); // original preserved verbatim
+    expect(deliveredBigTs).toContain(BODY_MARKER);
+    const compactBigTs = readFileSync(
+      path.join(report.outDir, ".yuhi/context/compact/src/big.ts.md"),
+      "utf8",
+    );
+    // The compact companion is body-omitted: signature stays, body marker is gone.
+    expect(compactBigTs).toContain("computeWidgetScore(input: number[]): number");
+    expect(compactBigTs).not.toContain(BODY_MARKER);
+    expect(estimateTokens(compactBigTs)).toBeLessThan(estimateTokens(sourceBigTs));
 
     // package.json and README stay FULL and unchanged on disk.
     expect(readFileSync(path.join(report.outDir, "package.json"), "utf8")).toBe(
@@ -149,23 +159,25 @@ describe("v0.3.3 structure compression integration", () => {
     expect(mReadme.compressionReason).toBe("too-small");
   });
 
-  it("a small token budget excludes a non-essential source file (reason 'budget') but never a MustKeep file", async () => {
+  it("a small token budget keeps an over-budget source file FULL (never deletes it) and never a MustKeep file", async () => {
     put("yuhi.yaml", YUHI_CONFIG);
     put("src/index.ts", "export const start = (): void => {};\n"); // entry point → MustKeep
-    put("src/feature.ts", bigTsSource()); // non-MustKeep, compressible → drop candidate
+    put("src/feature.ts", bigTsSource()); // non-MustKeep, compressible
     put("package.json", JSON.stringify({ name: "demo", version: "1.0.0" }, null, 2) + "\n");
     put("tsconfig.json", JSON.stringify({ compilerOptions: { strict: true } }, null, 2) + "\n");
 
     const report = await prepareWorkspace(dir, { compress: true, tokenBudget: 10 });
     const summary = report.compression!;
+    // Corrected policy: a token target is ADVISORY. It must never make a useful source
+    // file vanish — an over-budget file is kept FULL (best-effort), never excluded/deleted.
     const feature = summary.files.find((f) => f.relpath === "src/feature.ts");
-    expect(feature?.representation).toBe("excluded");
-    expect(feature?.reason).toBe("token-budget");
-    // Excluded delivered copy is removed; source is untouched.
-    expect(existsSync(path.join(report.outDir, "src/feature.ts"))).toBe(false);
+    expect(feature?.representation).not.toBe("excluded");
+    expect(summary.excludedFiles).toBe(0);
+    // The delivered copy is preserved; source is untouched.
+    expect(existsSync(path.join(report.outDir, "src/feature.ts"))).toBe(true);
     expect(existsSync(path.join(dir, "src/feature.ts"))).toBe(true);
 
-    // MustKeep files were NOT excluded.
+    // MustKeep files were NOT excluded either.
     for (const rel of ["src/index.ts", "package.json", "tsconfig.json"]) {
       const decision = summary.files.find((f) => f.relpath === rel);
       expect(decision?.representation).not.toBe("excluded");

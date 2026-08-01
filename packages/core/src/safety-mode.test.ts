@@ -121,9 +121,13 @@ describe("Safety Mode changes real decisions (via resolvePolicy)", () => {
 });
 
 describe("prepare-loop hooks + helpers", () => {
-  it("escalatesUnverified is true for Strict and Maximum Privacy only", () => {
+  it("escalatesUnverified is true for Maximum Privacy only (Strict keeps ordinary unverified available-with-warning)", () => {
+    // Corrected policy: only Maximum Privacy is companion-first/local-only for
+    // content that could not be fully verified. Balanced and Strict keep ordinary
+    // unverified documents available WITH a warning (Strict adds a stronger warning
+    // but must NOT silently become Maximum Privacy) — see CLAUDE.md.
     expect(escalatesUnverified("balanced")).toBe(false);
-    expect(escalatesUnverified("strict")).toBe(true);
+    expect(escalatesUnverified("strict")).toBe(false);
     expect(escalatesUnverified("maximum-privacy")).toBe(true);
   });
   it("requiresZeroFindings is true for Maximum Privacy only", () => {
