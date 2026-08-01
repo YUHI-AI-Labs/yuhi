@@ -191,6 +191,139 @@ function renderBudgetCard(
   );
 }
 
+/**
+ * Availability + background counts resolved from the single {@link YuhiModeSummary}
+ * source when it is present. Every surface that shows these numbers reads THIS, so no
+ * panel line recomputes independently. Falls back to the legacy per-field values only
+ * when no summary has been attached yet (e.g. a state persisted before it was built).
+ */
+interface ResolvedCounts {
+  verified: number;
+  warning: number;
+  compact: number;
+  companions: number;
+  blocked: number;
+  failed: number;
+  /** Background pending + processing (documents still being inspected locally). */
+  pending: number;
+  /** Total files the agent can use (verified + warning + compact + companions). */
+  available: number;
+}
+
+function summaryCounts(s: YuhiModeSummary): ResolvedCounts {
+  const a = s.contextAvailability;
+  return {
+    verified: a.availableVerified,
+    warning: a.availableWithWarning,
+    compact: a.compactRepresentations,
+    companions: a.companionsAdded,
+    blocked: a.knownRisksBlocked,
+    failed: a.unavailableAfterFailure,
+    pending: s.background.pending + s.background.processing,
+    available: a.availableVerified + a.availableWithWarning + a.compactRepresentations + a.companionsAdded,
+  };
+}
+
+/**
+ * Format a real reduction percentage honestly: never round a genuine, tiny reduction
+ * up or down to a misleading value. `82` → `82%`, `41.3` → `41.3%`, `0.36` → `0.36%`,
+ * and a positive value that would round to zero renders `<0.01%` (never a fake `0%`).
+ */
+function fmtReductionPercent(p: number): string {
+  if (p > 0 && p < 0.005) return "<0.01%";
+  const rounded = Math.round(p * 100) / 100;
+  const text = rounded.toFixed(2).replace(/\.?0+$/, "");
+  return `${text}%`;
+}
+
+/**
+ * The headline **Repository Optimization** dashboard — the product's value story in
+ * five numbers. Driven ONLY by the single {@link YuhiModeSummary} (availability +
+ * background + compression); no number is recomputed anywhere else. Honest by
+ * construction: a null reduction renders "Not measured" (never a fake 0), a real
+ * reduction is shown even when tiny, and the reduction is labelled EXACTLY "Estimated
+ * context reduction" — never billing/API/cost savings. Internal reason codes
+ * (kept-local / provider-unavailable / OCR-deferred) are intentionally kept OUT here.
+ *
+ * When `summary` is absent the SAME frame renders with placeholder slots so the user
+ * sees what Yuhi is about to do BEFORE Prepare; the slots flip to real numbers after.
+ */
+function renderRepositoryOptimization(summary: YuhiModeSummary | undefined): string {
+  const stat = (value: string, label: string, cls = ""): string =>
+    `<div class="stat${cls ? ` ${cls}` : ""}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`;
+  if (!summary) {
+    // Pre-Prepare frame: show the five slots Yuhi is about to fill.
+    return (
+      `<div class="optim" role="group" aria-label="Repository optimization">` +
+      `<div class="optim-h">Repository Optimization</div>` +
+      `<div class="optim-hero"><span>Estimated context reduction</span><b>Estimated</b>` +
+      `<small>Prepare to measure this repository</small></div>` +
+      `<div class="optim-grid">` +
+      stat("—", "available immediately") +
+      stat("Waiting…", "processing in background") +
+      stat("—", "blocked (known risk)") +
+      stat("—", "compact representations") +
+      `</div>` +
+      `<div class="optim-note">Only structure is compressed — implementation bodies are summarized. ` +
+      `Originals are preserved (never modified). The agent can still read the full original on demand.</div>` +
+      `</div>`
+    );
+  }
+  const e = summary.contextEfficiency;
+  const c = summaryCounts(summary);
+  const availableImmediately = c.verified + c.warning;
+  const heroValue =
+    e.representationReductionPercent === null
+      ? "Not measured"
+      : `✓ ${fmtReductionPercent(e.representationReductionPercent)}`;
+  const beforeAfter =
+    e.repositoryTokensBefore === null || e.repositoryTokensAfter === null
+      ? `<small>Not measured</small>`
+      : `<small>${e.repositoryTokensBefore.toLocaleString()} → ${e.repositoryTokensAfter.toLocaleString()} estimated tokens</small>`;
+  return (
+    `<div class="optim" role="group" aria-label="Repository optimization">` +
+    `<div class="optim-h">Repository Optimization</div>` +
+    `<div class="optim-hero"><span>Estimated context reduction</span><b>${esc(heroValue)}</b>${beforeAfter}</div>` +
+    `<div class="optim-grid">` +
+    stat(availableImmediately.toLocaleString(), "available immediately") +
+    stat(c.pending.toLocaleString(), "processing in background") +
+    stat(c.blocked.toLocaleString(), "blocked (known risk)") +
+    stat(c.compact.toLocaleString(), "compact representations") +
+    `</div>` +
+    `<div class="optim-note">Only structure is compressed — implementation bodies are summarized. ` +
+    `Originals are preserved (never modified). The agent can still read the full original on demand.</div>` +
+    `</div>`
+  );
+}
+
+/**
+ * The value-forward "Yuhi Mode Ready" header shown at the TOP of the Ready / Yuhi-Mode
+ * surface. Four concrete lines derived ONLY from the summary; a line is omitted when its
+ * count is 0, and a not-measured reduction reads "calculating…" rather than a fake number.
+ */
+function renderValueForwardReady(summary: YuhiModeSummary | undefined): string {
+  if (!summary) return "";
+  const e = summary.contextEfficiency;
+  const c = summaryCounts(summary);
+  const availableImmediately = c.verified + c.warning;
+  const rows: string[] = [];
+  if (availableImmediately > 0) {
+    rows.push(line("done", `${availableImmediately.toLocaleString()} files immediately available`));
+  }
+  if (c.pending > 0) {
+    rows.push(line("active", `${c.pending.toLocaleString()} documents processing`));
+  }
+  if (c.compact > 0) {
+    rows.push(line("done", `${c.compact.toLocaleString()} compact representations`));
+  }
+  rows.push(
+    e.representationReductionPercent === null
+      ? line("active", "Estimated context reduction: calculating…")
+      : line("done", `Estimated context reduction ${fmtReductionPercent(e.representationReductionPercent)}`),
+  );
+  return `<div class="vfready"><div class="vfready-h">Yuhi Mode Ready</div>${rows.join("")}</div>`;
+}
+
 function renderYuhiModeSummary(summary: YuhiModeSummary | undefined): string {
   if (!summary) return "";
   const a = summary.contextAvailability;
@@ -200,7 +333,7 @@ function renderYuhiModeSummary(summary: YuhiModeSummary | undefined): string {
   return `<div class="impact"><div class="impact-h">YUHI MODE — ${summary.launchStatus === "ready" ? "READY" : summary.launchStatus === "ready-with-warnings" ? "READY WITH WARNINGS" : "BLOCKED"}</div>` +
     `<div class="gen"><b>Agent capability</b><br>Agent: ${esc(summary.agentCapabilities.selectedAgent)}<br>Auto mode: ${summary.agentCapabilities.autoModeAvailable ? "Available" : "Unavailable for selected preset"}<br>Prepared Workspace: Active<br>Source changes: Review required</div>` +
     `<div class="gen"><b>What the agent can use</b><br>Verified files: ${a.availableVerified.toLocaleString()}<br>Available with warnings: ${a.availableWithWarning.toLocaleString()}<br>Compact representations: ${a.compactRepresentations.toLocaleString()}<br>Verified companions added: ${a.companionsAdded.toLocaleString()}<br>Known-risk files blocked: ${a.knownRisksBlocked.toLocaleString()}<br>Unavailable after failure: ${a.unavailableAfterFailure.toLocaleString()}</div>` +
-    `<div class="gen"><b>Context efficiency</b><br>Repository representation: ${value(e.repositoryTokensBefore)} → ${value(e.repositoryTokensAfter)} estimated tokens<br>${e.representationReductionPercent === null ? "Reduction not measured" : `${e.representationReductionPercent.toFixed(1)}% smaller`}<br>Initial agent context: ${value(e.initialAgentContextTokens)} estimated tokens<br>Large artifacts represented compactly: ${e.largeArtifactsRepresented.toLocaleString()}</div>` +
+    `<div class="gen"><b>Context efficiency</b><br>Repository representation: ${value(e.repositoryTokensBefore)} → ${value(e.repositoryTokensAfter)} estimated tokens<br>${e.representationReductionPercent === null ? "Reduction not measured" : `${fmtReductionPercent(e.representationReductionPercent)} smaller`}<br>Initial agent context: ${value(e.initialAgentContextTokens)} estimated tokens<br>Large artifacts represented compactly: ${e.largeArtifactsRepresented.toLocaleString()}</div>` +
     `<div class="gen"><b>Background result</b><br>Status: ${esc(b.status)}<br>Processed companions: ${b.completed.toLocaleString()}<br>Still available with warnings: ${b.companionUnavailable.toLocaleString()}<br>Pending: ${(b.pending + b.processing).toLocaleString()}<br>Original documents remain usable when shared with warnings.</div>` +
     `<div class="hint">Yuhi preserved the agent's capabilities, made useful repository context available with explicit confidence labels, reduced unnecessary representation, and kept source changes behind review.</div></div>`;
 }
@@ -273,19 +406,32 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badgeClass: "idle",
         body:
           `<p class="empty">Prepare this workspace to generate local context.</p>` +
+          renderRepositoryOptimization(undefined) +
           prepareControls(data.settings ?? { safetyMode: "balanced", compressionMode: "auto", tokenBudget: 0, permissionMode: "standard", sandboxPreset: "guarded" }) +
           button("prepare", "Prepare with Yuhi", { primary: true }),
       };
     case "yuhi-mode": {
-      const pending = data.documentsPending ?? 0;
+      // Single source: when the YuhiModeSummary is attached, every availability + background
+      // count below reads from it (no independent recompute). Legacy per-field values are a
+      // fallback only for a state persisted before the summary existed.
+      const c = data.yuhiModeSummary ? summaryCounts(data.yuhiModeSummary) : undefined;
+      const filesAvailable = c ? c.available : data.filesAvailable;
+      const filesExcluded = c ? c.blocked : data.filesExcluded;
+      const verifiedFiles = c ? c.verified : data.verifiedFiles;
+      const warningFiles = c ? c.warning : data.warningFiles;
+      const processingFailed = c ? c.failed : (data.processingFailedFiles ?? 0);
+      const pending = c ? c.pending : (data.documentsPending ?? 0);
       const reduction = data.reductionPercent;
-      const reductionHero =
-        `<div class="reductionHero"><span>Estimated context reduction</span>` +
-        `<b>${reduction === undefined ? "Not measured" : `${reduction.toFixed(1)}%`}</b>` +
-        (data.estimatedTokensBefore !== undefined && data.estimatedTokensAfter !== undefined
-          ? `<small>${data.estimatedTokensBefore.toLocaleString()} → ${data.estimatedTokensAfter.toLocaleString()} estimated tokens</small>`
-          : "") +
-        `</div>`;
+      // When the single-source summary is present the Repository Optimization dashboard
+      // carries the reduction hero — don't render a second, lower-precision one.
+      const reductionHero = data.yuhiModeSummary
+        ? ""
+        : `<div class="reductionHero"><span>Estimated context reduction</span>` +
+          `<b>${reduction === undefined ? "Not measured" : `${reduction.toFixed(1)}%`}</b>` +
+          (data.estimatedTokensBefore !== undefined && data.estimatedTokensAfter !== undefined
+            ? `<small>${data.estimatedTokensBefore.toLocaleString()} → ${data.estimatedTokensAfter.toLocaleString()} estimated tokens</small>`
+            : "") +
+          `</div>`;
       const budgetCard = renderBudgetCard(data.compression, data.estimatedTokensAfter ?? 0);
       const checks =
         // Blue "Yuhi Mode" = this window IS the Prepared Workspace. Whether the
@@ -296,21 +442,21 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           ? line("done", "Claude Code extension active")
           : line("todo", "Claude Code extension: use Open Claude Code")) +
         line("done", "Agent Auto Mode available inside the verified sandbox") +
-        line("done", `${data.filesAvailable} file${data.filesAvailable === 1 ? "" : "s"} available`) +
-        (data.verifiedFiles !== undefined
-          ? line("done", `${data.verifiedFiles} verified`)
+        line("done", `${filesAvailable} file${filesAvailable === 1 ? "" : "s"} available`) +
+        (verifiedFiles !== undefined
+          ? line("done", `${verifiedFiles} verified`)
           : "") +
-        ((data.warningFiles ?? 0) > 0
-          ? line("warn", `${data.warningFiles} available with warning`)
+        ((warningFiles ?? 0) > 0
+          ? line("warn", `${warningFiles} available with warning`)
           : "") +
-        (data.filesExcluded > 0
-          ? line("warn", `${data.filesExcluded} file${data.filesExcluded === 1 ? "" : "s"} excluded by recommendation`)
+        (filesExcluded > 0
+          ? line("warn", `${filesExcluded} file${filesExcluded === 1 ? "" : "s"} excluded by recommendation`)
           : "") +
         (pending > 0
           ? line("active", `${pending} document${pending === 1 ? "" : "s"} processing in the background`)
           : "") +
-        ((data.processingFailedFiles ?? 0) > 0
-          ? line("warn", `${data.processingFailedFiles} background processing failed`)
+        (processingFailed > 0
+          ? line("warn", `${processingFailed} background processing failed`)
           : "");
       const openBtn =
         data.claudeExtensionAvailable === false
@@ -345,6 +491,8 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badgeClass: "mode",
         body:
           `<div class="modehdr" role="heading" aria-level="2">◆ YUHI MODE</div>` +
+          renderValueForwardReady(data.yuhiModeSummary) +
+          renderRepositoryOptimization(data.yuhiModeSummary) +
           renderYuhiModeSummary(data.yuhiModeSummary) +
           reductionHero +
           budgetCard +
@@ -401,6 +549,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
         badge: data.blocking ? "Preparing" : "Enriching",
         badgeClass: "busy",
         body:
+          renderRepositoryOptimization(undefined) +
           `<div class="prep">` +
           `<div class="prep-head"><span class="ck spin big" aria-hidden="true">◐</span>` +
           `<div class="prep-headtext"><div class="prep-title">${esc(title)}</div>` +
@@ -420,26 +569,35 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       };
     }
     case "ready": {
-      const reductionHero =
-        `<div class="reductionHero"><span>Estimated context reduction</span>` +
-        `<b>${data.reductionPercent === undefined ? "Not measured" : `${data.reductionPercent.toFixed(1)}%`}</b>` +
-        (data.estimatedTokensBefore !== undefined && data.estimatedTokensAfter !== undefined
-          ? `<small>${data.estimatedTokensBefore.toLocaleString()} → ${data.estimatedTokensAfter.toLocaleString()} estimated tokens</small>`
-          : `<small>Context Compression: Off</small>`) +
-        `</div>`;
+      // Single source: prefer the summary's availability + background counts when present.
+      const rc = data.yuhiModeSummary ? summaryCounts(data.yuhiModeSummary) : undefined;
+      const readyVerified = rc ? rc.verified : data.verifiedFiles;
+      const readyWarning = rc ? rc.warning : (data.warningFiles ?? 0);
+      const readyPending = rc ? rc.pending : (data.backgroundPendingFiles ?? 0);
+      const readyFailed = rc ? rc.failed : (data.processingFailedFiles ?? 0);
+      // When the single-source summary is present the Repository Optimization dashboard
+      // carries the reduction hero — don't render a second, lower-precision one.
+      const reductionHero = data.yuhiModeSummary
+        ? ""
+        : `<div class="reductionHero"><span>Estimated context reduction</span>` +
+          `<b>${data.reductionPercent === undefined ? "Not measured" : `${data.reductionPercent.toFixed(1)}%`}</b>` +
+          (data.estimatedTokensBefore !== undefined && data.estimatedTokensAfter !== undefined
+            ? `<small>${data.estimatedTokensBefore.toLocaleString()} → ${data.estimatedTokensAfter.toLocaleString()} estimated tokens</small>`
+            : `<small>Context Compression: Off</small>`) +
+          `</div>`;
       const budgetCard = renderBudgetCard(data.compression, data.estimatedTokensAfter ?? 0);
       const warnings = data.summariesRejected > 0;
       const checks =
         line("done", `${data.filesDiscovered} files discovered`) +
-        (data.verifiedFiles !== undefined ? line("done", `${data.verifiedFiles} verified`) : "") +
-        ((data.warningFiles ?? 0) > 0
-          ? line("warn", `${data.warningFiles} available with warning`)
+        (readyVerified !== undefined ? line("done", `${readyVerified} verified`) : "") +
+        ((readyWarning ?? 0) > 0
+          ? line("warn", `${readyWarning} available with warning`)
           : "") +
-        ((data.backgroundPendingFiles ?? 0) > 0
-          ? line("active", `${data.backgroundPendingFiles} processing in the background`)
+        (readyPending > 0
+          ? line("active", `${readyPending} processing in the background`)
           : "") +
-        ((data.processingFailedFiles ?? 0) > 0
-          ? line("warn", `${data.processingFailedFiles} processing failed`)
+        (readyFailed > 0
+          ? line("warn", `${readyFailed} processing failed`)
           : "") +
         line("done", `${data.documentsInspected} documents inspected`) +
         (warnings
@@ -474,6 +632,8 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
             : "Ready",
         badgeClass: data.backgroundActive ? "busy" : warnings ? "warn" : "ok",
         body:
+          renderValueForwardReady(data.yuhiModeSummary) +
+          renderRepositoryOptimization(data.yuhiModeSummary) +
           renderYuhiModeSummary(data.yuhiModeSummary) +
           reductionHero +
           budgetCard +
@@ -620,6 +780,41 @@ export function renderActivityPanel(
   .reductionHero b { font-size: 30px; line-height: 1.1; font-variant-numeric: tabular-nums;
     color: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); }
   .reductionHero small { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+  /* Repository Optimization dashboard — the five-number value story. */
+  .optim {
+    margin: 12px 0; padding: 12px; border-radius: 8px;
+    border: 1px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+    background: var(--vscode-editorWidget-background, rgba(74,160,255,.06));
+  }
+  .optim-h {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    color: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); margin-bottom: 10px;
+  }
+  .optim-hero { display: grid; gap: 3px; margin-bottom: 12px; }
+  .optim-hero span {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+    color: var(--vscode-descriptionForeground);
+  }
+  .optim-hero b {
+    font-size: 30px; line-height: 1.1; font-variant-numeric: tabular-nums;
+    color: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+  }
+  .optim-hero small { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+  .optim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+  .optim-note {
+    margin-top: 11px; font-size: 10.5px; line-height: 1.5;
+    color: var(--vscode-descriptionForeground);
+  }
+  /* Value-forward "Yuhi Mode Ready" header — concrete outcomes at the top. */
+  .vfready {
+    margin: 4px 0 12px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--vscode-testing-iconPassed, var(--vscode-charts-green, #57a15a));
+    background: var(--vscode-editorWidget-background, rgba(87,161,90,.06));
+  }
+  .vfready-h {
+    font-size: 13px; font-weight: 700; letter-spacing: .02em; margin-bottom: 6px;
+    color: var(--vscode-foreground);
+  }
   .budgetCard { margin: 0 0 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .budgetCard > div { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px; display: grid; gap: 2px; }
   .budgetCard .budgetStatus { grid-column: 1 / -1; }

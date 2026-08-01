@@ -33,6 +33,8 @@ export interface YuhiModeSummary {
     representationReductionTokens: number | null;
     representationReductionPercent: number | null;
     initialAgentContextTokens: number | null;
+    /** Source files delivered as a compact structural representation (companion; original preserved). */
+    compressedFiles: number;
     largeArtifactsRepresented: number;
     reductionByStructuralCompression: number;
     reductionByLargeArtifactRepresentation: number;
@@ -177,6 +179,8 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
       representationReductionTokens: reduction,
       representationReductionPercent: input.prepared.reductionPercent,
       initialAgentContextTokens: input.initialAgentContextTokens ?? null,
+      // Derived from the single `prepared` projection — never recomputed independently.
+      compressedFiles: Math.max(0, input.prepared.compressedFiles),
       largeArtifactsRepresented: Math.max(0, input.largeArtifactsRepresented ?? 0),
       reductionByStructuralCompression: breakdown.structural,
       reductionByLargeArtifactRepresentation: breakdown.large,

@@ -1,9 +1,55 @@
 import { describe, it, expect } from "vitest";
+import type { YuhiModeSummary } from "@yuhi/core";
 import { renderActivityPanel, type ActivityPanelData } from "./activity-panel.js";
 
 const CSP = "vscode-resource:";
 const NONCE = "NONCE123";
 const html = (d: ActivityPanelData) => renderActivityPanel(d, CSP, NONCE);
+
+/** A YuhiModeSummary factory so the dashboard tests exercise the single-source object. */
+function summary(overrides: {
+  availability?: Partial<YuhiModeSummary["contextAvailability"]>;
+  efficiency?: Partial<YuhiModeSummary["contextEfficiency"]>;
+  background?: Partial<YuhiModeSummary["background"]>;
+} = {}): YuhiModeSummary {
+  return {
+    schemaVersion: 1,
+    launchStatus: "ready",
+    agentCapabilities: { autoModeAvailable: true, selectedAgent: "Claude Code", sourceWriteRequiresReview: true },
+    contextAvailability: {
+      availableVerified: 0,
+      availableWithWarning: 0,
+      compactRepresentations: 0,
+      companionsAdded: 0,
+      knownRisksBlocked: 0,
+      unavailableAfterFailure: 0,
+      ...overrides.availability,
+    },
+    contextEfficiency: {
+      compressionMode: "on",
+      repositoryTokensBefore: null,
+      repositoryTokensAfter: null,
+      representationReductionTokens: null,
+      representationReductionPercent: null,
+      initialAgentContextTokens: null,
+      compressedFiles: 0,
+      largeArtifactsRepresented: 0,
+      reductionByStructuralCompression: 0,
+      reductionByLargeArtifactRepresentation: 0,
+      reductionBySafetyTransformation: 0,
+      ...overrides.efficiency,
+    },
+    background: {
+      status: "idle",
+      pending: 0,
+      processing: 0,
+      completed: 0,
+      companionUnavailable: 0,
+      ...overrides.background,
+    },
+    protection: { originalWorkspaceModified: false, knownSecretsBlocked: 0, safeApplyRequired: true },
+  };
+}
 
 describe("Yuhi activity panel (webview)", () => {
   it("surfaces a non-automatic Safe Patch Review action in Yuhi Mode", () => {
@@ -231,6 +277,121 @@ describe("Yuhi activity panel (webview)", () => {
     expect(out).toContain("Launch with");
     // The single Start button is not rendered when the picker is present.
     expect(out).not.toContain('id="startClaude"');
+  });
+
+  it("Repository Optimization dashboard shows the five-number value story from the summary", () => {
+    const out = html({
+      phase: "yuhi-mode",
+      filesAvailable: 0,
+      filesExcluded: 0,
+      yuhiModeSummary: summary({
+        availability: { availableVerified: 4000, availableWithWarning: 148, compactRepresentations: 163, knownRisksBlocked: 12 },
+        efficiency: { representationReductionPercent: 97, repositoryTokensBefore: 1_000_000, repositoryTokensAfter: 30_000 },
+        background: { status: "running", pending: 900, processing: 95, completed: 5 },
+      }),
+    });
+    expect(out).toContain("Repository Optimization");
+    expect(out).not.toContain("Repository Savings");
+    // Five numbers: available immediately (4000+148), background (900+95), blocked (12),
+    // compact (163), and the reduction hero.
+    expect(out).toContain("4,148");
+    expect(out).toContain("available immediately");
+    expect(out).toContain("995");
+    expect(out).toContain("processing in background");
+    expect(out).toContain("blocked (known risk)");
+    expect(out).toContain("compact representations");
+    expect(out).toContain("Estimated context reduction");
+    expect(out).toContain("✓ 97%");
+    // Compression explainer copy is present, honest, and non-billing.
+    expect(out).toContain("Only structure is compressed");
+    expect(out).toContain("Originals are preserved");
+    expect(out).toContain("read the full original on demand");
+    expect(out).not.toMatch(/cost savings|billing|API token savings/i);
+  });
+
+  it("Repository Optimization renders Not-measured (never a fake 0) when reduction is null", () => {
+    const out = html({
+      phase: "ready",
+      filesDiscovered: 3,
+      documentsInspected: 0,
+      summariesRejected: 0,
+      contextIndex: true,
+      agentHandoff: true,
+      yuhiModeSummary: summary({ availability: { availableVerified: 3 } }),
+    });
+    // Null reduction → "Not measured" in the hero, and "calculating…" in the ready header.
+    expect(out).toContain("Not measured");
+    expect(out).toContain("Estimated context reduction: calculating…");
+    expect(out).not.toMatch(/Estimated context reduction<\/span><b>0%/);
+  });
+
+  it("shows a real tiny reduction honestly (0.36%, never rounded up or hidden)", () => {
+    const out = html({
+      phase: "yuhi-mode",
+      filesAvailable: 0,
+      filesExcluded: 0,
+      yuhiModeSummary: summary({ efficiency: { representationReductionPercent: 0.36 } }),
+    });
+    expect(out).toContain("0.36%");
+    expect(out).not.toContain("0.4%");
+    expect(out).not.toContain("0.0%");
+  });
+
+  it("background queue reflects running vs completed state", () => {
+    const running = html({
+      phase: "yuhi-mode",
+      filesAvailable: 0,
+      filesExcluded: 0,
+      yuhiModeSummary: summary({ background: { status: "running", pending: 7, processing: 3, completed: 0 } }),
+    });
+    // Running → 10 documents processing surfaced in the header and dashboard.
+    expect(running).toContain("10");
+    expect(running).toContain("documents processing");
+    const done = html({
+      phase: "yuhi-mode",
+      filesAvailable: 0,
+      filesExcluded: 0,
+      yuhiModeSummary: summary({
+        availability: { availableVerified: 5 },
+        background: { status: "completed", pending: 0, processing: 0, completed: 8 },
+      }),
+    });
+    // Completed → no "processing" line; 0 background shows as no pending metric emphasis.
+    expect(done).toContain("processing in background");
+    expect(done).not.toContain("documents processing");
+  });
+
+  it("shows the Repository Optimization FRAME before Prepare (placeholders, not fake numbers)", () => {
+    const notPrepared = html({ phase: "not-prepared" });
+    expect(notPrepared).toContain("Repository Optimization");
+    expect(notPrepared).toContain("Estimated context reduction");
+    expect(notPrepared).toContain("Estimated");
+    expect(notPrepared).toContain("Waiting…");
+    expect(notPrepared).toContain("available immediately");
+    // The reduction hero shows the placeholder, never a fabricated percentage.
+    expect(notPrepared).toContain("<b>Estimated</b>");
+    const preparing = html({ phase: "preparing", blocking: true, filesDiscovered: 5 });
+    expect(preparing).toContain("Repository Optimization");
+    expect(preparing).toContain("Waiting…");
+  });
+
+  it("value-forward Yuhi Mode Ready header lists concrete outcomes, omitting zero counts", () => {
+    const out = html({
+      phase: "yuhi-mode",
+      filesAvailable: 0,
+      filesExcluded: 0,
+      yuhiModeSummary: summary({
+        availability: { availableVerified: 4000, availableWithWarning: 148, compactRepresentations: 163 },
+        efficiency: { representationReductionPercent: 97 },
+        background: { status: "idle", pending: 0, processing: 0, completed: 0 },
+      }),
+    });
+    expect(out).toContain("Yuhi Mode Ready");
+    expect(out).toContain("4,148 files immediately available");
+    expect(out).toContain("163 compact representations");
+    expect(out).toContain("Estimated context reduction 97%");
+    // Background is idle (0) → no "documents processing" line.
+    expect(out).not.toContain("documents processing");
   });
 
   it("button ids match the ActivityPanelMessage contract", () => {
