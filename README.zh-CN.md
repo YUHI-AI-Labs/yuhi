@@ -4,6 +4,8 @@
 
 <p align="center">在编码智能体看到你的仓库之前，Yuhi 会先准备一个更小、更干净、更安全的工作区——你可以在本地详细查看 AI 能看到什么，而可分享的只是 public-safe 的汇总摘要。</p>
 
+> **当前版本：0.3.6** — **Safe Patch Review：先审查，再安全应用。** Claude Code / Codex 的更改保留在 Prepared Repository 中；只有用户明确选择并通过重新验证的文件或文本片段才会应用到 Source Repository。Yuhi 不会自动应用更改。
+
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-vscode?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>

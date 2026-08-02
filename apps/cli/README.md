@@ -60,13 +60,19 @@ CI can post it automatically with the
 | `yuhi preview` | Show exactly what an agent would see |
 | `yuhi explain <path>` | Why a file is prepared / blocked / kept local |
 | `yuhi doctor` | Check your environment & config |
+| `yuhi patch status` | Show agent changes and risk counts from the private pre-agent snapshot |
+| `yuhi patch diff` | Show a metadata-safe, secret/PII-masked change preview |
+| `yuhi patch validate` | Revalidate patch eligibility without changing Source |
+| `yuhi patch apply` | Confirm and apply selected eligible changes through Trusted Apply |
+| `yuhi patch undo <patch-id>` | Transactionally undo an applied patch when Source is unchanged |
+| `yuhi patch discard` | Restore the Prepared Repository baseline without changing Source |
+| `yuhi patch history` | Show metadata-only local patch history |
 
 `--json`, `--quiet`, `--no-color`, and `--lang en|ja|zh-CN` are supported everywhere.
 Advanced: `yuhi workspace list/inspect/clean`, `yuhi review <run>`.
 
-> After `yuhi prepare`, start Claude Code in the Prepared Workspace that Yuhi generated.
-> `yuhi run` / `yuhi open` are temporarily disabled in this preview — use the VS Code
-> extension for the one-click Claude Code handoff.
+> Agent launch and patch review use the private pre-agent snapshot and the same Core safety
+> gate as VS Code. No patch is applied without explicit confirmation.
 
 ## Honest scope
 

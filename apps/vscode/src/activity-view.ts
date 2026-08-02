@@ -1,12 +1,16 @@
 import * as vscode from "vscode";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { PreparedMetrics } from "@yuhi/core";
+import type { PreparedMetrics, PublicPreparedContextSummary, YuhiModeSummary } from "@yuhi/core";
 import {
   renderActivityPanel,
   type ActivityPanelData,
   type BackgroundLifecycle,
+  type PrepareSettings,
+  type SafetyModeValue,
 } from "./activity-panel.js";
+import type { AgentPickerData } from "./agent-picker.js";
+import type { ProgressiveContextViewModel } from "./progressive-context.js";
 
 export const YUHI_ACTIVITY_VIEW_ID = "yuhi.workspace";
 const STATE_KEY = "yuhi.activityPanel.v1";
@@ -17,6 +21,13 @@ export interface PreparedDetail {
   documentsInspected: number;
   summariesRejected: number;
   backgroundActive?: boolean;
+  compression?: {
+    tokenBudget: number | null;
+    preparedTokens: number;
+    status: "within-budget" | "best-effort" | "no-budget";
+  };
+  publicSummary?: PublicPreparedContextSummary;
+  yuhiModeSummary?: YuhiModeSummary;
 }
 
 /**
@@ -28,11 +39,35 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private data: ActivityPanelData;
 
+  private readonly disposables: vscode.Disposable[] = [];
+
   constructor(
     private readonly memento: vscode.Memento,
+    private readonly version: string,
     private readonly onReveal?: () => void,
   ) {
     this.data = memento.get<ActivityPanelData>(STATE_KEY) ?? { phase: "not-prepared" };
+    // Reflect Settings edits (yuhi.safetyMode / compress / tokenBudget) into the
+    // pre-Prepare controls so the panel and VS Code Settings stay in sync.
+    this.disposables.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (
+          this.data.phase === "not-prepared" &&
+          (e.affectsConfiguration("yuhi.safetyMode") ||
+            e.affectsConfiguration("yuhi.compressionMode") ||
+            e.affectsConfiguration("yuhi.tokenBudget") ||
+            e.affectsConfiguration("yuhi.permissionMode") ||
+            e.affectsConfiguration("yuhi.sandboxPreset"))
+        ) {
+          this.setNotPrepared();
+        }
+      }),
+    );
+  }
+
+  dispose(): void {
+    for (const d of this.disposables) d.dispose();
+    this.disposables.length = 0;
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -48,7 +83,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     this.render(); // restore persisted state after reload
   }
 
-  private onMessage(message: { type?: string }): void {
+  private onMessage(message: { type?: string; value?: unknown; agentId?: unknown }): void {
     switch (message?.type) {
       case "prepare":
         void vscode.commands.executeCommand("yuhi.prepareAndStartClaude");
@@ -60,10 +95,82 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
             : "yuhi.prepareAndStartClaude",
         );
         break;
+      // v0.3.4 agent picker — launch the chosen agent into the SAME prepared run. The
+      // extension host resolves the allowlisted adapter; an unknown id can't be launched.
+      case "launchAgent":
+        if (typeof message.agentId === "string") {
+          void vscode.commands.executeCommand("yuhi.launchAgent", message.agentId);
+        }
+        break;
       case "details":
         void vscode.commands.executeCommand("yuhi.reviewPrepared");
         break;
+      // v0.3.5 Progressive Context — the host command drives the controller (cancel the
+      // background run / recompute + record the Context Revision). Never re-prepares.
+      case "cancelBackground":
+        void vscode.commands.executeCommand("yuhi.cancelBackground");
+        break;
+      case "refreshContext":
+        void vscode.commands.executeCommand("yuhi.refreshContext");
+        break;
+      case "reviewChanges":
+        void vscode.commands.executeCommand("yuhi.reviewAgentChanges");
+        break;
+      // Pre-Prepare settings. Persist the SAME yuhi.* config the prepare path reads
+      // (no separate plumbing), then re-render so the panel reflects the new value.
+      case "setSafetyMode": {
+        const v = message.value;
+        if (v === "balanced" || v === "strict" || v === "maximum-privacy") {
+          void this.updateConfig("safetyMode", v);
+        }
+        break;
+      }
+      case "setCompressionMode":
+        if (message.value === "off" || message.value === "auto" || message.value === "on") {
+          void this.updateConfig("compressionMode", message.value);
+        }
+        break;
+      case "setPermissionMode":
+        if (message.value === "standard" || message.value === "plan" || message.value === "acceptEdits" || message.value === "auto" || message.value === "custom") {
+          void this.updateConfig("permissionMode", message.value);
+        }
+        break;
+      case "setSandboxPreset":
+        if (message.value === "standard" || message.value === "guarded" || message.value === "locked-down") {
+          void this.updateConfig("sandboxPreset", message.value);
+        }
+        break;
+      case "setTokenBudget": {
+        if (message.value === null || message.value === "") {
+          void this.updateTokenBudget(0);
+          break;
+        }
+        const n = typeof message.value === "number" ? message.value : Number(message.value);
+        if (!Number.isInteger(n) || n <= 0 || n > 1_000_000_000) {
+          void vscode.window.showWarningMessage(
+            "Yuhi: Token Budget must be a positive whole number up to 1,000,000,000, or left blank for No target.",
+          );
+          break;
+        }
+        void this.updateTokenBudget(n);
+        break;
+      }
     }
+  }
+
+  private async updateConfig(key: string, value: unknown): Promise<void> {
+    await vscode.workspace
+      .getConfiguration("yuhi")
+      .update(key, value, vscode.ConfigurationTarget.Workspace);
+    // The onDidChangeConfiguration listener re-renders; call directly too so the
+    // panel updates even when the effective value did not change target scope.
+    if (this.data.phase === "not-prepared") this.setNotPrepared();
+  }
+
+  private async updateTokenBudget(value: number): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("yuhi");
+    await cfg.update("tokenBudget", value, vscode.ConfigurationTarget.Workspace);
+    if (this.data.phase === "not-prepared") this.setNotPrepared();
   }
 
   private set(data: ActivityPanelData): void {
@@ -74,7 +181,12 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
 
   private render(): void {
     if (!this.view) return;
-    this.view.webview.html = renderActivityPanel(this.data, this.view.webview.cspSource, nonce());
+    this.view.webview.html = renderActivityPanel(
+      this.data,
+      this.view.webview.cspSource,
+      nonce(),
+      this.version,
+    );
   }
 
   // ---- public state transitions (called from extension.ts) ----
@@ -84,7 +196,7 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   }
 
   setNotPrepared(): void {
-    this.set({ phase: "not-prepared" });
+    this.set({ phase: "not-prepared", settings: readPrepareSettings() });
   }
 
   /** Initial BLOCKING preparation is running; Start Claude Code stays disabled. */
@@ -105,6 +217,12 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     this.set({
       phase: "preparing",
       blocking,
+      ...(blocking
+        ? {
+            compressionEnabled: readPrepareSettings().compressionMode !== "off",
+            tokenBudget: readPrepareSettings().tokenBudget,
+          }
+        : {}),
       ...(detail.filesDiscovered !== undefined ? { filesDiscovered: detail.filesDiscovered } : {}),
       ...(detail.percent !== undefined ? { percent: detail.percent } : {}),
       ...(detail.stepIndex !== undefined ? { stepIndex: detail.stepIndex } : {}),
@@ -168,6 +286,27 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
       summariesRejected: detail?.summariesRejected ?? 0,
       contextIndex,
       agentHandoff,
+      ...(detail?.publicSummary
+        ? {
+            verifiedFiles: detail.publicSummary.verifiedFiles,
+            warningFiles: detail.publicSummary.availableWithWarningFiles,
+            backgroundPendingFiles: detail.publicSummary.backgroundPendingFiles,
+            processingFailedFiles: detail.publicSummary.processingFailedFiles,
+          }
+        : {}),
+      ...(detail?.publicSummary?.reductionPercent !== null && detail?.publicSummary?.reductionPercent !== undefined
+        ? { reductionPercent: detail.publicSummary.reductionPercent }
+        : {}),
+      ...(detail?.publicSummary?.originalEstimatedTokens !== null && detail?.publicSummary?.originalEstimatedTokens !== undefined
+        ? { estimatedTokensBefore: detail.publicSummary.originalEstimatedTokens }
+        : {}),
+      ...(detail?.publicSummary?.preparedEstimatedTokens !== null && detail?.publicSummary?.preparedEstimatedTokens !== undefined
+        ? { estimatedTokensAfter: detail.publicSummary.preparedEstimatedTokens }
+        : {}),
+      ...(detail?.compression ? { compression: detail.compression } : {}),
+      ...(detail?.yuhiModeSummary ? { yuhiModeSummary: detail.yuhiModeSummary } : {}),
+      maskedValues: metrics.sensitiveValuesMasked,
+      filesTransformed: metrics.preparedFilesModified,
       ...(detail?.backgroundActive ? { backgroundActive: true } : {}),
     });
   }
@@ -176,17 +315,35 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
   setYuhiMode(detail: {
     filesAvailable: number;
     filesExcluded: number;
+    verifiedFiles?: number;
+    warningFiles?: number;
+    processingFailedFiles?: number;
     documentsPending?: number;
     claudeExtensionAvailable?: boolean;
     claudeExtensionActive?: boolean;
     maskedValues?: number;
     reductionPercent?: number;
+    estimatedTokensBefore?: number;
+    estimatedTokensAfter?: number;
+    compression?: {
+      tokenBudget: number | null;
+      preparedTokens: number;
+      status: "within-budget" | "best-effort" | "no-budget";
+    };
     filesTransformed?: number;
+    /** v0.3.4 agent picker reconstructed from the on-disk manifest (Context ID). */
+    picker?: AgentPickerData;
+    yuhiModeSummary?: YuhiModeSummary;
   }): void {
     this.set({
       phase: "yuhi-mode",
       filesAvailable: detail.filesAvailable,
       filesExcluded: detail.filesExcluded,
+      ...(detail.verifiedFiles !== undefined ? { verifiedFiles: detail.verifiedFiles } : {}),
+      ...(detail.warningFiles !== undefined ? { warningFiles: detail.warningFiles } : {}),
+      ...(detail.processingFailedFiles !== undefined
+        ? { processingFailedFiles: detail.processingFailedFiles }
+        : {}),
       ...(detail.documentsPending !== undefined ? { documentsPending: detail.documentsPending } : {}),
       ...(detail.claudeExtensionAvailable !== undefined
         ? { claudeExtensionAvailable: detail.claudeExtensionAvailable }
@@ -196,8 +353,56 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
         : {}),
       ...(detail.maskedValues !== undefined ? { maskedValues: detail.maskedValues } : {}),
       ...(detail.reductionPercent !== undefined ? { reductionPercent: detail.reductionPercent } : {}),
+      ...(detail.estimatedTokensBefore !== undefined
+        ? { estimatedTokensBefore: detail.estimatedTokensBefore }
+        : {}),
+      ...(detail.estimatedTokensAfter !== undefined
+        ? { estimatedTokensAfter: detail.estimatedTokensAfter }
+        : {}),
+      ...(detail.compression ? { compression: detail.compression } : {}),
       ...(detail.filesTransformed !== undefined ? { filesTransformed: detail.filesTransformed } : {}),
+      ...(detail.picker ? { picker: detail.picker } : {}),
+      ...(detail.yuhiModeSummary ? { yuhiModeSummary: detail.yuhiModeSummary } : {}),
     });
+  }
+
+  /**
+   * v0.3.4 — attach (or clear) the agent picker on the current Ready / Yuhi-Mode
+   * surface. Availability is resolved asynchronously by the host (short timeout), so
+   * this merges into whatever Ready/Yuhi-Mode data is already shown without disturbing
+   * any other phase. A no-op when the panel is not on a launchable surface.
+   */
+  applyAgentPicker(picker: AgentPickerData | undefined): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    const next = { ...this.data };
+    if (picker) next.picker = picker;
+    else delete next.picker;
+    this.set(next);
+  }
+
+  /**
+   * v0.3.5 — attach (or clear) the Progressive Context surface on the current
+   * Ready / Yuhi-Mode panel. Driven ONLY by the public status file (via the
+   * controller). Merges into whatever launchable data is already shown, so polling
+   * updates never disturb any other phase; a no-op elsewhere.
+   */
+  applyProgressiveContext(progressive: ProgressiveContextViewModel | undefined): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    const next = { ...this.data };
+    if (progressive) next.progressive = progressive;
+    else delete next.progressive;
+    this.set(next);
+  }
+
+  applyYuhiModeSummary(summary: YuhiModeSummary): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    this.set({ ...this.data, yuhiModeSummary: summary });
+  }
+
+  /** The agent id currently shown as launching, if any (drives the "Launching…" label). */
+  currentPickerLaunching(): string | undefined {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return undefined;
+    return this.data.picker?.agents.find((a) => a.launching)?.id;
   }
 
   /** Recovery needed — surfaced as an empty/prepare state; the reason is shown via a notification. */
@@ -207,8 +412,35 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
 
   /** Agent changes are surfaced via notifications + the Review panel; the activity badge stays. */
   setAgentChangesDetected(): void {
-    /* no panel change; handled by the Review flow */
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    this.set({ ...this.data, agentChangesDetected: true });
   }
+
+  clearAgentChangesDetected(): void {
+    if (this.data.phase !== "ready" && this.data.phase !== "yuhi-mode") return;
+    const next = { ...this.data };
+    delete next.agentChangesDetected;
+    this.set(next);
+  }
+}
+
+/** Read the current pre-Prepare settings from the `yuhi.*` configuration. */
+function readPrepareSettings(): PrepareSettings {
+  const cfg = vscode.workspace.getConfiguration("yuhi");
+  const rawMode = cfg.get<string>("safetyMode");
+  const safetyMode: SafetyModeValue =
+    rawMode === "strict" || rawMode === "maximum-privacy" ? rawMode : "balanced";
+  const rawCompression = cfg.get<string>("compressionMode");
+  const compressionMode = rawCompression === "off" || rawCompression === "on" ? rawCompression : "auto";
+  const rawBudget = cfg.get<number>("tokenBudget");
+  // No target by default. A blank / 0 budget means "no target" (not a hidden 200k
+  // cap) — the same normalization currentCompressionOptions() uses for Prepare.
+  const tokenBudget = typeof rawBudget === "number" && rawBudget > 0 ? Math.floor(rawBudget) : 0;
+  const rawPermission = cfg.get<string>("permissionMode");
+  const permissionMode = rawPermission === "plan" || rawPermission === "acceptEdits" || rawPermission === "auto" || rawPermission === "custom" ? rawPermission : "standard";
+  const rawSandbox = cfg.get<string>("sandboxPreset");
+  const sandboxPreset = rawSandbox === "standard" || rawSandbox === "locked-down" ? rawSandbox : "guarded";
+  return { safetyMode, compressionMode, tokenBudget, permissionMode, sandboxPreset };
 }
 
 function nonce(): string {

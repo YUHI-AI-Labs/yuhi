@@ -4,6 +4,8 @@
 
 <p align="center">Yuhi は、コーディングエージェントがリポジトリを見る前に、より小さく、よりクリーンで、より安全なワークスペースを準備します — そして、AI が何を見えるかを端末内で詳細にレビューでき、共有できるのは public-safe な集計要約です。</p>
 
+> **現在のリリース: 0.3.6** — **Safe Patch Review: 先にレビューし、安全に反映。** Claude Code / Codex の変更はPrepared Repositoryに隔離され、ユーザーが選択した安全なファイルまたはhunkだけを再検査後にSource Repositoryへ反映します。自動Applyは行いません。
+
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-vscode?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>

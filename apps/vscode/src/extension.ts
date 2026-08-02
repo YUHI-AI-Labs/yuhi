@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, writeFile, access, mkdir, readdir } from "node:fs/promises";
+import { readFile, writeFile, access, mkdir, readdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { constants as FS } from "node:fs";
 import { spawn, execFile } from "node:child_process";
 import {
@@ -9,27 +11,40 @@ import {
   buildPreparedFileDecisions,
   buildPreparedRuntimeBoundary,
   buildSafePreparedRunSummary,
-  captureAgentChangeBaseline,
-  reviewAgentChanges,
-  applyAgentChanges,
-  writeAgentApplyAudit,
   lookupOnPath,
   managedWorkspaceBaseDir,
   prepareWorkspaceOutcome,
-  prepareDocumentsInBackground,
+  runBackgroundForRun,
+  requestBackgroundCancel,
+  readPublicStatus,
+  computeRevisionId,
+  capturePatchSession,
+  loadPatchSession,
+  reviewPatchSession,
+  readPrivateRunSourceBinding,
+  applyPatchSession,
+  undoPatch,
+  discardPreparedChanges,
+  privatePatchSessionDir,
+  reduceProgressiveContextState,
   runInit,
   DEFAULT_DISCLOSURE_SAFETY_MODE,
   DEFAULT_CONTEXT_DETAIL,
   DEFAULT_PREPARE_SAFETY_MODE,
   isSafetyMode,
+  isContextId,
   safetyModeLabel,
   checkSafetyModeFreshness,
   type SafetyMode,
   type PrepareReport,
   type PreparedFileEntry,
-  type AgentChangeBaseline,
-  type AgentChangeReview,
   type PreparationProgressEvent,
+  type ProgressiveContextState,
+  type PublicBackgroundStatus,
+  type PatchReviewResult,
+  type PrivatePatchSessionState,
+  type CompressionReport,
+  type PublicPreparedContextSummary,
 } from "@yuhi/core";
 import { createLocalModelProvider, localModelReadiness, INFERENCE_FAILURE_ACTIONS } from "@yuhi/local";
 import {
@@ -51,9 +66,10 @@ import {
   REPOSITORY_READY_EXPORT_FORMATS,
 } from "./repository-ready.js";
 import { YUHI_ACTIVITY_VIEW_ID, YuhiActivityProvider, type PreparedDetail } from "./activity-view.js";
+import { ProgressiveContextController } from "./progressive-context.js";
 import { PREPARED_WINDOW_TITLE, PREPARED_WORKBENCH_COLORS } from "./branding.js";
 import { validatePreparedWorkspace, type RecoveryReason } from "./recovery.js";
-import { renderAgentChangeReviewHtml } from "./agent-review.js";
+import { renderAgentChangeReviewHtml, selectedApplicableChanges } from "./agent-review.js";
 import {
   CLAUDE_INTEGRATION,
   CLAUDE_SANDBOX_RELPATH,
@@ -72,10 +88,29 @@ import {
   openPreparedWorkspace,
   writePreparedArtifacts,
   writeAndVerifyClaudeSandboxPolicy,
+  configureClaudeWorkspacePolicyDefaults,
+  type ClaudePermissionMode,
+  type YuhiSandboxPreset,
   type ClaudeMode,
   type LaunchHost,
   type VisibleLaunchFailureKind,
 } from "./launch.js";
+import { createDefaultRegistry } from "@yuhi/agents";
+import type { AgentCommand } from "@yuhi/shared";
+import type { AgentRunOutcome } from "@yuhi/agents";
+import {
+  detectAgents,
+  buildAgentPickerData,
+  runAgentLaunch,
+  preparedContextFromRun,
+  readLastAgentId,
+  rememberLastAgentId,
+  PICKER_AGENT_IDS,
+  PICKER_AGENT_DISPLAY_NAMES,
+  PICKER_DETECT_TIMEOUT_MS,
+  type PickerAgentId,
+  type AgentPickerData,
+} from "./agent-picker.js";
 
 const OLLAMA_DOWNLOAD = "https://ollama.com/download";
 
@@ -88,6 +123,7 @@ type StatusState =
   | "inference-failed"
   | "preparing"
   | "ready-for-review"
+  | "agent-changes"
   | "recovery-required"
   | "failed";
 
@@ -99,6 +135,7 @@ const STATUS: Record<StatusState, { text: string; icon: string; command?: string
   "inference-failed": { text: "Inference failed", icon: "error", command: "yuhi.doctor", tip: "Ollama is installed but generation failed. Run Doctor for the reason and fixes." },
   preparing: { text: "Yuhi is processing…", icon: "sync~spin", tip: "Yuhi is processing your workspace locally…" },
   "ready-for-review": { text: "Ready for review", icon: "eye", command: "yuhi.reviewPrepared", tip: "Preparation complete. Review what would be sent." },
+  "agent-changes": { text: "AI changes detected", icon: "diff", command: "yuhi.reviewAgentChanges", tip: "Review agent changes. Nothing is applied automatically." },
   "recovery-required": { text: "Recovery required", icon: "warning", command: "yuhi.restartFlow", tip: "Choose a source folder and create a new safe Prepared Workspace." },
   failed: { text: "Preparation failed", icon: "error", command: "yuhi.doctor", tip: "Preparation failed. Run Doctor to diagnose." },
 };
@@ -118,12 +155,16 @@ let lastReportRoot: string | undefined;
 /** The real @yuhi/core Safety Mode the current prepared run (lastReport) used. */
 let lastReportSafetyMode: SafetyMode | undefined;
 let reviewPanel: vscode.WebviewPanel | undefined;
+const confirmedWarningIncludes = new Set<string>();
 let preparedStatusBar: vscode.StatusBarItem | undefined;
 let reviewingOpenedPreparedWorkspace = false;
 let preparedSandboxVerified = false;
 let yuhiOutput: vscode.OutputChannel | undefined;
 let pendingReviewDecision: ((decision: "open" | "cancel") => void) | undefined;
 let activityProvider: YuhiActivityProvider | undefined;
+// v0.3.5 Progressive Context — drives the panel from the PUBLIC status file only.
+let progressiveController: ProgressiveContextController | undefined;
+let progressivePoll: ReturnType<typeof setInterval> | undefined;
 let claudeOpenPromise: Promise<boolean> | undefined;
 let visibleCommandRunning = false;
 let activePrepareController: AbortController | undefined;
@@ -133,19 +174,239 @@ let recoveryReason: RecoveryReason | undefined;
 let currentIsPreparedWorkspace = false;
 let extensionContext: vscode.ExtensionContext | undefined;
 let agentReviewPanel: vscode.WebviewPanel | undefined;
+let sourceAgentChangeWatcher: vscode.FileSystemWatcher | undefined;
+let agentReviewMutationRunning = false;
+let suppressAgentWatcherUntil = 0;
+let agentSessionStarted = false;
 const PREPARATION_WATCHDOG_MS = 10 * 60_000;
-const AGENT_BASELINE_KEY_PREFIX = "yuhi.agentBaseline.";
 const LAST_ORIGINAL_WORKSPACE_KEY = "yuhi.lastOriginalWorkspace";
-
-interface StoredAgentBaseline {
-  originalRoot: string;
-  baseline: AgentChangeBaseline;
-}
 
 const CLAUDE_OPEN_COMMANDS = [
   "claude-vscode.sidebar.open",
   "claude-vscode.editor.openLast",
 ] as const;
+
+// v0.3.4 — "one prepared repository, multiple agents". The allowlisted adapter
+// registry (Claude Code / Codex). Adapters load lazily on first `get(id)`; importing
+// it here costs nothing until an agent is actually detected or launched. An id outside
+// the allowlist is rejected by the registry and can never be launched.
+const agentRegistry = createDefaultRegistry();
+let agentLaunchRunning = false;
+
+/** POSIX single-quote a token so a terminal command is assembled from safe tokens
+ *  (never an unescaped path/arg). Mirrors the launch-primitive quoting. */
+function shQuoteToken(token: string): string {
+  return `'${token.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * A launch runner that drives the adapter's assembled command (executable + argv
+ * ARRAY) in a labelled VS Code terminal whose cwd IS the prepared repository —
+ * preserving the existing observable launch behavior (working dir = prepared repo,
+ * argv handling). The terminal inherits the user's shell environment; the adapter's
+ * allow-listed `env` is not force-applied to an interactive terminal.
+ */
+function agentTerminalRunner(displayName: string): (command: AgentCommand) => Promise<AgentRunOutcome> {
+  return async (command) => {
+    const term = vscode.window.createTerminal({ name: `Yuhi · ${displayName}`, cwd: command.cwd });
+    const line = [command.file, ...command.args].map(shQuoteToken).join(" ");
+    term.sendText(line, true);
+    term.show();
+    return { exitCode: 0, signal: null };
+  };
+}
+
+/** Is the selected Safety Mode out of date vs the prepared run? (DIRTY gate.) */
+function preparedRunIsDirty(report: PrepareReport): boolean {
+  return !checkSafetyModeFreshness(report.safetyMode, currentSafetyMode()).fresh;
+}
+
+/** The shared prepared context the picker launches into, plus whether the DIRTY gate
+ *  applies. One resolver for BOTH surfaces:
+ *   - the source window's Ready surface (freshly prepared run) → DIRTY gate applies;
+ *   - an OPENED Prepared Workspace (Yuhi-Mode) → the context is immutable/completed,
+ *     so the source-vs-selected dirty gate is NOT applied (picker stays enabled).
+ *  Returns undefined when there is no valid `sha256:` Context ID (e.g. a legacy run),
+ *  so the caller falls back to the single launch button. */
+interface AgentPickerSource {
+  contextId: string;
+  outDir: string;
+  runId: string;
+  dirty: boolean;
+}
+function currentPickerSource(): AgentPickerSource | undefined {
+  const report = lastReport;
+  if (!report?.contextId || !isContextId(report.contextId)) return undefined;
+  return {
+    contextId: report.contextId,
+    outDir: report.outDir,
+    runId: report.runId,
+    // An opened Prepared Workspace is an immutable, completed context.
+    dirty: reviewingOpenedPreparedWorkspace ? false : preparedRunIsDirty(report),
+  };
+}
+
+/** Detect availability (short timeout — never hangs) and build the picker for a source.
+ *  Best-effort: returns undefined on any failure so the panel just shows the single
+ *  launch button. Nothing here surfaces an absolute path — only the `sha256:` id. */
+async function buildAgentPickerFor(
+  source: AgentPickerSource,
+  launchingAgentId: string | null = null,
+): Promise<AgentPickerData | undefined> {
+  try {
+    const availabilities = await detectAgents(agentRegistry, [...PICKER_AGENT_IDS], {
+      timeoutMs: PICKER_DETECT_TIMEOUT_MS,
+    });
+    const lastAgentId = extensionContext ? readLastAgentId(extensionContext.globalState) : undefined;
+    return buildAgentPickerData({
+      contextId: source.contextId,
+      availabilities,
+      ...(lastAgentId ? { lastAgentId } : {}),
+      dirty: source.dirty,
+      launchingAgentId,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Push the agent picker onto the current Ready / Yuhi-Mode surface: two launch actions
+ * (Claude Code / Codex), the run's Context ID, the last-used agent as the default, and
+ * the DIRTY gate where it applies. Best-effort — never destabilizes the panel.
+ */
+async function refreshAgentPicker(launchingAgentId: string | null = null): Promise<void> {
+  const source = currentPickerSource();
+  if (!activityProvider || !source) return;
+  const picker = await buildAgentPickerFor(source, launchingAgentId);
+  if (picker) activityProvider.applyAgentPicker(picker);
+}
+
+/**
+ * Launch the chosen agent into the SAME prepared run — reusing one prepared repository
+ * across agents. Routed entirely through the registry adapter (detect → prepare →
+ * launch); an unknown id can't be launched. Honors the DIRTY gate where it applies,
+ * remembers the last-used agent, and ALWAYS returns the UI to a usable state (a failed
+ * or blocked launch is never left stuck in "Launching…"). The working directory is the
+ * prepared repository (source window: the prepared run's outDir; Yuhi-Mode: this window).
+ */
+async function commandLaunchAgent(agentId: string): Promise<void> {
+  if (agentLaunchRunning) return;
+  const source = currentPickerSource();
+  if (!source) {
+    void vscode.window.showWarningMessage("Yuhi: prepare a repository before launching an agent.");
+    return;
+  }
+  if (!(PICKER_AGENT_IDS as readonly string[]).includes(agentId)) {
+    void vscode.window.showWarningMessage("Yuhi: that agent is not available.");
+    return;
+  }
+  const id = agentId as PickerAgentId;
+  const displayName = PICKER_AGENT_DISPLAY_NAMES[id];
+  const patchSessionId = randomUUID();
+  let inheritPatchSessionId: string | undefined;
+  agentLaunchRunning = true;
+  try {
+    const availabilities = await detectAgents(agentRegistry, [...PICKER_AGENT_IDS], {
+      timeoutMs: PICKER_DETECT_TIMEOUT_MS,
+    });
+    const availability = availabilities.find((a) => a.id === id);
+    const result = await runAgentLaunch({
+      registry: agentRegistry,
+      id,
+      context: preparedContextFromRun({
+        contextId: source.contextId,
+        outDir: source.outDir,
+        runId: source.runId,
+      }),
+      dirty: source.dirty,
+      ...(availability ? { availability } : {}),
+      runner: agentTerminalRunner(displayName),
+      forwardedArgs: [],
+      beforeLaunch: async () => {
+        const managedBase = managedWorkspaceBaseDir();
+        try {
+          const previous = await loadPatchSession(managedBase, source.runId);
+          const previousReview = await reviewPatchSession(previous);
+          if (previousReview.changes.length > 0) {
+            const choice = await vscode.window.showWarningMessage(
+              `Yuhi found ${previousReview.changes.length} unreviewed change(s) from the previous agent session.`,
+              "Review Changes",
+              "Start New Session",
+            );
+            if (choice !== "Start New Session") {
+              if (choice === "Review Changes") await commandReviewAgentChanges();
+              throw new Error("previous-session-review-required");
+            }
+            inheritPatchSessionId = previous.sessionId;
+          }
+        } catch (error) {
+          if (error instanceof Error && error.message === "previous-session-review-required") throw error;
+          // No earlier session is the normal first-launch state.
+        }
+        const sourceBinding = await readPrivateRunSourceBinding(managedBase, source.runId);
+        const publicStatus = await readPublicStatus(source.outDir).catch(() => undefined);
+        const revisionId = publicStatus?.revisionId ?? computeRevisionId({
+          baseContextId: source.contextId,
+          files: [],
+        });
+        await capturePatchSession({
+          managedBase,
+          runId: source.runId,
+          sessionId: patchSessionId,
+          contextId: source.contextId,
+          revisionId,
+          preparedRoot: source.outDir,
+          sourceRoot: sourceBinding.sourceRoot,
+          agentId: id,
+          ...(inheritPatchSessionId ? { inheritFromSessionId: inheritPatchSessionId } : {}),
+        });
+        const statusAfterSnapshot = await readPublicStatus(source.outDir).catch(() => undefined);
+        if (statusAfterSnapshot?.revisionId && statusAfterSnapshot.revisionId !== revisionId) {
+          throw new Error("context-revision-changed-during-snapshot");
+        }
+      },
+      onLaunchingChange: (launchingId) => {
+        // Reflect launching → picker so the UI shows "Launching…" and, on settle,
+        // returns to a usable state (never stuck).
+        const lastAgentId = extensionContext ? readLastAgentId(extensionContext.globalState) : undefined;
+        activityProvider?.applyAgentPicker(
+          buildAgentPickerData({
+            contextId: source.contextId,
+            availabilities,
+            ...(lastAgentId ? { lastAgentId } : {}),
+            dirty: source.dirty,
+            launchingAgentId: launchingId,
+          }),
+        );
+      },
+      rememberLast: (rememberedId) =>
+        extensionContext ? rememberLastAgentId(extensionContext.globalState, rememberedId) : undefined,
+    });
+    if (result.status === "blocked-dirty") {
+      void vscode.window
+        .showWarningMessage(
+          "Yuhi: the selected Safety Mode differs from the prepared run. Re-prepare before launching either agent.",
+          "Review Prepared Context",
+        )
+        .then((choice) => {
+          if (choice === "Review Prepared Context") void commandReview();
+        });
+    } else if (result.status === "unavailable") {
+      void vscode.window.showWarningMessage(`Yuhi: ${result.installHint}`);
+    } else if (result.status === "failed") {
+      void vscode.window.showErrorMessage(
+        `Yuhi: could not launch ${displayName}. The panel returned to a ready state — try again, or launch the other agent.`,
+      );
+    } else if (result.status === "launched") {
+      agentSessionStarted = true;
+    }
+  } finally {
+    agentLaunchRunning = false;
+    // Re-resolve availability + clear any launching flag (last-used may have changed).
+    await refreshAgentPicker();
+  }
+}
 
 // ---- helpers ----
 function firstWorkspaceRoot(): string | undefined {
@@ -214,11 +475,11 @@ type PreparedRecoveryAction =
   | "unavailable";
 
 async function originalWorkspaceForRun(runId?: string): Promise<string | undefined> {
-  const stored = runId && extensionContext
-    ? extensionContext.globalState.get<StoredAgentBaseline>(`${AGENT_BASELINE_KEY_PREFIX}${runId}`)
+  const bound = runId
+    ? await readPrivateRunSourceBinding(managedWorkspaceBaseDir(), runId).catch(() => undefined)
     : undefined;
   const candidate =
-    stored?.originalRoot ??
+    bound?.sourceRoot ??
     extensionContext?.globalState.get<string>(LAST_ORIGINAL_WORKSPACE_KEY);
   if (!candidate || isManagedYuhiWorkspace(candidate)) return undefined;
   try {
@@ -265,7 +526,8 @@ async function retryExcludingBlockedFiles(): Promise<void> {
   );
   if (choice !== "Exclude and Prepare Again") return;
   await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(original), false);
-  await startClaudeFromSourceWorkspace(extensionContext, original);
+  const target = await pickYuhiLaunchTarget(extensionContext);
+  if (target) await startClaudeFromSourceWorkspace(extensionContext, original, target);
 }
 
 async function showPreparedWorkspaceRecovery(root: string): Promise<void> {
@@ -734,10 +996,54 @@ function currentSafetyMode(): SafetyMode {
   return isSafetyMode(raw) ? raw : DEFAULT_PREPARE_SAFETY_MODE;
 }
 
+/**
+ * The v0.3.3 Context Compression options selected in the workspace settings
+ * (`yuhi.compress` / `yuhi.tokenBudget`). `tokenBudget` is normalized so `0`
+ * (the "no budget" default) and any non-positive/invalid value become `null`
+ * (best-effort with no target) — matching what @yuhi/core expects. When compress
+ * is off, NOTHING compression-related is threaded into the prepare call.
+ */
+/**
+ * Lazily load the shipped `typescript-runtime.js` bundle and inject it for the core
+ * structure compressor. Called ONLY when Context Compression is enabled, right before a
+ * prepare — never at activation — so the ~9MB compiler is loaded on demand and only once
+ * (even across multiple prepares). The require path is computed (`__dirname`) so esbuild
+ * does not bundle the sibling chunk into extension.js. If the bundle is missing or corrupt
+ * the global stays unset: the compressor reports `compressor-unavailable` and keeps files
+ * FULL — never a crash and never an absolute path/error leaked into the public report.
+ */
+let typeScriptRuntimeLoaded = false;
+function ensureTypeScriptRuntime(): void {
+  if (typeScriptRuntimeLoaded) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const runtime = require(path.join(__dirname, "typescript-runtime.js"));
+    (globalThis as { __yuhiTypeScriptRuntime?: unknown }).__yuhiTypeScriptRuntime =
+      runtime?.default ?? runtime;
+    typeScriptRuntimeLoaded = true;
+  } catch {
+    /* runtime bundle missing/corrupt → leave unset → compressor-unavailable → FULL */
+  }
+}
+
+function currentCompressionOptions(): { compress: boolean; tokenBudget: number | null; compressionMode: "off" | "auto" | "on" } {
+  const cfg = vscode.workspace.getConfiguration("yuhi");
+  const rawMode = cfg.get<string>("compressionMode");
+  const mode = rawMode === "off" || rawMode === "on" ? rawMode : "auto";
+  const compress = mode !== "off";
+  const rawBudget = cfg.get<number>("tokenBudget");
+  const tokenBudget =
+    typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
+      && mode !== "off" ? Math.floor(rawBudget)
+      : null;
+  return { compress, tokenBudget, compressionMode: mode };
+}
+
 async function prepareWorkspaceForLaunch(
   root: string,
   excludeRelpaths: readonly string[] = [],
   safetyMode: SafetyMode = currentSafetyMode(),
+  includeWithWarningRelpaths: readonly string[] = [],
 ): Promise<PrepareReport | undefined> {
   // Onboarding gates: config + local AI must be ready before preparing.
   if (!existsSync(path.join(root, CONFIG_FILENAME))) {
@@ -800,10 +1106,32 @@ async function prepareWorkspaceForLaunch(
                 "Yuhi is still preparing your workspace. No files have been sent to Claude Code yet.",
             });
           }, 60_000);
+          const { compress, tokenBudget, compressionMode } = currentCompressionOptions();
+          const decisionConfig = vscode.workspace.getConfiguration("yuhi");
+          const includeWithWarningExtensions =
+            decisionConfig.get<string[]>("alwaysIncludeWarningExtensions") ?? [];
+          const excludeExtensions = decisionConfig.get<string[]>("alwaysExcludeExtensions") ?? [];
+          // Load the shipped TypeScript runtime ONLY when compression will actually run.
+          if (compress) ensureTypeScriptRuntime();
           const preparation = prepareWorkspaceOutcome(root, {
             provider,
             safetyMode,
+            // v0.3.3 opt-in Context Compression. Threaded exactly like safetyMode:
+            // only sent when the user enabled `yuhi.compress`; the token budget is
+            // omitted (best-effort, no target) when `yuhi.tokenBudget` is 0/none.
+            ...(compress ? { compress: true } : {}),
+            compressionMode,
+            ...(compress && tokenBudget !== null ? { tokenBudget } : {}),
             deferDocumentInspection: true,
+            // v0.3.3 — the foreground (launch) prepare makes ZERO local-model
+            // summarize calls: Ollama never runs on the critical path, so a slow or
+            // stalled model can't delay Yuhi Mode. Files that would need local
+            // summarization are kept LOCAL (reason: local-summary-deferred) and NOT
+            // shared — they are not auto-processed later in this version. Connecting
+            // these to a background worker is the first task of v0.3.4. The per-file
+            // timeout / budget / circuit-breaker in core are the reliability machinery
+            // that background work will reuse.
+            deferLocalSummary: true,
             signal: controller.signal,
             onProgress: (msg) => {
               currentPhase = msg;
@@ -834,6 +1162,9 @@ async function prepareWorkspaceForLaunch(
               });
             },
             excludeRelpaths,
+            includeWithWarningRelpaths,
+            includeWithWarningExtensions,
+            excludeExtensions,
           });
           activePrepareDone = preparation.then(() => undefined, () => undefined);
           const outcome = await Promise.race([
@@ -855,7 +1186,10 @@ async function prepareWorkspaceForLaunch(
             });
             return undefined;
           }
-          startBackgroundDocumentPreparation(outcome.report, provider);
+          // v0.3.5 — background document preparation NO LONGER runs on this (source)
+          // prepare path. It is started fire-and-forget AFTER Yuhi Mode is ready, in the
+          // opened Prepared Workspace window (see startProgressiveContext), and the panel
+          // is driven honestly from the PUBLIC status file — never blocking launch.
           progress.report({
             increment: Math.max(0, 100 - creditedProgress),
             message: "Preparation complete · Ready for review",
@@ -893,128 +1227,208 @@ function activityDetail(report: PrepareReport, backgroundActive = false): Prepar
     outDir: report.outDir,
     documentsInspected,
     summariesRejected: a?.documentSummariesRejected ?? 0,
+    ...(report.publicSummary ? { publicSummary: report.publicSummary } : {}),
+    ...(report.yuhiModeSummary ? { yuhiModeSummary: report.yuhiModeSummary } : {}),
+    ...(report.compression
+      ? {
+          compression: {
+            tokenBudget: report.compression.targetBudget,
+            preparedTokens: report.compression.preparedTokens,
+            status: report.compression.status,
+          },
+        }
+      : {}),
     ...(backgroundActive ? { backgroundActive: true } : {}),
   };
 }
 
-function startBackgroundDocumentPreparation(
-  report: PrepareReport,
-  provider: LocalModelProvider,
-): void {
-  const pdfs = report.files
-    .filter(
-      (file) =>
-        !file.omitted &&
-        file.inspection?.fileType === "pdf",
-    )
-    .map((file) => file.relpath);
-  if (pdfs.length === 0) return;
-  let lastShown = -1;
-  appendSafeRecoveryCheckpoint("background-document-preparation", "started");
-  void vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Window,
-      title: "Yuhi is preparing additional context",
-      cancellable: false,
-    },
-    async (progress) => {
-      // Local summaries are an opt-in Ollama enrichment. Enable them only when Ollama
-      // is actually reachable with a model; otherwise skip cleanly and record an
-      // HONEST reason so the empty context/ never looks like a silent failure.
-      let enrich = false;
-      let summaryStatusNote = "Ollama is not running";
-      try {
-        const health = await provider.health();
-        if (health.ok && (health.models?.length ?? 0) > 0) {
-          enrich = true;
-        } else {
-          summaryStatusNote = health.ok
-            ? "no local model is installed for Ollama"
-            : "Ollama is not running";
-        }
-      } catch {
-        summaryStatusNote = "Ollama is not available";
-      }
-      const result = await prepareDocumentsInBackground(report.outDir, {
-        relpaths: pdfs,
-        providerFactory: () => provider,
-        enrichWithOllama: enrich,
-        summaryStatusNote,
-        onProgress: (event) => {
-          if (event.current === lastShown && event.phase !== "complete") return;
-          lastShown = event.current;
-          const phase =
-            event.phase === "summarize"
-              ? "Creating local document context"
-              : event.phase === "complete"
-                ? "Document context updated"
-                : "Inspecting PDFs locally";
-          progress.report({
-            message: `${phase} · ${event.current}/${event.total}`,
-          });
-          if (event.phase !== "complete") {
-            activityProvider?.setBackgroundLifecycle(
-              event.phase === "summarize" ? "summarizing" : "inspecting",
-              event.current,
-              event.total,
-              event.relpath,
-            );
-          }
-        },
-      });
-      const acceptance = report.tabularAcceptance;
-      if (acceptance) {
-        acceptance.pdfInspected = result.inspected;
-        acceptance.documentSummariesCreated = result.summariesCreated;
-        acceptance.documentSummariesRejected = result.summariesRejected;
-      }
-      for (const document of result.documents) {
-        const entry = report.files.find((file) => file.relpath === document.relpath);
-        if (!entry?.inspection) continue;
-        entry.inspection.documentStatus =
-          document.inspection === "incomplete" ? "failed" : "inspected";
-        entry.inspection.extractionMethod =
-          document.inspection === "incomplete" ? "none" : document.inspection;
-        if (document.pages !== undefined) entry.inspection.pageCount = document.pages;
-        entry.inspection.summaryStatus =
-          document.summary === "created"
-            ? "created"
-            : document.summary === "rejected"
-              ? "rejected"
-              : "unavailable";
-        if (document.summaryRelpath) entry.inspection.summaryRelpath = document.summaryRelpath;
-      }
-      activityProvider?.setPrepared(buildPreparedMetrics(report), undefined, true, activityDetail(report));
-      appendSafeRecoveryCheckpoint("background-document-preparation", "completed");
-      if (result.sensitiveDocuments > 0) {
-        const choice = await vscode.window.showWarningMessage(
-          `Yuhi found sensitive content in ${result.sensitiveDocuments} document(s). ` +
-          "The files were already available to Claude Code before background inspection completed.",
-          "Review Prepared Context",
-          "Return to Original Workspace",
-        );
-        if (choice === "Review Prepared Context") await commandReview();
-        else if (choice === "Return to Original Workspace") {
-          await vscode.commands.executeCommand("yuhi.openSourceWorkspace");
-        }
-      } else {
-        const choice = await vscode.window.showInformationMessage(
-          `Yuhi finished background document preparation. ` +
-          `${result.inspected} inspected · ${result.summariesCreated} context summaries added.`,
-          "Review Prepared Context",
-        );
-        if (choice === "Review Prepared Context") await commandReview();
+/**
+ * v0.3.5 Progressive Context host wiring. Every displayed number comes from the
+ * PUBLIC status file (`<preparedDir>/.yuhi/background-status.json`); the PRIVATE
+ * queue state (the internal background root under the managed base) is NEVER read
+ * here. `readStatus` is the ONLY background surface this extension reads.
+ */
+function buildProgressiveContextController(
+  provider?: LocalModelProvider,
+): ProgressiveContextController {
+  return new ProgressiveContextController({
+    runBackground: (input) =>
+      runBackgroundForRun({
+        runId: input.runId,
+        preparedDir: input.preparedDir,
+        signal: input.signal,
+        ...(provider ? { providerFactory: () => provider } : {}),
+        pdfTextExtractor: localPdfTextExtractor,
+        ocrExtractor: localPdfOcrExtractor,
+      }),
+    cancelBackground: (input) =>
+      requestBackgroundCancel({ runId: input.runId, preparedDir: input.preparedDir }),
+    // SECURITY BOUNDARY: read ONLY the public status file — never the private queue.
+    readStatus: (preparedDir) => readPublicStatus(preparedDir),
+    computeRevision: ({ baseContextId, status }) =>
+      reduceProgressiveContextState({
+        baseContextId,
+        // Project the path-safe public items into the reducer's public-item shape.
+        backgroundItems: status.items.map((item) => ({
+          itemId: "",
+          runId: "",
+          contextId: baseContextId,
+          // The revision is derived from PUBLISHED artifacts; a withheld original has
+          // no agent-visible path, so its public identity stands in for one.
+          relpath: item.relpath ?? item.documentId ?? item.displayName ?? "",
+          kind: item.kind,
+          priority: 0,
+          createdAt: 0,
+          status: item.status,
+          ...(item.preparedRelpath ? { preparedRelpath: item.preparedRelpath } : {}),
+        })),
+      }),
+    recordRevision: (preparedDir, state) => recordContextRevision(preparedDir, state),
+    onView: (view) => {
+      activityProvider?.applyProgressiveContext(view);
+      const preparedDir = lastReport?.outDir;
+      if (preparedDir) {
+        void readFile(path.join(preparedDir, ".yuhi", "yuhi-mode-summary.json"), "utf8")
+          .then((raw) => activityProvider?.applyYuhiModeSummary(JSON.parse(raw)))
+          .catch(() => {});
       }
     },
-  ).then(undefined, () => {
-    appendSafeRecoveryCheckpoint("background-document-preparation", "failed");
-    void vscode.window.showWarningMessage(
-      "Yuhi could not finish background document preparation. Claude Code can continue with the original PDF files, which remain unverified.",
-      "Review Prepared Context",
-    ).then((choice) => {
-      if (choice === "Review Prepared Context") void commandReview();
-    });
   });
+}
+
+function execFileText(
+  command: string,
+  args: string[],
+  options: { signal?: AbortSignal; maxBuffer?: number } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, {
+      encoding: "utf8",
+      maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
+      ...(options.signal ? { signal: options.signal } : {}),
+    }, (error, stdout) => error ? reject(error) : resolve(stdout));
+  });
+}
+
+/** Local-only text-layer extraction. No document bytes or output leave the machine. */
+async function localPdfTextExtractor(absPath: string): Promise<{ text: string; method: "pdf-text"; pageCount?: number }> {
+  const text = await execFileText("pdftotext", ["-layout", absPath, "-"]).catch(() => "");
+  const pageCount = text ? text.split("\f").length : undefined;
+  return { text, method: "pdf-text", ...(pageCount ? { pageCount } : {}) };
+}
+
+/** Local OCR fallback. Rendered pages live in a private temporary dir and are removed. */
+async function localPdfOcrExtractor(absPath: string): Promise<{ text: string; method: "ocr"; pageCount?: number }> {
+  const temp = await mkdtemp(path.join(tmpdir(), "yuhi-ocr-"));
+  try {
+    const prefix = path.join(temp, "page");
+    await execFileText("pdftoppm", ["-f", "1", "-l", "50", "-png", "-r", "150", absPath, prefix]);
+    const pages = (await readdir(temp)).filter((name) => name.endsWith(".png")).sort();
+    const texts: string[] = [];
+    for (const page of pages) {
+      const file = path.join(temp, page);
+      const text = await execFileText("tesseract", [file, "stdout", "-l", "eng+jpn"])
+        .catch(() => execFileText("tesseract", [file, "stdout", "-l", "eng"]));
+      texts.push(text);
+    }
+    return { text: texts.join("\f"), method: "ocr", pageCount: pages.length };
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Record the USED Context Revision into the session manifest (`.yuhi/session.json`).
+ * Best-effort and path-safe: it only stores the base Context ID, the revision number,
+ * the deterministic revisionId, and a timestamp. Keeps the SAME baseContextId.
+ */
+async function recordContextRevision(
+  preparedDir: string,
+  state: ProgressiveContextState,
+): Promise<void> {
+  const target = path.join(preparedDir, ".yuhi", "session.json");
+  try {
+    const raw = JSON.parse(await readFile(target, "utf8")) as Record<string, unknown>;
+    raw.contextRevision = {
+      baseContextId: state.baseContextId,
+      revision: state.revision,
+      revisionId: state.revisionId,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(target, JSON.stringify(raw, null, 2) + "\n", "utf8");
+  } catch {
+    // A missing/locked session file must never break the Refresh action.
+  }
+}
+
+/**
+ * Start (or resume) Progressive Context for an opened Prepared Workspace window, AFTER
+ * Yuhi Mode is ready. Fire-and-forget: the worker never blocks launch, and the panel is
+ * driven by polling the PUBLIC status file (so it survives a reload). Idempotent — a
+ * second call supersedes the previous controller.
+ */
+function startProgressiveContext(
+  report: PrepareReport,
+  filesAvailable: number,
+  provider?: LocalModelProvider,
+): void {
+  stopProgressiveContext();
+  const controller = buildProgressiveContextController(provider);
+  progressiveController = controller;
+  controller.start({
+    runId: report.runId,
+    preparedDir: report.outDir,
+    baseContextId: report.contextId ?? "",
+    filesAvailable,
+    startWorker: true,
+  });
+  // Poll the public status so live progress is honest and survives a reload. Stops once
+  // a terminal status has been observed (the worker's own final write still lands).
+  let sawWork = false;
+  let ticks = 0;
+  progressivePoll = setInterval(() => {
+    ticks += 1;
+    void controller.refreshFromDisk().then(() => {
+      if (controller.currentView()) sawWork = true;
+      const settled = sawWork && !controller.isRunning();
+      if (settled || ticks > 400) stopProgressiveContextPollOnly();
+    });
+  }, 1_500);
+}
+
+/** Stop only the poll timer (the controller keeps its last view). */
+function stopProgressiveContextPollOnly(): void {
+  if (progressivePoll) {
+    clearInterval(progressivePoll);
+    progressivePoll = undefined;
+  }
+}
+
+/** Tear down Progressive Context entirely (abort the worker + stop polling). */
+function stopProgressiveContext(): void {
+  stopProgressiveContextPollOnly();
+  progressiveController?.dispose();
+  progressiveController = undefined;
+}
+
+/**
+ * Panel "Cancel background processing" → persist the cancel request + abort the local
+ * worker. The panel returns to a usable state (never stuck), and polling stops.
+ */
+async function commandCancelBackground(): Promise<void> {
+  const controller = progressiveController;
+  if (!controller) return;
+  await controller.cancel();
+  stopProgressiveContextPollOnly();
+}
+
+/**
+ * Panel "Refresh Context" → recompute the delivered revision from the PUBLIC status
+ * with the SAME baseContextId, record it in the session manifest, and update the shown
+ * Context Revision. Never re-scans or re-prepares.
+ */
+async function commandRefreshContext(): Promise<void> {
+  await progressiveController?.refresh();
 }
 
 async function commandPrepare(target?: vscode.Uri): Promise<void> {
@@ -1045,6 +1459,9 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
     // Outcome: Complete / Complete with warnings / Partial / Failed (failures visible).
     const outcome = classifyOutcome(report);
     setStatus(outcome === "Failed" ? "failed" : "ready-for-review");
+    // v0.3.4 — offer the agent picker (Claude Code / Codex) on the Ready surface,
+    // reusing this one prepared run. Availability is resolved with a short timeout.
+    if (outcome !== "Failed") void refreshAgentPicker();
 
     if (outcome === "Failed") {
       void vscode.window
@@ -1119,18 +1536,34 @@ function launchHost(): LaunchHost {
 async function rememberReport(root: string): Promise<PrepareReport | undefined> {
   const report = await prepareWorkspaceForLaunch(root);
   if (report) {
+    agentSessionStarted = false;
     lastReport = report;
     lastReportRoot = root;
     activityProvider?.setPrepared(buildPreparedMetrics(report), undefined, true, activityDetail(report));
     setStatus("ready-for-review");
     await extensionContext?.globalState.update(LAST_ORIGINAL_WORKSPACE_KEY, root);
-    if (extensionContext && report.tabularAcceptance?.launchAllowed) {
-      const baseline = await captureAgentChangeBaseline(report.runId, report.outDir, root);
-      await extensionContext.globalState.update(
-        `${AGENT_BASELINE_KEY_PREFIX}${report.runId}`,
-        { originalRoot: root, baseline } satisfies StoredAgentBaseline,
-      );
-    }
+    sourceAgentChangeWatcher?.dispose();
+    sourceAgentChangeWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(report.outDir, "**/*"),
+    );
+    const changed = (uri: vscode.Uri) => {
+      if (!agentSessionStarted || agentReviewMutationRunning || Date.now() < suppressAgentWatcherUntil) return;
+      const relpath = path.relative(report.outDir, uri.fsPath).split(path.sep).join("/");
+      if (
+        relpath === "manifest.json" || relpath === "CLAUDE.md" || relpath === "AGENTS.md" ||
+        relpath.startsWith(".yuhi/") ||
+        relpath.startsWith(".claude/") ||
+        relpath.startsWith(".vscode/")
+      ) return;
+      setStatus("agent-changes");
+      activityProvider?.setAgentChangesDetected();
+    };
+    extensionContext?.subscriptions.push(
+      sourceAgentChangeWatcher,
+      sourceAgentChangeWatcher.onDidCreate(changed),
+      sourceAgentChangeWatcher.onDidChange(changed),
+      sourceAgentChangeWatcher.onDidDelete(changed),
+    );
   }
   return report;
 }
@@ -1147,24 +1580,33 @@ async function currentPreparedRunId(root: string): Promise<string | undefined> {
 }
 
 async function commandReviewAgentChanges(): Promise<void> {
-  const preparedRoot = firstWorkspaceRoot();
-  if (!preparedRoot || !isManagedYuhiWorkspace(preparedRoot) || !extensionContext) {
+  const activeRoot = firstWorkspaceRoot();
+  const preparedRoot = activeRoot && isManagedYuhiWorkspace(activeRoot)
+    ? activeRoot
+    : lastReport?.outDir;
+  if (!preparedRoot || !extensionContext) {
     await vscode.window.showWarningMessage(
-      "Open the Yuhi Prepared Workspace where the agent ran, then review changes again.",
+      "Prepare and launch an agent with Yuhi before reviewing changes.",
     );
     return;
   }
-  const runId = await currentPreparedRunId(preparedRoot);
-  const stored = runId
-    ? extensionContext.globalState.get<StoredAgentBaseline>(`${AGENT_BASELINE_KEY_PREFIX}${runId}`)
-    : undefined;
-  if (!runId || !stored || stored.baseline.runId !== runId) {
+  const runId = await currentPreparedRunId(preparedRoot) ?? lastReport?.runId;
+  if (!runId) {
     await vscode.window.showWarningMessage(
       "Yuhi cannot find the pre-agent baseline for this run. Apply is unavailable.",
     );
     return;
   }
-  let review = await reviewAgentChanges(stored.baseline, preparedRoot, stored.originalRoot);
+  let state: PrivatePatchSessionState;
+  try {
+    state = await loadPatchSession(managedWorkspaceBaseDir(), runId);
+  } catch {
+    await vscode.window.showWarningMessage(
+      "Yuhi cannot find the private pre-agent snapshot for this run. Start the agent from Yuhi and try again.",
+    );
+    return;
+  }
+  let review = await reviewPatchSession(state);
   if (!agentReviewPanel) {
     agentReviewPanel = vscode.window.createWebviewPanel(
       "yuhi.agentChanges",
@@ -1176,24 +1618,25 @@ async function commandReviewAgentChanges(): Promise<void> {
       agentReviewPanel = undefined;
     });
     agentReviewPanel.webview.onDidReceiveMessage((message) => {
-      void handleAgentReviewMessage(message, stored, preparedRoot, review);
+      void handleAgentReviewMessage(message, state, preparedRoot, review);
     });
   }
-  agentReviewPanel.webview.html = renderAgentChangeReviewHtml(review, "Claude Code");
+  const agentName = review.patch.agentId === "codex" ? "Codex" : "Claude Code";
+  agentReviewPanel.webview.html = renderAgentChangeReviewHtml(review, agentName);
   agentReviewPanel.reveal();
 }
 
 async function handleAgentReviewMessage(
-  message: { type?: unknown },
-  stored: StoredAgentBaseline,
+  message: { type?: unknown; relpaths?: unknown; hunkSelections?: unknown },
+  state: PrivatePatchSessionState,
   preparedRoot: string,
-  currentReview: AgentChangeReview,
+  currentReview: PatchReviewResult,
 ): Promise<void> {
   if (message.type === "stopYuhi") {
     agentReviewPanel?.dispose();
     await vscode.commands.executeCommand(
       "vscode.openFolder",
-      vscode.Uri.file(stored.originalRoot),
+      vscode.Uri.file(state.sourceRoot),
       false,
     );
     return;
@@ -1204,46 +1647,84 @@ async function handleAgentReviewMessage(
     return;
   }
   if (message.type === "discard") {
+    const choice = await vscode.window.showWarningMessage(
+      `Discard ${currentReview.changes.length} agent change(s) and restore the Prepared Workspace baseline?`,
+      { modal: true },
+      "Discard Changes",
+    );
+    if (choice !== "Discard Changes") return;
+    const baselineRoot = path.join(
+      privatePatchSessionDir(managedWorkspaceBaseDir(), state.runId, state.sessionId),
+      "prepared-baseline",
+    );
+    agentReviewMutationRunning = true;
+    try {
+      await discardPreparedChanges(preparedRoot, baselineRoot, currentReview.changes);
+    } finally {
+      agentReviewMutationRunning = false;
+      suppressAgentWatcherUntil = Date.now() + 1_000;
+    }
+    activityProvider?.clearAgentChangesDetected();
     agentReviewPanel?.dispose();
     await vscode.window.showInformationMessage(
-      "Yuhi closed the review. Changes remain only in the Prepared Workspace and were not applied.",
+      "Yuhi discarded the agent changes. Published background context was preserved.",
     );
     return;
   }
   if (message.type === "diff") {
     const picked = await vscode.window.showQuickPick(
       currentReview.changes
-        .filter((change) => change.kind !== "deleted")
+        .filter((change) =>
+          change.kind !== "deleted" &&
+          change.applyEligibility !== "blocked" &&
+          !change.reasonCodes.includes("patch-pii-added"),
+        )
         .map((change) => ({ label: change.relpath, change })),
       { title: "Open an agent change diff" },
     );
     if (!picked) return;
-    const originalRelpath = picked.change.previousRelpath ?? picked.change.relpath;
-    const original = vscode.Uri.file(path.join(stored.originalRoot, ...originalRelpath.split("/")));
-    const prepared = vscode.Uri.file(path.join(preparedRoot, ...picked.change.relpath.split("/")));
-    if (picked.change.kind === "created") {
+    const diff = currentReview.diffsByRelpath[picked.change.relpath];
+    if (!diff) {
+      await vscode.window.showWarningMessage("Yuhi could not create a metadata-safe diff for this change.");
+      return;
+    }
+    const prepared = await vscode.workspace.openTextDocument({ content: diff.after });
+    if (picked.change.kind === "added") {
       await vscode.window.showTextDocument(prepared, { preview: true });
     } else {
+      const original = await vscode.workspace.openTextDocument({ content: diff.before });
       await vscode.commands.executeCommand(
         "vscode.diff",
-        original,
-        prepared,
-        `Original ↔ Agent · ${picked.change.relpath}`,
+        original.uri,
+        prepared.uri,
+        `Prepared baseline ↔ Agent · ${picked.change.relpath}`,
       );
     }
     return;
   }
   if (message.type !== "apply") return;
-  const fresh = await reviewAgentChanges(stored.baseline, preparedRoot, stored.originalRoot);
-  if (!fresh.applyAllowed) {
-    agentReviewPanel!.webview.html = renderAgentChangeReviewHtml(fresh, "Claude Code");
-    await vscode.window.showErrorMessage(
-      "Yuhi blocked Apply because a security issue or source conflict was detected.",
+  const selected = Array.isArray(message.relpaths)
+    ? message.relpaths.filter((value): value is string => typeof value === "string")
+    : [];
+  const fresh = await reviewPatchSession(state);
+  const applicable = selectedApplicableChanges(fresh, selected);
+  if (applicable.length === 0) {
+    agentReviewPanel!.webview.html = renderAgentChangeReviewHtml(
+      fresh,
+      fresh.patch.agentId === "codex" ? "Codex" : "Claude Code",
     );
+    await vscode.window.showWarningMessage("Select at least one eligible reviewed change to apply.");
     return;
   }
+  const hunkSelections: Record<string, string[]> = {};
+  if (message.hunkSelections && typeof message.hunkSelections === "object") {
+    for (const [relpath, ids] of Object.entries(message.hunkSelections)) {
+      if (!selected.includes(relpath) || !Array.isArray(ids)) continue;
+      hunkSelections[relpath] = ids.filter((id): id is string => typeof id === "string");
+    }
+  }
   const choice = await vscode.window.showWarningMessage(
-    `Apply ${fresh.changes.length} reviewed agent change(s) to the Original Workspace?`,
+    `Apply ${applicable.length} selected reviewed agent change(s) to the Original Workspace?`,
     {
       modal: true,
       detail:
@@ -1254,18 +1735,40 @@ async function handleAgentReviewMessage(
     "Cancel",
   );
   if (choice !== "Apply Changes") return;
-  const result = await applyAgentChanges(stored.baseline, preparedRoot, stored.originalRoot);
-  await writeAgentApplyAudit(
-    path.join(extensionContext!.globalStorageUri.fsPath, "agent-apply-audit.jsonl"),
-    result.audit,
-  );
-  if (result.audit.applyResult !== "applied") {
-    agentReviewPanel!.webview.html = renderAgentChangeReviewHtml(result.review, "Claude Code");
-    if (result.audit.applyResult === "recovery-required") {
+  agentReviewMutationRunning = true;
+  const result = await applyPatchSession({
+    managedBase: managedWorkspaceBaseDir(),
+    runId: state.runId,
+    sessionId: state.sessionId,
+    selectedRelpaths: selected,
+    hunkSelections,
+    expectedPatchId: fresh.patch.patchId,
+    expectedSnapshotId: fresh.snapshotId,
+    expectedSourceBaselineId: fresh.patch.sourceBaselineId,
+    expectedPreparedWorkingTreeId: fresh.preparedWorkingTreeId,
+  }).catch(() => undefined).finally(() => { agentReviewMutationRunning = false; });
+  if (!result) {
+    const updated = await reviewPatchSession(state);
+    agentReviewPanel!.webview.html = renderAgentChangeReviewHtml(
+      updated,
+      updated.patch.agentId === "codex" ? "Codex" : "Claude Code",
+    );
+    await vscode.window.showErrorMessage(
+      "Apply blocked. The reviewed files changed or no longer pass Yuhi security checks. Refresh Review Agent Changes and try again.",
+    );
+    return;
+  }
+  if (result.status !== "applied") {
+    const updated = await reviewPatchSession(state);
+    agentReviewPanel!.webview.html = renderAgentChangeReviewHtml(
+      updated,
+      updated.patch.agentId === "codex" ? "Codex" : "Claude Code",
+    );
+    if (result.recoveryRequired) {
       await vscode.window.showErrorMessage(
         "Apply recovery required. Yuhi retained local recovery material and did not report success. Review the Original Workspace before retrying.",
       );
-    } else if (result.audit.applyResult === "failed-restored") {
+    } else if (result.rolledBack.length > 0) {
       await vscode.window.showWarningMessage(
         "Apply failed, and Yuhi restored and verified all completed mutations. Run Review Agent Changes again before retrying.",
       );
@@ -1276,14 +1779,30 @@ async function handleAgentReviewMessage(
     }
     return;
   }
-  await extensionContext!.globalState.update(
-    `${AGENT_BASELINE_KEY_PREFIX}${stored.baseline.runId}`,
-    undefined,
-  );
   agentReviewPanel?.dispose();
-  await vscode.window.showInformationMessage(
-    `Yuhi safely applied ${result.audit.changedFileCount} agent change(s) to the Original Workspace.`,
+  activityProvider?.clearAgentChangesDetected();
+  const blockedCount = fresh.changes.filter((change) => change.applyEligibility === "blocked").length;
+  const skippedCount = fresh.changes.length - applicable.length - blockedCount;
+  const next = await vscode.window.showInformationMessage(
+    `${result.applied.length} files applied safely · ${skippedCount} skipped · ${blockedCount} blocked.`,
+    "Open Source Repository",
+    "Undo Patch",
   );
+  if (next === "Open Source Repository") {
+    await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(state.sourceRoot), false);
+  } else if (next === "Undo Patch") {
+    const undone = await undoPatch(
+      path.join(managedWorkspaceBaseDir(), ".internal"),
+      result.patchId,
+    );
+    if (undone.status === "undone") {
+      await vscode.window.showInformationMessage(`Yuhi safely undid ${undone.applied.length} applied change(s).`);
+    } else {
+      await vscode.window.showWarningMessage(
+        "Undo blocked because the Original Workspace changed after Apply. Review it before retrying.",
+      );
+    }
+  }
 }
 
 async function confirmPreparedLaunch(
@@ -1353,34 +1872,61 @@ async function commandPrepareAndOpen(): Promise<void> {
   });
 }
 
-async function pickClaudeMode(
+type YuhiLaunchTargetId = "claude-vscode" | "claude-cli" | "codex" | "gemini" | "qwen";
+interface YuhiLaunchTarget {
+  id: YuhiLaunchTargetId;
+  mode: ClaudeMode;
+  label: string;
+  command?: string;
+  available: boolean;
+}
+
+/** Choose the actual agent surface BEFORE preparation starts. Detection is local and
+ * bounded: VS Code extension registration plus synchronous PATH lookup only. */
+async function pickYuhiLaunchTarget(
   context: vscode.ExtensionContext,
-  auto = false,
-): Promise<ClaudeMode | undefined> {
-  const previous = context.globalState.get<ClaudeMode>("yuhi.claudeLaunchMode", "extension");
-  // Auto-transition: the user already chose to start Claude Code — reuse the
-  // remembered mode instead of interrupting with a picker.
-  if (auto) return previous;
-  const items: (vscode.QuickPickItem & { mode?: ClaudeMode })[] = [
+): Promise<YuhiLaunchTarget | undefined> {
+  const previous = context.globalState.get<YuhiLaunchTargetId>(
+    "yuhi.launchTarget",
+    "claude-vscode",
+  );
+  const targets: YuhiLaunchTarget[] = [
     {
-      label: "VS Code extension — open with Claude Code",
-      description: previous === "extension" ? "Last used" : undefined,
+      id: "claude-vscode",
       mode: "extension",
+      label: "Claude Code — VS Code extension",
+      available: vscode.extensions.getExtension("anthropic.claude-code") !== undefined,
     },
-    {
-      label: "CLI — run Claude Code in terminal",
-      description: previous === "cli" ? "Last used" : undefined,
-      mode: "cli",
-    },
-    { label: "Cancel" },
+    { id: "claude-cli", mode: "cli", label: "Claude Code — CLI", command: "claude", available: lookupOnPath("claude") !== null },
+    { id: "codex", mode: "cli", label: "OpenAI Codex — CLI", command: "codex", available: lookupOnPath("codex") !== null },
+    { id: "gemini", mode: "cli", label: "Gemini — CLI", command: "gemini", available: lookupOnPath("gemini") !== null },
+    { id: "qwen", mode: "cli", label: "Qwen Code — CLI", command: "qwen", available: lookupOnPath("qwen") !== null },
   ];
-  const picked = await vscode.window.showQuickPick(items, {
-    title: "Yuhi: Prepare and Start Claude Code",
-    placeHolder: "Choose how Claude Code should start from the Prepared Workspace",
-  });
-  if (!picked?.mode) return undefined;
-  await context.globalState.update("yuhi.claudeLaunchMode", picked.mode);
-  return picked.mode;
+  const items = targets.map((target) => ({
+    label: target.available ? `$(check) ${target.label}` : `$(circle-slash) ${target.label}`,
+    description: target.id === previous ? "Last used" : target.available ? "Installed" : "Not detected",
+    detail: target.available
+      ? target.mode === "extension"
+        ? "Opens in the Yuhi Prepared Workspace window."
+        : "Runs in a terminal with the Yuhi Prepared Workspace as its working directory."
+      : "This target is not currently installed or available on PATH.",
+    target,
+  }));
+  while (true) {
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Start an AI agent with Yuhi",
+      placeHolder: "Choose an installed agent before Yuhi prepares the workspace",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) return undefined;
+    if (!picked.target.available) {
+      await vscode.window.showWarningMessage(`${picked.target.label} is not installed or could not be detected.`);
+      continue;
+    }
+    await context.globalState.update("yuhi.launchTarget", picked.target.id);
+    return picked.target;
+  }
 }
 
 async function sourceWorkspaceForClaudeLaunch(
@@ -1422,6 +1968,7 @@ async function sourceWorkspaceForClaudeLaunch(
 async function startClaudeFromSourceWorkspace(
   context: vscode.ExtensionContext,
   sourceRoot: string,
+  target: YuhiLaunchTarget,
 ): Promise<void> {
   const host = launchHost();
   await runPrepareAndStartClaude({
@@ -1429,13 +1976,12 @@ async function startClaudeFromSourceWorkspace(
     getWorkspaceRoot: () => sourceRoot,
     prepare: rememberReport,
     reviewBlocked: () => commandReview(),
-    // Auto-transition: the user chose "Prepare and start", so once the workspace is
-    // launchable we open Yuhi Mode directly — no mode picker, no confirm click.
-    // Default experience is the Claude Code VS Code EXTENSION (not the terminal CLI);
-    // CLI remains available via the explicit mode picker when auto-launch is off.
+    // The user chose VS Code or CLI BEFORE preparation. Once the workspace is
+    // launchable, preserve that choice and open Yuhi Mode directly — no second picker
+    // or confirmation click after the potentially long preparation step.
     autoLaunch: true,
-    pickMode: () => Promise.resolve<ClaudeMode>("extension"),
-    resolveCliFile: () => lookupOnPath(CLAUDE_INTEGRATION.cliCommand),
+    pickMode: () => Promise.resolve(target.mode),
+    resolveCliFile: () => target.command ? lookupOnPath(target.command) : null,
     confirmLaunch: (summary) => confirmPreparedLaunch(summary, "Open with Claude Code"),
     reviewDetails: () => commandReview(true),
     confirmHighRiskOverride,
@@ -1448,9 +1994,13 @@ async function commandPrepareAndStartClaude(context: vscode.ExtensionContext): P
     await showPreparedWorkspaceRecovery(current);
     return;
   }
+  // Make the launch destination explicit before any preparation starts. This keeps
+  // the workflow predictable: choose VS Code or CLI → choose source → prepare → open.
+  const target = await pickYuhiLaunchTarget(context);
+  if (!target) return;
   const sourceRoot = await sourceWorkspaceForClaudeLaunch();
   if (!sourceRoot) return;
-  await startClaudeFromSourceWorkspace(context, sourceRoot);
+  await startClaudeFromSourceWorkspace(context, sourceRoot, target);
 }
 
 async function commandOpenClaudeHere(): Promise<void> {
@@ -1477,7 +2027,9 @@ async function commandOpenClaudeHere(): Promise<void> {
   // shows Ready. Don't dead-end: re-prepare the current folder and auto-transition
   // straight into Yuhi Mode instead of showing a recovery wall.
   if (currentRoot && !isManagedYuhiWorkspace(currentRoot) && extensionContext) {
-    await startClaudeFromSourceWorkspace(extensionContext, currentRoot);
+    const target = await pickYuhiLaunchTarget(extensionContext);
+    if (!target) return;
+    await startClaudeFromSourceWorkspace(extensionContext, currentRoot, target);
     return;
   }
   await showRecoveryRequired(
@@ -1487,12 +2039,14 @@ async function commandOpenClaudeHere(): Promise<void> {
 }
 
 async function commandSwitchWorkspace(context: vscode.ExtensionContext): Promise<void> {
+  const target = await pickYuhiLaunchTarget(context);
+  if (!target) return;
   const sourceRoot = await sourceWorkspaceForClaudeLaunch(
     "Switch Claude Code with Yuhi to another workspace",
     "Prepare and switch",
   );
   if (!sourceRoot) return;
-  await startClaudeFromSourceWorkspace(context, sourceRoot);
+  await startClaudeFromSourceWorkspace(context, sourceRoot, target);
 }
 
 async function commandExitYuhiWorkspace(): Promise<void> {
@@ -1542,7 +2096,10 @@ async function commandRestartFlow(context: vscode.ExtensionContext): Promise<voi
     "Start with Yuhi",
     true,
   );
-  if (sourceRoot) await startClaudeFromSourceWorkspace(context, sourceRoot);
+  if (sourceRoot) {
+    const target = await pickYuhiLaunchTarget(context);
+    if (target) await startClaudeFromSourceWorkspace(context, sourceRoot, target);
+  }
   } finally {
     restartFlowRunning = false;
   }
@@ -1724,6 +2281,7 @@ function toReviewData(
   });
   const r = report.report;
   const metrics = buildPreparedMetrics(report);
+  const safeSummary = buildSafePreparedRunSummary(report);
   const acceptance = report.tabularAcceptance ?? {
     entitiesPseudonymized: 0,
     identifierColumnsTransformed: 0,
@@ -1811,8 +2369,12 @@ function toReviewData(
     metadataFiles,
     preparedTree: [...projectFiles, ...metadataFiles],
     // The shareable, PUBLIC-SAFE preparation report (aggregate numbers only) —
-    // drives the "Repository Ready" card with copy/export.
-    preparationReport: buildSafePreparedRunSummary(report).preparationReport,
+    // drives the "Repository Ready" card with copy/export. The v0.3.3 Context
+    // Compression summary is a SEPARATE aggregate+relpath structure (present only
+    // when the run was prepared with compress: true); it drives the review-only
+    // Context Compression section and is NEVER routed into the public report bytes.
+    preparationReport: safeSummary.preparationReport,
+    ...(safeSummary.compression ? { compression: safeSummary.compression } : {}),
     // PDFs still queued for background inspection: "in progress", not failed.
     backgroundDocumentsPending: report.files.filter(
       (file) =>
@@ -2039,6 +2601,73 @@ async function commandReview(awaitDecision = false): Promise<"open" | "cancel" |
           await commandReview();
         })();
       }
+      if (
+        msg?.type === "fileDecision" &&
+        typeof msg.path === "string" &&
+        (msg.action === "keep-local" ||
+          msg.action === "include-warning" ||
+          msg.action === "always-include" ||
+          msg.action === "always-exclude")
+      ) {
+        void (async () => {
+          const file = report.files.find((candidate) => candidate.relpath === msg.path);
+          if (!file || reviewingOpenedPreparedWorkspace) {
+            await vscode.window.showInformationMessage(
+              "Return to the Original Workspace to change this file decision and prepare again.",
+            );
+            return;
+          }
+          if (msg.action === "include-warning" || msg.action === "always-include") {
+            const key = `${report.runId}:${msg.path}`;
+            if (!confirmedWarningIncludes.has(key)) {
+              const confirmed = await vscode.window.showWarningMessage(
+                "Include this file before inspection is complete? It will be available to the agent as unverified content.",
+                { modal: true },
+                "Include with warning",
+              );
+              if (confirmed !== "Include with warning") return;
+              confirmedWarningIncludes.add(key);
+            }
+          }
+          if (msg.action === "always-include" || msg.action === "always-exclude") {
+            const extension = path.extname(msg.path).toLowerCase();
+            if (!extension) {
+              await vscode.window.showInformationMessage(
+                "This file has no extension. Use the per-file decision instead.",
+              );
+              return;
+            }
+            const config = vscode.workspace.getConfiguration("yuhi");
+            const key = msg.action === "always-include"
+              ? "alwaysIncludeWarningExtensions"
+              : "alwaysExcludeExtensions";
+            const opposite = msg.action === "always-include"
+              ? "alwaysExcludeExtensions"
+              : "alwaysIncludeWarningExtensions";
+            const values = new Set(config.get<string[]>(key) ?? []);
+            values.add(extension);
+            const oppositeValues = (config.get<string[]>(opposite) ?? [])
+              .filter((value) => value !== extension);
+            await config.update(key, [...values].sort(), vscode.ConfigurationTarget.Workspace);
+            await config.update(opposite, oppositeValues, vscode.ConfigurationTarget.Workspace);
+          }
+          const next = msg.action === "keep-local"
+            ? await prepareWorkspaceForLaunch(root, [msg.path], currentSafetyMode())
+            : await prepareWorkspaceForLaunch(
+                root,
+                [],
+                currentSafetyMode(),
+                msg.action === "include-warning" ? [msg.path] : [],
+              );
+          if (!next) return;
+          lastReport = next;
+          lastReportRoot = root;
+          activityProvider?.setPrepared(buildPreparedMetrics(next), undefined, true, activityDetail(next));
+          reviewPanel?.dispose();
+          reviewPanel = undefined;
+          await commandReview();
+        })();
+      }
       if (msg?.type === "reprepare") {
         void (async () => {
           // Explicit re-prepare with the selected Safety Mode. Mirrors
@@ -2165,6 +2794,11 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       })[];
       sourceModified: number;
       safetyMode?: SafetyMode;
+      /** v0.3.4 deterministic Context ID; absent on legacy runs → no picker. */
+      contextId?: unknown;
+      compression?: CompressionReport;
+      publicSummary?: PublicPreparedContextSummary;
+      yuhiModeSummary?: PrepareReport["yuhiModeSummary"];
       tabularAcceptance?: PrepareReport["tabularAcceptance"];
     };
     const metadataFindings = (file: (typeof manifest.files)[number]) => {
@@ -2210,6 +2844,13 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       })),
       sourceModified: manifest.sourceModified,
       safetyMode: isSafetyMode(manifest.safetyMode) ? manifest.safetyMode : currentSafetyMode(),
+      // v0.3.4 — carry the deterministic Context ID so THIS opened Prepared Workspace
+      // window can offer the same agent picker (reused across agents). Legacy or invalid
+      // ids are dropped, so `currentPickerSource()` falls back to the single button.
+      ...(isContextId(manifest.contextId) ? { contextId: manifest.contextId } : {}),
+      ...(manifest.compression ? { compression: manifest.compression } : {}),
+      ...(manifest.publicSummary ? { publicSummary: manifest.publicSummary } : {}),
+      ...(manifest.yuhiModeSummary ? { yuhiModeSummary: manifest.yuhiModeSummary } : {}),
       ...(manifest.tabularAcceptance
         ? { tabularAcceptance: manifest.tabularAcceptance }
         : {}),
@@ -2230,9 +2871,6 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       return true;
     }
     recoveryReason = undefined;
-    const storedAgentBaseline = extensionContext?.globalState.get<StoredAgentBaseline>(
-      `${AGENT_BASELINE_KEY_PREFIX}${session.runId}`,
-    );
     try {
       await writeAndVerifyClaudeSandboxPolicy(root, root);
       preparedSandboxVerified = true;
@@ -2258,42 +2896,75 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
     if (preparedSandboxVerified) {
       // This window IS the Prepared Workspace and is launchable → show the blue
       // "Yuhi Mode" panel so it's instantly recognizable (not the generic ready view).
-      const available = lastReport.files.filter((f) => !f.omitted).length;
-      const excluded = lastReport.files.filter((f) => f.omitted).length;
-      const pending = lastReport.files.filter(
-        (f) => !f.omitted && f.inspection?.fileType === "pdf" && !f.inspection.documentStatus,
-      ).length;
+      const available = lastReport.publicSummary?.availableFiles ??
+        lastReport.files.filter((f) => !f.omitted).length;
+      const excluded = lastReport.publicSummary?.excludedForSafetyFiles ??
+        lastReport.files.filter((f) => f.omitted && f.outcome !== "background-processing-pending").length;
+      const pending = lastReport.publicSummary?.backgroundPendingFiles ??
+        lastReport.files.filter((f) => f.outcome === "background-processing-pending").length;
+      // v0.3.4 — reconstruct the agent picker from the on-disk manifest's Context ID so
+      // this opened Prepared Workspace offers the SAME "Launch with [Claude Code] [Codex]"
+      // surface, reusing this window's prepared repo (no re-prepare). A legacy/invalid
+      // manifest (no valid contextId) yields no source → the single button is kept.
+      const pickerSource = currentPickerSource();
+      const yuhiModePicker = pickerSource ? await buildAgentPickerFor(pickerSource) : undefined;
       activityProvider?.setYuhiMode({
         filesAvailable: available,
         filesExcluded: excluded,
+        ...(lastReport.publicSummary
+          ? {
+              verifiedFiles: lastReport.publicSummary.verifiedFiles,
+              warningFiles: lastReport.publicSummary.availableWithWarningFiles,
+              processingFailedFiles: lastReport.publicSummary.processingFailedFiles,
+            }
+          : {}),
         documentsPending: pending,
         claudeExtensionAvailable: vscode.extensions.getExtension("anthropic.claude-code") !== undefined,
         maskedValues: m.sensitiveValuesMasked,
-        reductionPercent: m.estimatedReductionPercent,
+        ...(lastReport.publicSummary?.reductionPercent !== null && lastReport.publicSummary?.reductionPercent !== undefined
+          ? { reductionPercent: lastReport.publicSummary.reductionPercent }
+          : {}),
+        ...(lastReport.publicSummary?.originalEstimatedTokens !== null && lastReport.publicSummary?.originalEstimatedTokens !== undefined
+          ? { estimatedTokensBefore: lastReport.publicSummary.originalEstimatedTokens }
+          : {}),
+        ...(lastReport.publicSummary?.preparedEstimatedTokens !== null && lastReport.publicSummary?.preparedEstimatedTokens !== undefined
+          ? { estimatedTokensAfter: lastReport.publicSummary.preparedEstimatedTokens }
+          : {}),
+        ...(lastReport.compression
+          ? {
+              compression: {
+                tokenBudget: lastReport.compression.targetBudget,
+                preparedTokens: lastReport.compression.preparedTokens,
+                status: lastReport.compression.status,
+              },
+            }
+          : {}),
         filesTransformed: m.preparedFilesModified,
+        ...(lastReport.yuhiModeSummary ? { yuhiModeSummary: lastReport.yuhiModeSummary } : {}),
+        ...(yuhiModePicker ? { picker: yuhiModePicker } : {}),
       });
+      // v0.3.5 — NOW that Yuhi Mode is ready, start Progressive Context fire-and-forget:
+      // it runs the deferred background work and drives the panel from the PUBLIC status
+      // file only. Building the local provider is best-effort and never blocks launch; a
+      // reload re-enters here and resumes (the worker + revision are idempotent).
+      const yuhiReport = lastReport;
+      void (async () => {
+        let provider: LocalModelProvider | undefined;
+        try {
+          provider = await buildProvider(root);
+        } catch {
+          // No local provider → summaries are honestly kept local; extraction still runs.
+        }
+        startProgressiveContext(yuhiReport, available, provider);
+      })();
     } else {
       activityProvider?.setPrepared(m, "Launch blocked", false);
     }
     await applyPreparedWorkspaceBranding();
-    // Capture only after Yuhi has finished writing its own .claude/.vscode
-    // policy and branding metadata. Otherwise Yuhi's expected setup writes are
-    // misreported as agent changes and block an otherwise empty review.
-    if (storedAgentBaseline && extensionContext) {
-      const baseline = await captureAgentChangeBaseline(
-        session.runId,
-        root,
-        storedAgentBaseline.originalRoot,
-      );
-      await extensionContext.globalState.update(
-        `${AGENT_BASELINE_KEY_PREFIX}${session.runId}`,
-        { originalRoot: storedAgentBaseline.originalRoot, baseline } satisfies StoredAgentBaseline,
-      );
-    }
     preparedStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
     preparedStatusBar.name = "Claude Code with Yuhi";
     preparedStatusBar.text = preparedSandboxVerified
-      ? "$(sparkle) YUHI MODE"
+      ? `$(sparkle) YUHI MODE · ${lastReport.publicSummary?.reductionPercent === null || lastReport.publicSummary?.reductionPercent === undefined ? "reduction not measured" : `${lastReport.publicSummary.reductionPercent.toFixed(1)}% estimated reduction`}`
       : "$(error) YUHI ADVISORY WORKSPACE — CLAUDE BLOCKED";
     // Blue accent so "Yuhi Mode" is instantly recognizable in the Prepared Workspace.
     preparedStatusBar.color = preparedSandboxVerified
@@ -2305,7 +2976,7 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
         "",
         "This window is a Yuhi Prepared Workspace.",
         "",
-        ...preparedStatusTooltipLines(session.runId, m),
+        ...preparedStatusTooltipLines(session.runId, m, lastReport.publicSummary),
         "",
         "Click to review the prepared context.",
       ].join("  \n"),
@@ -2317,9 +2988,10 @@ async function activatePreparedWorkspaceBanner(context: vscode.ExtensionContext,
       new vscode.RelativePattern(root, "**/*"),
     );
     const markAgentChanges = (uri: vscode.Uri) => {
+      if (!agentSessionStarted || agentReviewMutationRunning || Date.now() < suppressAgentWatcherUntil) return;
       const relpath = path.relative(root, uri.fsPath).split(path.sep).join("/");
       if (
-        relpath === "manifest.json" ||
+        relpath === "manifest.json" || relpath === "CLAUDE.md" || relpath === "AGENTS.md" ||
         relpath.startsWith(".yuhi/") ||
         relpath.startsWith(".claude/")
       ) return;
@@ -2468,6 +3140,7 @@ async function performOpenClaudeInPreparedWorkspace(): Promise<boolean> {
     return false;
   }
   await vscode.commands.executeCommand(command);
+  agentSessionStarted = true;
   void vscode.window.showInformationMessage(
     "Claude Code with Yuhi is active in this Prepared Workspace. Yuhi installed and verified the fail-closed Claude Code sandbox policy.",
     "Review Prepared Context",
@@ -2548,6 +3221,26 @@ async function onboard(root: string): Promise<void> {
 // ---- activation ----
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
+  const syncClaudePolicyDefaults = (): void => {
+    const cfg = vscode.workspace.getConfiguration("yuhi");
+    const rawPreset = cfg.get<string>("sandboxPreset");
+    const rawMode = cfg.get<string>("permissionMode");
+    const sandboxPreset: YuhiSandboxPreset =
+      rawPreset === "standard" || rawPreset === "locked-down" ? rawPreset : "guarded";
+    const permissionMode: ClaudePermissionMode =
+      rawMode === "plan" || rawMode === "acceptEdits" || rawMode === "auto" || rawMode === "custom"
+        ? rawMode
+        : "standard";
+    configureClaudeWorkspacePolicyDefaults({ sandboxPreset, permissionMode });
+  };
+  syncClaudePolicyDefaults();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("yuhi.sandboxPreset") || event.affectsConfiguration("yuhi.permissionMode")) {
+        syncClaudePolicyDefaults();
+      }
+    }),
+  );
   yuhiOutput = vscode.window.createOutputChannel("Yuhi");
   context.subscriptions.push(yuhiOutput);
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -2558,7 +3251,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (state.kind === "recovery-required") enterRecovery(state.reason, state.message);
     });
   };
-  activityProvider = new YuhiActivityProvider(context.workspaceState, reconcileOnReveal);
+  activityProvider = new YuhiActivityProvider(
+    context.workspaceState,
+    typeof context.extension.packageJSON?.version === "string"
+      ? context.extension.packageJSON.version
+      : "",
+    reconcileOnReveal,
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(YUHI_ACTIVITY_VIEW_ID, activityProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -2574,11 +3273,17 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("yuhi.prepareWorkspace", () => commandPrepare()),
     vscode.commands.registerCommand("yuhi.prepareHere", (uri?: vscode.Uri) => commandPrepare(uri)),
     vscode.commands.registerCommand("yuhi.reviewPrepared", () => commandReview()),
+    // v0.3.5 Progressive Context — the panel's Cancel / Refresh Context buttons.
+    vscode.commands.registerCommand("yuhi.cancelBackground", () => commandCancelBackground()),
+    vscode.commands.registerCommand("yuhi.refreshContext", () => commandRefreshContext()),
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndOpen, () =>
       runVisibleCommand(commandPrepareAndOpen),
     ),
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndStartClaude, () =>
       runVisibleCommand(() => commandPrepareAndStartClaude(context)),
+    ),
+    vscode.commands.registerCommand("yuhi.launchAgent", (agentId?: unknown) =>
+      commandLaunchAgent(typeof agentId === "string" ? agentId : "").catch(reportLaunchFailure),
     ),
     vscode.commands.registerCommand("yuhi.openClaudeHere", () =>
       runVisibleCommand(commandOpenClaudeHere),
@@ -2626,5 +3331,6 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  /* nothing to clean up */
+  // Stop the fire-and-forget background worker + its poll timer on shutdown.
+  stopProgressiveContext();
 }

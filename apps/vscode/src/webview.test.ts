@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import { renderSavingsHtml, type ReviewData } from "./webview.js";
+import type { CompressionReport } from "@yuhi/core";
 import {
   repositoryReadyClipboardText,
   repositoryReadyExportText,
@@ -242,10 +245,12 @@ describe("renderSavingsHtml (product workflow)", () => {
       },
     ];
     const rendered = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
-    // New kept-local detail: WHAT was detected, the STATUS, and the concrete REASON.
-    expect(rendered).toContain("Detected");
-    expect(rendered).toContain("Transformation verification failed");
-    expect(rendered).toContain("No verified local PDF inspection is available"); // PDF reason
+    // Kept-local detail states what happened and what follows — never a bare
+    // "Unknown verification failure", which reads to a user as "Yuhi is broken".
+    expect(rendered).toContain("Not verified yet");
+    expect(rendered).toContain("This PDF hasn't been verified yet."); // PDF reason
+    expect(rendered).toContain("Yuhi could not verify this file's contents yet.");
+    expect(rendered).not.toContain("Unknown verification failure");
     expect(rendered).toContain("Some files need attention.");
     // Never leaks a private source filename that the caller did not put in the data.
     expect(rendered).not.toContain("private-report.pdf");
@@ -458,7 +463,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(html).not.toContain("<details open");
   });
 
-  it("presents kept-local files as 'excluded by recommendation' without blocking launch", () => {
+  it("presents kept-local files as 'kept on this computer' without blocking launch", () => {
     const fixture = data();
     fixture.acceptance = {
       ...fixture.acceptance,
@@ -471,7 +476,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("READY");
     expect(rendered).not.toContain("WITH WARNINGS");
     expect(rendered).toContain("Ready for Claude Code");
-    expect(rendered).toContain("Excluded by recommendation");
+    expect(rendered).toContain("Kept on this computer");
     expect(rendered).toContain(">Open with Claude Code</button>"); // launch still allowed
     expect(rendered).not.toContain("LIMITED");
     expect(rendered).not.toContain("Preparation was limited");
@@ -494,7 +499,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("Sensitive values handled");
     expect(rendered).toContain("Runtime configuration preserved");
     expect(rendered).toContain("Credential configuration prepared locally");
-    expect(rendered).toContain("Transformed copies verified");
+    expect(rendered).toContain("Safe copies verified");
     expect(rendered).toContain("Credential values");
     expect(rendered).toContain("Not included in Prepared Workspace");
     expect(rendered).toContain("runtime environment");
@@ -556,7 +561,7 @@ describe("renderSavingsHtml (product workflow)", () => {
     expect(rendered).toContain("Repository Ready");
     expect(rendered).toContain("Prepared artifacts");
     expect(rendered).toContain("2,165");
-    expect(rendered).toContain("Estimated accessible-content reduction");
+    expect(rendered).toContain("Estimated repository reduction");
     expect(rendered).toContain("agent-accessible content, not model token savings");
     // Copy/export exist and are click-wired to post their id back to the host.
     // Assert the behavioural contract (button id present + referenced by a click
@@ -854,5 +859,161 @@ describe("Safety Mode selector (v0.3.2)", () => {
     for (const bad of ["Re-prepare required", "Selected:", "setSafetyMode", "reprepare"]) {
       expect(copy).not.toContain(bad);
     }
+  });
+});
+
+// v0.3.3 — Context Compression section + settings.
+describe("Context Compression section (v0.3.3)", () => {
+  const compression = (over: Partial<CompressionReport> = {}): CompressionReport => ({
+    originalTokens: 1_240_000,
+    preparedTokens: 178_000,
+    reductionPercent: 85.6,
+    fullFiles: 64,
+    compressedFiles: 126,
+    excludedFiles: 842,
+    compressionReductionTokens: 900_000,
+    exclusionReductionTokens: 162_000,
+    targetBudget: null,
+    actualTokens: 178_000,
+    status: "no-budget",
+    warnings: [],
+    files: [
+      {
+        relpath: "src/big.ts", representation: "compressed", reason: "structural-compression",
+        originalTokens: 5_000, preparedTokens: 800,
+      },
+      {
+        relpath: "src/tiny.ts", representation: "full", reason: "too-small",
+        originalTokens: 100, preparedTokens: 100,
+      },
+      {
+        relpath: "src/huge.ts", representation: "excluded", reason: "token-budget",
+        originalTokens: 9_000, preparedTokens: 0,
+      },
+    ],
+    ...over,
+  });
+  const render = (over: Partial<ReviewData> = {}) =>
+    renderSavingsHtml({ ...data(), ...over }, "vscode-resource:", "NONCE123");
+
+  it("renders the section with compact numbers when compression is present", () => {
+    const html = render({ compression: compression() });
+    expect(html).toContain('id="contextCompression"');
+    expect(html).toContain(">Context Compression</h2>");
+    // Compact k/M formatting like the existing metrics.
+    expect(html).toContain("1.24M"); // Original
+    expect(html).toContain("178K"); // Prepared
+    expect(html).toContain("85.6%"); // Reduced
+    expect(html).toContain("Full files");
+    expect(html).toContain(">64<"); // fullFiles
+    expect(html).toContain(">126<"); // compressedFiles
+    expect(html).toContain(">842<"); // excludedFiles
+  });
+
+  it("is absent when no compression summary is present", () => {
+    const html = render();
+    // The visible section (its container + heading) is absent. (The client-side
+    // diff-wiring comment mentions the feature name unconditionally, so assert the
+    // section markup rather than the bare phrase.)
+    expect(html).not.toContain('id="contextCompression"');
+    expect(html).not.toContain(">Context Compression</h2>");
+  });
+
+  it("shows a Target/Actual/Reason line only for best-effort status", () => {
+    const noBudget = render({ compression: compression() });
+    expect(noBudget).not.toContain('id="compressionBudget"');
+
+    const best = render({
+      compression: compression({
+        status: "best-effort",
+        targetBudget: 150_000,
+        actualTokens: 178_000,
+        budgetReason: "Could not fit the budget without excluding entry points.",
+      }),
+    });
+    expect(best).toContain('id="compressionBudget"');
+    expect(best).toContain("Target 150K");
+    expect(best).toContain("Actual 178K");
+    expect(best).toContain("Could not fit the budget without excluding entry points.");
+  });
+
+  it("marks a compressed file as diffable via the existing {type:diff,path} protocol", () => {
+    const html = render({ compression: compression() });
+    // The compressed file is listed with a diff button carrying its relpath…
+    expect(html).toContain('class="diff" data-p="src/big.ts"');
+    expect(html).toContain("Compressed");
+    // …and the section wires clicks to post the existing diff message (compare
+    // original ↔ delivered compressed copy). No new message type is introduced.
+    expect(html).toContain('getElementById("contextCompression")');
+    expect(html).toContain('type:"diff"');
+    // full / excluded files are NOT offered as compressed diffs.
+    expect(html).not.toContain('data-p="src/tiny.ts"');
+    expect(html).not.toContain('data-p="src/huge.ts"');
+  });
+
+  it("does not route compression per-file data into the public copy/export bytes", () => {
+    const fixture: ReviewData = {
+      ...data(),
+      compression: compression(),
+      preparationReport: {
+        sourceFiles: 3, preparedArtifacts: 3, documentsPrepared: 0,
+        secretsBlocked: 0, identifiersTransformed: 0, largeFilesExcluded: 0,
+        estimatedReductionPercent: 10, status: "ready", safetyMode: "balanced",
+      },
+    };
+    // The compressed relpath appears in the local webview surface…
+    const html = renderSavingsHtml(fixture, "vscode-resource:", "NONCE123");
+    expect(html).toContain("src/big.ts");
+    // …but never in the PUBLIC copy/export bytes (aggregate-only report).
+    const copy = repositoryReadyClipboardText(fixture.preparationReport!);
+    for (const bad of ["src/big.ts", "src/huge.ts", "Context Compression", "structural-compression"]) {
+      expect(copy).not.toContain(bad);
+    }
+    for (const format of REPOSITORY_READY_EXPORT_FORMATS) {
+      const out = repositoryReadyExportText(fixture.preparationReport!, format.format);
+      expect(out).not.toContain("src/big.ts");
+      expect(out).not.toContain("structural-compression");
+    }
+  });
+});
+
+describe("Context Compression settings (v0.3.3)", () => {
+  const manifest = JSON.parse(
+    readFileSync(path.join(process.cwd(), "apps/vscode/package.json"), "utf8"),
+  ) as {
+    contributes: {
+      configuration: {
+        properties: Record<string, { type: string; default: unknown; scope: string; description: string }>;
+      };
+    };
+  };
+  const props = manifest.contributes.configuration.properties;
+
+  it("declares yuhi.compress (boolean, default true, resource-scoped)", () => {
+    const compress = props["yuhi.compress"];
+    expect(compress).toBeDefined();
+    expect(compress?.type).toBe("boolean");
+    expect(compress?.default).toBe(true);
+    expect(compress?.scope).toBe("resource");
+  });
+
+  it("declares yuhi.tokenBudget (number, default 0 = No target, resource-scoped)", () => {
+    const budget = props["yuhi.tokenBudget"];
+    expect(budget).toBeDefined();
+    expect(budget?.type).toBe("number");
+    // Corrected default: Compression is ON (Auto) but the Token Budget has NO target
+    // by default (0/blank). A budget only applies when the user sets a positive value.
+    expect(budget?.default).toBe(0);
+    expect(budget?.scope).toBe("resource");
+    expect((budget as { minimum?: number })?.minimum).toBe(0);
+    expect((budget as { maximum?: number })?.maximum).toBe(1_000_000_000);
+  });
+
+  it("fresh-workspace defaults are Balanced / Compression On (Auto) / No target", () => {
+    // The unset-workspace default must be Balanced + compression On + No target.
+    // Maximum Privacy and a token budget apply ONLY when the user chooses them.
+    expect(props["yuhi.safetyMode"]?.default).toBe("balanced");
+    expect(props["yuhi.compressionMode"]?.default).toBe("auto");
+    expect(props["yuhi.tokenBudget"]?.default).toBe(0);
   });
 });

@@ -10,6 +10,7 @@ describe("renderPrepareReport boundary and metric terminology", () => {
     vi.spyOn(console, "log").mockImplementation((...args) => lines.push(args.join(" ")));
     const report: PrepareReport = {
       runId: "synthetic",
+      contextId: "sha256:" + "0".repeat(64),
       outDir: "/synthetic/.yuhi/prepared/synthetic",
       report: {
         beforeChars: 1200, afterChars: 256,
@@ -23,6 +24,7 @@ describe("renderPrepareReport boundary and metric terminology", () => {
         transformations: ["summarized", "pseudonymized", "masked"], maskedValues: 2,
       }],
       blocked: [], errors: [],
+      safetyMode: "balanced",
       decisions: [{
         relpath: "notes.md", action: "prepare-locally", ruleName: "synthetic",
         reason: "Synthetic fixture.", destinations: ["external"],

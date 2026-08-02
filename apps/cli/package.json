@@ -1,6 +1,6 @@
 {
   "name": "@yuhi-ai-labs/yuhi",
-  "version": "0.3.2",
+  "version": "0.3.6",
   "type": "module",
   "description": "See exactly what your AI agent can see — then run it on a locally-prepared copy of your repo. Local-first, no telemetry.",
   "keywords": [
@@ -56,6 +56,9 @@
     "zod-to-json-schema": "^3.24.1",
     "picomatch": "^4.0.2",
     "ignore": "^6.0.2"
+  },
+  "optionalDependencies": {
+    "typescript": "^5.7.2"
   },
   "devDependencies": {
     "@yuhi/shared": "workspace:*",

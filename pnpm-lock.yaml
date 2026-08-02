@@ -23,6 +23,9 @@ importers:
       '@typescript-eslint/parser':
         specifier: ^8.18.0
         version: 8.65.0(eslint@9.39.5)(typescript@5.9.3)
+      '@yuhi/agents':
+        specifier: workspace:*
+        version: link:packages/agents
       '@yuhi/config':
         specifier: workspace:*
         version: link:packages/config
@@ -102,9 +105,16 @@ importers:
       '@yuhi/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+    optionalDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   apps/vscode:
     dependencies:
+      '@yuhi/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@yuhi/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -133,6 +143,10 @@ importers:
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2
+    optionalDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   packages/agents:
     dependencies:
@@ -191,6 +205,10 @@ importers:
       exceljs:
         specifier: 4.4.0
         version: 4.4.0
+    optionalDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   packages/local:
     dependencies:

@@ -274,3 +274,54 @@ describe("student record tables", () => {
     expect(parsed.rows[1]?.[2]).not.toEqual(parsed.rows[2]?.[2]);
   });
 });
+
+describe("semantics-preserving pseudonymization (v0.3.6 real-data regression)", () => {
+  // Reproduces the reported corruption: a 730-row export whose course code,
+  // instructor number and term code are CONSTANT, yet every row received a
+  // different ACCOUNT-nnn — and all three columns shared one token per row,
+  // inventing an equality between three unrelated fields.
+  const rosterCsv = (rows: number): string => {
+    const header = "授業コード,教員番号,学期コード,氏名,評定";
+    const body = Array.from({ length: rows }, (_, index) =>
+      `123456,A000000,1,学生${String(index + 1).padStart(3, "0")},${"SABCF"[index % 5]}`,
+    );
+    return [header, ...body].join("\n");
+  };
+
+  it("keeps a constant column constant, and never collapses distinct columns onto one token", () => {
+    const rowCount = 730;
+    const result = pseudonymizeStudentRecords(rosterCsv(rowCount));
+    const parsed = parseDelimitedTable(result.output);
+    const body = parsed.rows.slice(1);
+    expect(body).toHaveLength(rowCount);
+
+    const column = (index: number) => new Set(body.map((row) => row[index]!));
+    // Cardinality is the analytical contract: one course, one instructor, one term.
+    expect(column(0).size).toBe(1);
+    expect(column(1).size).toBe(1);
+    expect(column(2).size).toBe(1);
+    // ...and every student stays distinct, so a per-student join still works.
+    expect(column(3).size).toBe(rowCount);
+
+    // Three different fields must never share a token — that relation is false.
+    const [course, instructor, term] = [body[0]![0]!, body[0]![1]!, body[0]![2]!];
+    expect(new Set([course, instructor, term]).size).toBe(3);
+
+    // Non-identifying analytical columns pass through untouched.
+    expect(body.map((row) => row[4])).toEqual(
+      Array.from({ length: rowCount }, (_, index) => "SABCF"[index % 5]),
+    );
+    // A constant column is no longer misread as 730 identifier conflicts.
+    expect(result.conflicts).toBe(0);
+  });
+
+  it("preserves aggregate counts in a pivot column whose header looks like a name", () => {
+    // "個数 / フルネーム" pivot output: the values are S/A/B/C/F counts, not people.
+    const input = ["評定,フルネーム", "S,12", "A,48", "B,131", "C,27", "F,3"].join("\n");
+    const classification = classifyStudentRecordTable(parseDelimitedTable(input).rows);
+    expect(classification.directIdentifierTypes).not.toContain("name");
+    expect(() => pseudonymizeStudentRecords(input)).toThrow(
+      /requires direct-identifier columns/,
+    );
+  });
+});

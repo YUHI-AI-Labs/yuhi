@@ -1,13 +1,15 @@
 import * as path from "node:path";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import type { PrepareReport } from "./prepare-workspace.js";
+import type { CompressionReport, PrepareReport } from "./prepare-workspace.js";
 import { managedWorkspaceBaseDir } from "./prepare-workspace.js";
 import { buildPreparedMetrics } from "./prepared-metrics.js";
 import { deriveWorkflowState, type YuhiWorkflowState } from "./workflow-state.js";
 import { buildAiReadinessReport } from "./ai-readiness-report.js";
 import { buildPreparationReport, type PreparationReport } from "./preparation-report.js";
 import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
+import type { PublicPreparedContextSummary } from "./public-prepared-summary.js";
+import type { YuhiModeSummary } from "./yuhi-mode-summary.js";
 
 /** Why a Prepared Workspace is stale relative to the current inputs. */
 export type PreparationFreshnessReason =
@@ -56,6 +58,8 @@ export interface SafePreparedRunSummary {
   schemaVersion: 1;
   status: PreparedRunStatus;
   runId: string;
+  /** Deterministic, agent-independent Context ID (`sha256:<hex>`) this run prepared. */
+  contextId?: string;
   filesIncluded: number;
   filesTransformed: number;
   filesExcluded: number;
@@ -89,6 +93,16 @@ export interface SafePreparedRunSummary {
    * renders to terminal / Markdown / JSON / SVG for READMEs, PRs, and posts.
    */
   preparationReport: PreparationReport;
+  /**
+   * v0.3.3 structure-compression summary — present ONLY when the run was prepared with
+   * `compress: true`. Aggregate numbers plus a per-file list of relpaths (already shown
+   * in the review), so this is safe for the CLI / VS Code to render. It is deliberately
+   * SEPARATE from `preparationReport`, which stays aggregate-only with no compression
+   * detail.
+   */
+  compression?: CompressionReport;
+  publicSummary?: PublicPreparedContextSummary;
+  yuhiModeSummary?: YuhiModeSummary;
 }
 
 export function buildSafePreparedRunSummary(report: PrepareReport): SafePreparedRunSummary {
@@ -112,6 +126,7 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     schemaVersion: 1,
     status,
     runId: report.runId,
+    ...(report.contextId !== undefined ? { contextId: report.contextId } : {}),
     filesIncluded: included.length,
     filesTransformed: included.filter((file) => file.transformed).length,
     filesExcluded: metrics.filesExcluded,
@@ -149,6 +164,9 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     localModelMaxConcurrency: acceptance?.localModelMaxConcurrency ?? 0,
     localModelConfiguredParallelism: acceptance?.localModelConfiguredParallelism ?? 0,
     preparationReport,
+    ...(report.compression ? { compression: report.compression } : {}),
+    ...(report.publicSummary ? { publicSummary: report.publicSummary } : {}),
+    ...(report.yuhiModeSummary ? { yuhiModeSummary: report.yuhiModeSummary } : {}),
   };
 }
 
@@ -159,6 +177,7 @@ function buildPreparationReportSafely(report: PrepareReport, warning: boolean): 
     return buildPreparationReport(readiness, report.files.length, {
       warning,
       safetyMode: report.safetyMode,
+      ...(report.publicSummary ? { context: report.publicSummary } : {}),
     });
   } catch {
     return {
@@ -179,6 +198,8 @@ export interface CorePreparedSession {
   schemaVersion: 1;
   preparedBy: "Yuhi";
   runId: string;
+  /** Links this prepared run to its deterministic, agent-independent Context ID. */
+  contextId?: string;
   status: PreparedRunStatus;
   launchAllowed: boolean;
   summary: SafePreparedRunSummary;
@@ -192,6 +213,7 @@ export async function writePreparedRunSession(
     schemaVersion: 1,
     preparedBy: "Yuhi",
     runId: report.runId,
+    ...(report.contextId !== undefined ? { contextId: report.contextId } : {}),
     status: summary.status,
     launchAllowed: summary.launchAllowed,
     summary,

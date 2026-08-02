@@ -86,7 +86,7 @@ export function renderRepositoryReadyCard(report: PreparationReport): string {
     `Aggregate numbers only — safe to paste into a README, PR, or post (no filenames, paths, or secrets).</p>` +
     `<div class="summary-grid">` +
     metrics +
-    `<div class="metric reduction"><span>Estimated accessible-content reduction</span>` +
+    `<div class="metric reduction"><span>Estimated repository reduction</span>` +
     `<b>${report.estimatedReductionPercent}%</b>` +
     `<div class="explanation">An estimate of agent-accessible content, not model token savings.</div></div>` +
     largeFiles +

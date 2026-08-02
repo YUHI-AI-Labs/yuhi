@@ -20,7 +20,7 @@ import {
   sanitizeCredentialDocument,
   sanitizeDotenv,
 } from "@yuhi/processors";
-import { runDetectors } from "@yuhi/scanner";
+import { redactText, runDetectors } from "@yuhi/scanner";
 import type { Plan } from "./plan.js";
 
 export interface RouteResult {
@@ -98,6 +98,19 @@ export function runPrepareLocally(
         itemsChanged: transformed.valuesProtected,
       });
       steps.push(`${transformed.valuesProtected} credential value(s) protected locally`);
+    } else if (id === "redact-secrets") {
+      // The `redact` policy action previously ran only the tabular PII
+      // pseudonymizer, so a file routed to REDACT *because a secret was detected*
+      // was written out byte-identical to its source. Apply the secret masker.
+      const redaction = redactText(output, { entropyThreshold: 4, keywords: [] });
+      output = redaction.redacted;
+      audits.push({
+        processorId: id,
+        version: "1.0.0",
+        kind: "rule-based",
+        itemsChanged: redaction.count,
+      });
+      steps.push(`${redaction.count} secret span(s) redacted locally`);
     } else if (id === "safety-check") {
       const r = createValidator({
         forbid: identifiers,
@@ -112,7 +125,9 @@ export function runPrepareLocally(
         entropyThreshold: 4,
         keywords: [],
       }).filter((finding) =>
-        finding.severity === "high" || finding.severity === "critical"
+        // Post-transform residual: `medium` is the shape of an unredacted AWS
+        // secret access key on a secret-like assignment. Fail closed.
+        finding.severity !== "low"
       );
       if (unresolved.length > 0) return { output, allowed: false, audits, steps };
     }
@@ -282,6 +297,16 @@ export async function runLocalPreparation(
           note: "Individual rows removed; aggregate metrics retained",
         });
         steps.push("Individual rows aggregated locally");
+      } else if (id === "redact-secrets") {
+        const redaction = redactText(output, { entropyThreshold: 4, keywords: [] });
+        output = redaction.redacted;
+        audits.push({
+          processorId: id,
+          version: "1.0.0",
+          kind: "rule-based",
+          itemsChanged: redaction.count,
+        });
+        steps.push(`${redaction.count} secret span(s) redacted locally`);
       } else if (id === "safety-check") {
         const r = createValidator({
           forbid: safetyIdentifiers,

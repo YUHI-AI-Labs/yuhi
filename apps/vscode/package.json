@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi — AI-Ready Repositories",
   "description": "Scan, sanitize, convert, and reduce your repository before opening it with an AI coding agent. Local-first, no telemetry.",
-  "version": "0.3.2",
+  "version": "0.3.6",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -130,6 +130,10 @@
         "command": "yuhi.showRecovery",
         "title": "Yuhi: Open Recovery Options",
         "icon": "$(tools)"
+      },
+      {
+        "command": "yuhi.launchAgent",
+        "title": "Yuhi: Launch Agent (Claude Code / Codex)"
       }
     ],
     "menus": {
@@ -189,6 +193,10 @@
         {
           "command": "yuhi.showRecovery",
           "when": "false"
+        },
+        {
+          "command": "yuhi.launchAgent",
+          "when": "false"
         }
       ],
       "explorer/context": [
@@ -216,6 +224,85 @@
           "default": "balanced",
           "scope": "resource",
           "description": "Safety Mode preset applied when Yuhi prepares this workspace. Changing it takes effect the next time you prepare (re-prepare) the workspace."
+        },
+        "yuhi.compress": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Compress source structure (drop implementation bodies, keep signatures) to reduce tokens."
+        },
+        "yuhi.compressionMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Do not create compact context representations.",
+            "Automatically create safe compact representations when useful (recommended).",
+            "Always enable safe compression; use the optional best-effort Token Budget."
+          ],
+          "default": "auto",
+          "scope": "resource",
+          "description": "How Yuhi prepares compact repository context. Auto is recommended; failed compression always falls back to the full file."
+        },
+        "yuhi.permissionMode": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "plan",
+            "acceptEdits",
+            "auto",
+            "custom"
+          ],
+          "default": "standard",
+          "scope": "resource",
+          "description": "Claude Code permission mode used in Yuhi Mode. Yuhi does not disable Auto mode globally."
+        },
+        "yuhi.sandboxPreset": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "guarded",
+            "locked-down"
+          ],
+          "enumDescriptions": [
+            "Use Claude Code defaults; Yuhi adds no permission restrictions.",
+            "Enable Claude's sandbox while preserving Auto mode and prompting for unsandboxed commands.",
+            "Apply Yuhi's strict sandbox restrictions; Auto or bypass capabilities may be limited."
+          ],
+          "default": "guarded",
+          "scope": "resource",
+          "description": "Runtime sandbox preset. Repository preparation and Safe Apply remain enforced independently."
+        },
+        "yuhi.tokenBudget": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1000000000,
+          "scope": "resource",
+          "description": "Target token budget for the prepared context. Enable Context Compression first. Use 0 for No target; positive whole numbers are best-effort targets."
+        },
+        "yuhi.alwaysIncludeWarningExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\.[A-Za-z0-9]+$"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "File extensions explicitly allowed with inspection warnings. Known credentials and policy blocks still remain excluded."
+        },
+        "yuhi.alwaysExcludeExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\.[A-Za-z0-9]+$"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "File extensions explicitly kept out of the Prepared Workspace."
         }
       }
     }
@@ -228,11 +315,15 @@
     "inspect:vsix": "node scripts/inspect-vsix.mjs yuhi.vsix"
   },
   "dependencies": {
+    "@yuhi/agents": "workspace:*",
     "@yuhi/core": "workspace:*",
     "@yuhi/local": "workspace:*",
     "@yuhi/shared": "workspace:*",
     "@yuhi/config": "workspace:*",
     "yaml": "^2.6.1"
+  },
+  "optionalDependencies": {
+    "typescript": "^5.7.2"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

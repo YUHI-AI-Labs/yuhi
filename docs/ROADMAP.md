@@ -1,88 +1,114 @@
-# Yuhi — Roadmap
+# Yuhi product roadmap after v0.3.6
 
-> **Yuhi prepares the right context before an AI starts. Everything else is an extension.**
+This is the canonical product roadmap after Safe Patch Review. Feature-specific handoff
+documents should link here instead of copying this plan.
 
-This roadmap is the honest answer to "is this project alive?" It is grouped by
-what is **done**, what is **in progress**, what is **next**, and what is **future**.
-For the finer-grained per-feature status, see the table in the [README](../README.md).
+## Product direction
 
-_Last reviewed: 2026-07._
+Yuhi is an **agent-neutral repository preparation and evidence layer**.
 
----
+```text
+Prepare once.
+Run with Claude Code or Codex.
+Measure the difference.
+Review before applying.
+```
 
-## ✅ Completed — v1.0 (release candidate)
+For the next six months, prioritize adoption and evidence over feature count:
 
-**Core**
-- pnpm + TypeScript monorepo; UI-agnostic core (no editor dependency).
-- Declarative policy (`yuhi.yaml`) with JSON-Schema validation.
-- Policy engine: glob matching, gitignore-style negation, most-restrictive-wins precedence.
-- Scanner: deterministic secret detectors + entropy + binary/symlink flags.
+- 50% product reliability, speed, and measurement
+- 30% distribution, onboarding, and sharing
+- 20% ecosystem, design partners, and external adoption
 
-**Routes (the whole vocabulary)**
-- **Send directly**, **Remove secrets** (deterministic redaction), **Prepare locally**,
-  **Runtime only** (env injection, never in context), **Keep local**, **Exclude**.
-- **Prepare locally** runs for real: `pseudonymize` → `safety-check` processors,
-  on-device, with the original file left untouched.
+Default implementation allocation:
 
-**CLI**
-- `init · scan · preview · explain · diff · status · run · doctor`,
-  plus `workspace` and `audit` subcommands.
-- `--json`, `--quiet`, `--no-color`, `--lang en|ja|zh-CN` everywhere.
-- Secure workspace generator: copy, transform, manifest, path-traversal & symlink guards.
-- `dummy` (offline) and Claude Code adapters.
-- Local, metadata-only audit log (never stores file contents).
+- 30% reliability and performance
+- 25% benchmark and evidence
+- 20% onboarding and distribution
+- 15% SDK and ecosystem
+- 10% security maintenance
 
-**VS Code extension**
-- Preview webview using the same route vocabulary as the CLI.
-- Explorer badges, status bar (`N sent · N prepared · N kept`), follow-active-file.
-- Reveal-what-AI-sees diff, explain-file, run agent.
+## Phase 0 — v0.3.6 release stabilization
 
-**Project**
-- Apache-2.0; `NOTICE` (trademark); community-health docs (`CONTRIBUTING`, `CODE_OF_CONDUCT`, `SECURITY`).
-- Unit + integration + security regression tests (all green).
-- READMEs (en/ja/zh-CN); product website.
+Complete clean packaging, isolated installation, real GUI and CLI E2E, upgrade checks,
+README/Marketplace/npm consistency, Git tag, GitHub Release, Marketplace pre-release, and
+npm release. Do not add features during this phase.
 
----
+Release evidence must cover compression in the installed VSIX, Claude/Codex launch, patch
+review, secret and source-conflict blocking, explicit Apply/Undo, and zero Source writes
+without approval.
 
-## 🚧 In progress — road to public v1.0
+## Phase 1 — v0.3.7 Fast First Value
 
-- CI matrix (Linux/macOS/Windows), CodeQL, secret scan, Dependabot — workflows in `.github/`.
-- Release automation: version tags, checksums, npm + VS Code Marketplace publish.
-- Documentation polish and a first-run tutorial.
-- Public-release review (security, first impressions, contributor onboarding).
+Goal: the first useful result in under 30 seconds.
 
----
+- Measure activation, scan, deterministic preparation, Yuhi Mode readiness, and launch.
+- Targets: small repository under 10 seconds, medium under 30, large under 60 where practical.
+- Add local-only incremental preparation keyed by relative path, content/policy hashes,
+  safety/compression settings, and processor version.
+- Target no-change re-prepare under five seconds.
+- Provide one official synthetic demo repository and a public-safe preparation summary.
 
-## ⏭️ Next — v1.1 "Local AI"
+Do not add agents, AST patching, automatic Git/PR actions, cloud dashboards, MCP, or new
+language compressors in v0.3.7.
 
-The flagship of v1.1 is **Prepare locally with a local model**. Goal: demonstrate the
-architecture cleanly, not support every model.
+Gate: first-prepare completion above 60%, median prepare below 30 seconds, and at least 20
+repeat users. If missed, improve speed/onboarding before starting v0.3.8.
 
-- `LocalModelProvider` — a generic interface; the RouteExecutor never hardcodes a vendor.
-- `OllamaProvider` — the first provider, via Ollama's OpenAI-compatible chat endpoint.
-- `summarize-local` processor (txt / md / csv / json) → a concise, sendable summary.
-- **`safety-check` runs after summarization**; if protected values remain, transmission is blocked.
-- Everything stays on the machine — no cloud calls. Default model `gemma3:4b`, fallback `qwen3:4b`, configurable.
-- Docs: **Preparing Context with Local AI** (why local, why summarize, privacy limits, supported models).
+## Phase 2 — v0.3.8 Yuhi Bench
 
----
+Build reproducible comparisons of full, prepared, and compressed representations using a
+stable task schema and allowlisted validation commands. Measure task success, patch
+correctness, tokens when provider-reported, runtime, tool calls, files opened/modified,
+context reduction, safety events, and estimated cost. Never generalize one run, hide
+failures, expose private prompts/source/environment, or use private APIs.
 
-## 🔭 Future — v1.2 and beyond
+Success target: 100 public reports, 20 external bench users, and at least 90% reproducible
+results. Gate progression on 20 external runs and at least one measured benefit without
+reducing task success.
 
-- **v1.2** — Processor Registry + community processors; SDK for third-party processors/adapters;
-  `metadata-only` action; **Context Preparation Benchmark (ContextBench) α** (see [RESEARCH.md](./RESEARCH.md)).
-- More agents — Codex CLI, Gemini CLI, generic command adapter.
-- **Research toward optional sandbox backends** — Docker, `sandbox-exec`, bubblewrap/namespaces,
-  Windows Sandbox; read-only mounts / network namespaces (see [THREAT_MODEL.md](./THREAT_MODEL.md)).
-- Tamper-evident audit log; signed releases / provenance.
-- **v2.0** — team/enterprise policy, optional hosted collaboration, processor marketplace.
+## Phase 3 — v0.3.9 Evidence Distribution
 
----
+- Report-only GitHub Action comments; never Apply from CI.
+- Repository badges only for measured results, including honest zero-reduction results.
+- Static public benchmark gallery.
+- Synthetic fixture and instructions for a 60-second Prepare → agent switch → Review →
+  Apply → Undo demo.
 
-## Non-goals (by design)
+Gate: 100 shared reports, measurable GitHub-star conversion, and 50 monthly active users.
 
-Yuhi is **not** a sandbox, **not** an API gateway, **not** a secrets vault, and ships
-**no telemetry**. It controls the *inputs* an agent starts from — see
-[THREAT_MODEL.md](./THREAT_MODEL.md) for exactly what that does and does not cover.
+## Phase 4 — v0.4.0 Adapter and Conformance SDK
 
-Have an opinion on the order? Open a [Discussion](https://github.com/YUHI-AI-Labs/yuhi/discussions).
+Stabilize adapter/context/conformance packages only after external demand. Conformance must
+check structured argv, Prepared-root launch, Context ID preservation, cancellation,
+timeouts, safe public output, session provenance, and no automatic Source Apply. Explicitly
+installed representation plugins require declared capabilities, an allowlisted ID, timeout,
+and fail-safe FULL fallback.
+
+Gate: two external integrations, three external contributors, and one repeating design
+partner. Weaken platform/standard claims if this is not achieved.
+
+## Design Partner track
+
+Recruit three organizations that need repository preparation before permitting Claude Code
+or Codex. Measure preparation, repeat usage, agents, policy events, patch reviews, prevented
+conflicts, approval status, and satisfaction. Do not collect source, raw prompts, secrets,
+usernames, or machine paths.
+
+Six-month minimum targets: 300 GitHub stars, 500 VS Code installs, 100 monthly active users,
+20 four-week retained users, three external contributors, 100 benchmark reports, three
+design partners, and one written enterprise proof of value.
+
+## Deferred unless user evidence changes priority
+
+- AST-aware patches for compressed files
+- automatic three-way merge, Git commit, or pull request
+- cloud dashboard, SSO/RBAC, or SOC 2 work
+- more than two additional agents
+- new programming languages or MCP server
+
+## Decision principle
+
+Prioritize measured evidence, repeat usage, external dependency, community contribution,
+enterprise proof, and reproducible benchmark data. Before building a feature, ask whether
+users would still need Yuhi if an agent vendor implemented the same feature.

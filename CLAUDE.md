@@ -23,13 +23,46 @@ Yuhi recommends an action
 The user makes the final decision
 ```
 
+The current product principle is:
+
+```text
+Start Yuhi Mode first.
+Make useful context available.
+Disclose uncertainty honestly.
+Improve it in the background.
+Let the user decide.
+```
+
 ### Default file behavior
 
 - **Safe**: include automatically.
-- **Caution / Unverified**: include with an explicit warning and continue.
+- **Caution / Unverified (Balanced)**: include the useful original with an explicit
+  `inspection-pending` warning, register background processing, and continue launching
+  Yuhi Mode. Never label it verified.
+- **Caution / Unverified (Strict)**: include ordinary documents with an explicit
+  warning and continue background inspection. Known credentials and private keys stay
+  blocked. Do not turn Strict into Maximum Privacy.
+- **Caution / Unverified (Maximum Privacy)**: keep the original local and publish only
+  a verified companion.
 - **High risk**: exclude by recommendation, but continue launching. Let the user
   explicitly choose `Include anyway`, `Keep excluded`, or, when supported,
   `Use transformed copy`.
+
+The unverified-file invariant is:
+
+```text
+inspection unavailable or unsuccessful
+  → Balanced: include with warning when no known credential/policy block exists
+  → Strict: include ordinary documents with warning; block known credentials
+  → Maximum Privacy: keep original local
+  → process safely in background
+  → never delay Yuhi Mode for optional heavy inspection
+```
+
+Only an actual high-risk finding, user exclusion, or explicit policy rule counts as
+excluded. Inspection pending, warning availability, background processing, and
+processing failure are distinct states. UI and handoff report them separately using
+public-safe counts only.
 
 The governing invariant is:
 
@@ -95,6 +128,25 @@ PDF inspection, OCR, summarization, detailed metrics, unverified-file processing
 and excluded-file review normally continue in the background and must not delay
 entry into Claude Code.
 
+### Estimated context reduction is a primary outcome
+
+Every successful Prepare and Review surface must show **Estimated context
+reduction** prominently in the primary summary, using a large, immediately visible
+value rather than hiding it in technical or advanced details. It must be visually
+secondary only to the current workflow state and primary action.
+
+Calculate it consistently as:
+
+```text
+(beforeTokens - afterTokens) / beforeTokens * 100
+```
+
+When `beforeTokens` is zero, report `0.0%`. Always label the value exactly
+`Estimated context reduction`. Never describe it as actual token usage, API token
+savings, billing savings, cost savings, or a provider measurement. Explain that
+actual agent usage may differ because of system prompts, tool output, conversation
+history, and caching.
+
 After entry, the sidebar should communicate the active boundary and useful status,
 for example:
 
@@ -126,6 +178,28 @@ Avoid implementations that stop the entire flow for one excludable file, wait fo
 optional inspection before opening Claude Code, or trap the user on an internal
 state or confirmation screen after a valid Prepared Workspace is ready.
 
+### Agent capability and context efficiency
+
+Yuhi controls repository preparation and Safe Apply, not Claude Code's general
+permission model. Standard, Plan, Accept Edits, Auto, and Custom permission modes
+remain user choices. Standard and Guarded sandbox presets must not inject
+`disableAutoMode` or globally force bypass permissions off. Only the explicitly
+selected Locked Down preset may impose those restrictions.
+
+Context Compression defaults to `Auto (Recommended)` with **no Token Budget target**
+(blank / `No target`). `Auto` and `On` accept an optional Token Budget: a positive
+value is a best-effort target; blank / `0` means no target; `Off` retains the saved
+value but does not apply it. The unset-workspace default is therefore Safety Mode
+`Balanced`, Compression `On`, Token Budget `No target` — Maximum Privacy applies only
+when the user explicitly selects it. Compression and parser failures always fall back
+to the FULL original. A token target must never delete a useful repository file.
+Compact representations are additive companions; the original remains available.
+
+All public surfaces use the Core `YuhiModeSummary`. It deduplicates each source file
+across Preparation and Background and separates repository-representation estimates
+from the initial agent-context estimate. Never present repository totals as actual
+provider usage or billing savings.
+
 ## Known conflicts requiring an explicit design update
 
 Do not silently reinterpret these conflicts:
@@ -142,3 +216,7 @@ Do not silently reinterpret these conflicts:
 3. Yuhi is not an OS-level filesystem jail. A user override must never be described
    as safe, verified, or confined merely because the agent starts in the Prepared
    Workspace.
+4. Current surfaces may conflate background-pending, processing failure, unsupported,
+   and excluded-for-safety. Apply the Safety Mode-specific routing above, and keep manifests,
+   manifests, Review UI, handoff wording, and regression tests so those states remain
+   distinct and do not block Yuhi Mode.

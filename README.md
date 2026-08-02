@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
-> **Current release: 0.3.0** — Repository Ready: a shareable, public-safe report of what the AI can see, plus a read-only review inside VS Code.
+> **Current release: 0.3.6** — **Safe Patch Review: review first, apply safely.** Claude Code and Codex work in the Prepared Repository; Yuhi detects their changes and applies only explicitly selected, revalidated files or hunks to the Source Repository.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi?label=npm&color=cb3837&logo=npm&logoColor=white"></a>
@@ -52,6 +52,75 @@ Ready for Claude Code.
 > made accessible to the agent — **not** measurements of model token usage or cost. Your
 > original files are never modified.
 
+## Prepare once. Run with Claude or Codex.
+
+One prepared repository is reusable across agents — the same safe copy, the same
+deterministic **Context ID**, no re-scan or re-preparation to switch:
+
+```bash
+yuhi prepare                 # prepare once
+yuhi launch claude           # ...then run Claude Code in the prepared repo
+yuhi launch codex            # ...or Codex — same prepared repository
+```
+
+In VS Code, the review shows **Launch with [ Claude Code ] [ Codex ]** with each agent's
+availability and the run's Context ID. Yuhi stays agent-agnostic: it prepares and secures
+the context; the agent you choose is what talks to the model.
+
+Yuhi Mode keeps Claude Code capabilities user-selectable (Standard, Plan, Accept
+Edits, Auto, or Custom) and offers Standard, Guarded, and Locked Down sandbox
+presets. Guarded is the default and does not disable Auto mode globally.
+
+Context Compression defaults to **Auto (Recommended)** with a best-effort 200,000
+token target. Safe compact representations are additive: the full original remains
+available, and parser or verification failures fall back to FULL rather than removing
+useful files.
+
+## Progressive Context — start fast, context gets better in the background
+
+Yuhi's job is to get you into Yuhi Mode *fast*, so heavy preparation — PDF/DOCX extraction,
+OCR, local summarization — never blocks launch. Those steps are **deferred to a persistent
+background queue** that runs *after* Yuhi Mode is ready. Foreground wall-time doesn't grow
+with how much heavy work is pending.
+
+- **Safety-gated, atomic publish.** A background result is normalized, pseudonymized, and
+  safety-inspected *before* anything is written; only a verified, sanitized companion is
+  published (atomically) into the agent-visible workspace. A result carrying a secret or PII
+  is **kept local** — the original source and raw document are never delivered.
+- **Immutable Context ID + incrementing Context Revision.** The base **Context ID** never
+  changes as background work completes; each safely-published artifact bumps a deterministic
+  **Context Revision** (`revisionId`) that folds in the base Context ID plus the published
+  set. It's time-, path-, machine-, user-, and **agent-independent** — Claude and Codex reuse
+  the *same* prepared run and compute the *same* revision, with no re-scan or re-preparation.
+- **VS Code**: the panel honestly shows background progress with **Cancel** and **Refresh
+  Context**. **CLI**: `yuhi background` reports status and can start / cancel / retry.
+- **Private-state boundary.** The queue's private records, staging bytes, and cancel flags
+  live *outside* every agent-visible root (under the managed base); the agent reads only a
+  single path-safe public status file.
+
+## Safe Patch Review — review first, apply safely
+
+Yuhi keeps agent work isolated in the Prepared Repository until you explicitly approve it.
+After Claude Code or Codex changes files, Yuhi shows what changed, masks sensitive diff
+content, and lets you select eligible files or text hunks.
+
+Before every Source write, Core reloads the private pre-agent snapshot and rechecks the
+Prepared Working Tree identity, Source hashes, path containment, symlinks, representation,
+secrets, PII, and sensitive configuration. Apply uses private backups, atomic replacement,
+verified rollback, and transactional Undo. Compressed files, background artifacts, binary
+changes, mode changes, credentials, and source conflicts remain blocked.
+
+```bash
+yuhi patch status
+yuhi patch diff
+yuhi patch validate
+yuhi patch apply
+yuhi patch undo <patch-id>
+yuhi patch history
+```
+
+Yuhi never auto-applies, commits, pushes, or opens a pull request.
+
 ## See how much of your repository your AI actually needs
 
 Coding agents start inside your working tree and can read everything there — `.env` files,
@@ -62,7 +131,7 @@ Yuhi answers a simple question — *how much of this repository should the AI re
 and then prepares exactly that:
 
 - **Blocks secrets.** Credentials and private keys are neutralized locally and never handed to the agent.
-- **Converts documents to AI-friendly content.** Supported documents (PDF / DOCX / PPTX) become sanitized Markdown companions; when safe preparation can't be verified, the source is kept local or replaced with a safe placeholder — the original is never delivered to the agent.
+- **Converts documents to AI-friendly content.** Supported documents (PDF / DOCX / PPTX) gain sanitized Markdown companions in the background. Balanced can make an original available with an explicit inspection-pending warning; Maximum Privacy keeps unverified originals local.
 - **Reduces the repository to what matters.** Oversized and irrelevant files are kept local; files Yuhi can't safely inspect are either kept local or included with an explicit *unverified* warning.
 - **Prepares your workspace in one command.** Then start Claude Code from the VS Code extension.
 

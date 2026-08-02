@@ -8,9 +8,9 @@
  *
  *   Balanced          block secrets, convert documents, de-identify tables,
  *                     include verified source, include unverified WITH a warning.
- *   Strict            Balanced, plus keep sensitive/PII structured data local and
- *                     keep unverifiable/oversized content local (nothing unverified
- *                     reaches the agent).
+ *   Strict            Balanced, plus keep sensitive/PII structured data local.
+ *                     Ordinary unverified documents remain available with warning;
+ *                     known credentials and private keys remain blocked.
  *   Maximum Privacy   Strict, plus keep non-source binaries/archives/media local and
  *                     deliver only zero-finding, verified content (close to allowlist).
  *
@@ -94,12 +94,11 @@ export function applySafetyMode(base: EffectivePolicy, mode: SafetyMode): Effect
 
 /**
  * Prepare-loop hook: does this mode forbid delivering content that could not be
- * fully inspected/verified (oversized passthrough, unsupported binary passthrough,
- * structural transform failure)? True for Strict and Maximum Privacy — such files
- * are kept local instead of delivered with a warning.
+ * fully inspected/verified? Only Maximum Privacy behaves companion-first/local-only.
+ * Strict must not silently become Maximum Privacy for ordinary documents.
  */
 export function escalatesUnverified(mode: SafetyMode): boolean {
-  return mode !== "balanced";
+  return mode === "maximum-privacy";
 }
 
 /**

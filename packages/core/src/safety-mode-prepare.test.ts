@@ -129,28 +129,30 @@ function key(f: { relpath: string; originalRelpath?: string }): string {
 }
 
 describe("safety mode — prepare-loop escalation (end to end)", () => {
-  it("Balanced delivers the unverified binary; Strict keeps it local via the escalation pass", async () => {
+  it("delivers an opaque binary available-with-warning in Balanced and Strict, local only in Maximum Privacy", async () => {
+    // Corrected policy: an uninspectable binary is still USEFUL context. Balanced and
+    // Strict deliver the original WITH an inspection-pending warning (never labeled
+    // verified); only Maximum Privacy keeps it local (companion-first). Known credentials
+    // and private keys stay blocked in every mode (asserted in the tests below).
     const balanced = await run("balanced");
     const strict = await run("strict");
+    const maximum = await run("maximum-privacy");
 
-    // Balanced: the binary is delivered with an unverified warning and is on disk.
-    expect(balanced.delivered.has("data/blob.bin")).toBe(true);
-    expect(existsSync(path.join(balanced.outDir, "data", "blob.bin"))).toBe(true);
-    const balancedBin = balanced.files.find((f) => key(f) === "data/blob.bin");
-    expect(balancedBin?.outcome).toBe("included-unverified");
-    expect(balancedBin?.omitted).not.toBe(true);
+    for (const [mode, prepared] of [["balanced", balanced], ["strict", strict]] as const) {
+      const bin = prepared.files.find((f) => key(f) === "data/blob.bin");
+      expect(bin?.omitted, mode).toBe(false);
+      expect(bin?.outcome, mode).toBe("included-unverified");
+      expect(bin?.availabilityStatus, mode).toBe("available-with-warning");
+      expect(bin?.originalShared, mode).toBe(true);
+      expect(prepared.delivered.has("data/blob.bin"), mode).toBe(true);
+      expect(existsSync(path.join(prepared.outDir, "data", "blob.bin")), mode).toBe(true);
+    }
 
-    // Strict: the SAME binary is kept local by the centralized escalation pass.
-    const strictBin = strict.files.find((f) => key(f) === "data/blob.bin");
-    expect(strictBin?.omitted).toBe(true);
-    expect(strictBin?.keptLocalBySafetyMode).toBe("strict");
-    expect(strict.delivered.has("data/blob.bin")).toBe(false);
-    expect(existsSync(path.join(strict.outDir, "data", "blob.bin"))).toBe(false);
-
-    // The whole point of Strict: nothing unverified is delivered to the agent.
-    expect(
-      strict.files.some((f) => !f.omitted && f.outcome === "included-unverified"),
-    ).toBe(false);
+    // Maximum Privacy keeps the SAME binary local (not delivered, no companion needed).
+    const maxBin = maximum.files.find((f) => key(f) === "data/blob.bin");
+    expect(maxBin?.omitted).toBe(true);
+    expect(maximum.delivered.has("data/blob.bin")).toBe(false);
+    expect(existsSync(path.join(maximum.outDir, "data", "blob.bin"))).toBe(false);
   });
 
   it("Maximum Privacy also keeps local a finding-carrying file that Strict delivered", async () => {

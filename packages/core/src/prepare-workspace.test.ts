@@ -30,6 +30,8 @@ import {
   buildPreparedMetrics,
   buildPreparedRuntimeBoundary,
 } from "./prepared-metrics.js";
+import { runBackgroundForRun } from "./background/index.js";
+import type { PdfTextExtractor } from "./document-artifact.js";
 
 let dir: string;
 let managedDir: string;
@@ -48,6 +50,21 @@ function put(rel: string, content: string) {
   const abs = path.join(dir, rel);
   mkdirSync(path.dirname(abs), { recursive: true });
   writeFileSync(abs, content);
+}
+
+/** Concatenated text of every file actually delivered under a prepared workspace,
+ *  for scanning that no known raw secret/PII value survives anywhere. */
+function deliveredText(outDir: string): string {
+  const parts: string[] = [];
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else { try { parts.push(readFileSync(p, "utf8")); } catch { /* binary — ignore */ } }
+    }
+  };
+  walk(outDir);
+  return parts.join("\n");
 }
 
 describe("preparation performance defaults", () => {
@@ -100,6 +117,13 @@ function fakeProvider(): LocalModelProvider {
   };
 }
 
+/** v0.3.5: documents are heavy-extracted in the BACKGROUND. This fakes the PDF text
+ *  extractor `runBackgroundForRun` uses so the sanitized companion is produced without
+ *  a real pdftotext/OCR binary. */
+function pdfExtractor(text: string, method: "pdf-text" | "ocr" = "pdf-text"): PdfTextExtractor {
+  return async () => ({ text, method, pageCount: 2 });
+}
+
 function pdfInspector(text: string, method: "pdf-text" | "ocr" = "pdf-text"): DocumentInspector {
   return {
     canInspect: (file) => file.relpath.endsWith(".pdf"),
@@ -130,21 +154,61 @@ const YAML =
   '    match: { paths: ["secret.txt"] }\n' +
   "    action: block\n";
 
+describe("prepareWorkspace — deterministic Context ID (v0.3.4)", () => {
+  it("emits a valid Context ID into the report and manifest, deterministic + agent-invariant", async () => {
+    put("app.ts", "export const x = 1;\n");
+    put("util.ts", "export const y = 2;\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+
+    const first = await prepareWorkspace(dir, { deferDocumentInspection: true, agent: "claude" });
+    expect(first.contextId).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const manifest = JSON.parse(readFileSync(path.join(first.outDir, "manifest.json"), "utf8"));
+    expect(manifest.contextId).toBe(first.contextId);
+
+    // Same repo state + same prep settings, but a DIFFERENT agent ⇒ SAME id.
+    const second = await prepareWorkspace(dir, { deferDocumentInspection: true, agent: "codex" });
+    expect(second.contextId).toBe(first.contextId);
+
+    // Changing the compression toggle ⇒ a DIFFERENT id.
+    const compressed = await prepareWorkspace(dir, { deferDocumentInspection: true, compress: true });
+    expect(compressed.contextId).not.toBe(first.contextId);
+  });
+
+  it("changes the Context ID when source content changes", async () => {
+    put("app.ts", "export const x = 1;\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\n');
+    const before = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    put("app.ts", "export const x = 999;\n");
+    const after = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    expect(after.contextId).not.toBe(before.contextId);
+  });
+});
+
 describe("prepareWorkspace", () => {
-  it("delivers a sanitized companion for a PDF and never places the original in the workspace", async () => {
+  it("includes a PDF with warning, then publishes a sanitized companion in background", async () => {
     writeFileSync(path.join(dir, "pending.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
-    const report = await prepareWorkspace(dir, {
-      deferDocumentInspection: true,
-      documentInspector: pdfInspector("Synthetic public document body."),
-    });
-    // The ORIGINAL PDF is never delivered; a sanitized Markdown companion is.
-    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(false);
-    expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(true);
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+
+    // FOREGROUND: zero heavy extraction — no companion yet; the doc is queued pending.
+    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(true);
+    expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(false);
     const entry = report.files.find((f) => f.document);
-    expect(entry?.document?.originalSharedWithAgent).toBe(false);
-    expect(entry?.document?.deliveredArtifactType).toBe("sanitized-pdf-companion");
+    expect(entry?.document?.originalSharedWithAgent).toBe(true);
+    expect(entry?.availabilityStatus).toBe("available-with-warning");
+    expect(entry?.document?.extractionStatus).toBe("pending");
+    expect(entry?.outcome).toBe("background-processing-pending");
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+
+    // BACKGROUND: the verified companion is added without blocking the original workflow.
+    const summary = await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor("Synthetic public document body."),
+    });
+    expect(summary.completed).toBe(1);
+    expect(existsSync(path.join(report.outDir, "pending.pdf"))).toBe(true);
+    expect(existsSync(path.join(report.outDir, "pending.pdf.md"))).toBe(true);
   });
 
   it("always writes document-index.md even when no documents require summarization", async () => {
@@ -207,61 +271,64 @@ describe("prepareWorkspace", () => {
     writeFileSync(path.join(dir, "architecture.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
-    const report = await prepareWorkspace(dir, {
-      documentInspector: pdfInspector(rawExtracted),
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor(rawExtracted),
     });
 
-    // Companion delivered; original PDF absent.
-    expect(existsSync(path.join(report.outDir, "architecture.pdf"))).toBe(false);
+    // Companion published; Balanced retains the warning-marked original.
+    expect(existsSync(path.join(report.outDir, "architecture.pdf"))).toBe(true);
     const companion = readFileSync(path.join(report.outDir, "architecture.pdf.md"), "utf8");
-    expect(companion).toContain("Yuhi document companion");
-    // Structured identifiers in the extracted body are redacted in the companion.
+    // Structured identifiers in the extracted body are redacted out of the companion.
     expect(companion).not.toContain("taro.yamada@example.ac.jp");
     expect(companion).not.toContain("A000000");
-    // The absolute source path is never written into the companion.
+    // The absolute source path is never written into the companion or the public status.
     expect(companion).not.toContain(dir);
-    // The handoff never exposes original document paths, and is created.
+    // The foreground handoff never exposes original document paths, and is created.
     const handoff = readFileSync(path.join(report.outDir, ".yuhi/context/AGENT_HANDOFF.md"), "utf8");
     expect(handoff).toContain("Yuhi Agent Handoff");
     expect(handoff).not.toContain(dir);
     expect(report.tabularAcceptance?.agentHandoffCreated).toBe(true);
   });
 
-  it("delivers a usable sanitized companion even when the local summary model is unavailable", async () => {
+  it("publishes a usable sanitized companion in the background even when the local summary model is unavailable", async () => {
     writeFileSync(path.join(dir, "offline.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
-    const provider = fakeProvider();
-    provider.generate = async () => {
-      throw new Error("synthetic local model unavailable");
-    };
 
-    const report = await prepareWorkspace(dir, {
-      providerFactory: () => provider,
-      documentInspector: pdfInspector("Synthetic public document content."),
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    // The document companion does NOT need the local summary model; run the background
+    // with NO providerFactory — extraction + publish still succeed.
+    const summary = await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor("Synthetic public document content."),
     });
 
-    // Summary (Ollama) is optional enrichment: the sanitized companion is delivered and
-    // the workspace is launchable even when the model fails. The original stays local.
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
-    expect(existsSync(path.join(report.outDir, "offline.pdf"))).toBe(false);
+    expect(summary.completed).toBe(1);
+    expect(existsSync(path.join(report.outDir, "offline.pdf"))).toBe(true);
     expect(existsSync(path.join(report.outDir, "offline.pdf.md"))).toBe(true);
   });
 
-  it("redacts a secret in extracted PDF text out of the delivered companion (no raw secret reaches the agent)", async () => {
+  it("redacts a secret in extracted PDF text out of the published companion (no raw secret reaches the agent)", async () => {
     writeFileSync(path.join(dir, "safe.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const secret = "OPENAI_API_KEY=sk-synthetic-doc-leak-123456789";
 
-    const report = await prepareWorkspace(dir, {
-      documentInspector: pdfInspector("Public content. OPENAI_API_KEY=sk-synthetic-doc-leak-123456789 end."),
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    await runBackgroundForRun({
+      runId: report.runId,
+      preparedDir: report.outDir,
+      pdfTextExtractor: pdfExtractor(`Public content. ${secret} end.`),
     });
 
-    // The sanitized companion is delivered, the original PDF is not, and the secret
-    // present in the extracted body is redacted out of the companion and the manifest.
-    expect(existsSync(path.join(report.outDir, "safe.pdf"))).toBe(false);
+    // The sanitized companion is published and the extracted secret is not copied into it.
+    expect(existsSync(path.join(report.outDir, "safe.pdf"))).toBe(true);
     const companion = readFileSync(path.join(report.outDir, "safe.pdf.md"), "utf8");
     expect(companion).not.toContain("sk-synthetic-doc-leak-123456789");
-    expect(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"))
-      .not.toContain("sk-synthetic-doc-leak-123456789");
+    expect(deliveredText(report.outDir)).not.toContain("sk-synthetic-doc-leak-123456789");
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
@@ -282,65 +349,75 @@ describe("prepareWorkspace", () => {
     ).toContain("Inspection: Text document");
   });
 
-  it("delivers a safe placeholder for a DOCX/PPTX and never places the original in the workspace", async () => {
-    // A corrupt Office file must yield a placeholder (never the raw original) and must
-    // not fail the whole preparation (per-file isolation).
+  it("includes corrupt DOCX/PPTX with warnings and reports failed background processing", async () => {
+    // A corrupt Office file cannot be extracted; it must NOT be delivered raw, and must
+    // not fail the whole preparation (per-file isolation). In v0.3.5 the heavy work runs
+    // in the background and, when extraction fails, the document is kept local.
     writeFileSync(path.join(dir, "notes.docx"), Buffer.from("PK\x03\x04 not really a docx"));
     writeFileSync(path.join(dir, "deck.pptx"), Buffer.from("PK\x03\x04 not really a pptx"));
     put("keep.md", "safe content\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
-    const report = await prepareWorkspace(dir);
-
-    for (const [orig, companion] of [["notes.docx", "notes.docx.md"], ["deck.pptx", "deck.pptx.md"]]) {
-      expect(existsSync(path.join(report.outDir, orig!))).toBe(false); // original never delivered
-      expect(existsSync(path.join(report.outDir, companion!))).toBe(true);
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
+    // Foreground: Balanced includes originals with warnings; each doc is queued pending.
+    for (const orig of ["notes.docx", "deck.pptx"]) {
+      expect(existsSync(path.join(report.outDir, orig))).toBe(true);
     }
     for (const e of report.files.filter((f) => f.document)) {
-      expect(e.document?.originalSharedWithAgent).toBe(false);
-      expect(e.document?.deliveredArtifactType).toBe("safe-placeholder");
+      expect(e.document?.originalSharedWithAgent).toBe(true);
+      expect(e.availabilityStatus).toBe("available-with-warning");
+      expect(e.outcome).toBe("background-processing-pending");
+    }
+
+    // Background: extraction of a corrupt Office doc fails → kept local, no companion.
+    const summary = await runBackgroundForRun({ runId: report.runId, preparedDir: report.outDir });
+    expect(summary.completed).toBe(0);
+    for (const [orig, companion] of [["notes.docx", "notes.docx.md"], ["deck.pptx", "deck.pptx.md"]]) {
+      expect(existsSync(path.join(report.outDir, orig!))).toBe(true);
+      expect(existsSync(path.join(report.outDir, companion!))).toBe(false);
     }
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
-  it("delivers a safe placeholder (never the original) for a PDF that cannot be extracted", async () => {
-    // No document inspector + no pdftotext in the test env → extraction is unavailable.
-    // The PDF must NOT be delivered raw; a safe placeholder is delivered instead.
+  it("keeps a Balanced PDF available with warning when OCR is unavailable", async () => {
+    // No text extractor and no OCR extractor in the background → the PDF is kept local
+    // (extraction insufficient → OCR fallback → OCR unavailable). Never delivered raw.
     writeFileSync(path.join(dir, "synthetic.pdf"), Buffer.from("%PDF-1.7\nsynthetic\n"));
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
 
-    const report = await prepareWorkspace(dir, { provider: fakeProvider() });
-
-    // Original PDF absent; placeholder companion present.
-    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(false);
-    expect(existsSync(path.join(report.outDir, "synthetic.pdf.md"))).toBe(true);
+    const report = await prepareWorkspace(dir, { deferDocumentInspection: true });
     const entry = report.files.find((f) => f.document);
-    expect(entry?.document?.deliveredArtifactType).toBe("safe-placeholder");
-    expect(entry?.document?.originalSharedWithAgent).toBe(false);
-    expect(entry?.outcome).toBe("included-unverified");
-    const placeholder = readFileSync(path.join(report.outDir, "synthetic.pdf.md"), "utf8");
-    expect(placeholder).toContain("Original file shared with agent: no");
+    expect(entry?.document?.originalSharedWithAgent).toBe(true);
+    expect(entry?.outcome).toBe("background-processing-pending");
+
+    // Background with NO extractors: extraction insufficient → OCR fallback → OCR
+    // unavailable. The original PDF is never shared and no companion is published.
+    const summary = await runBackgroundForRun({ runId: report.runId, preparedDir: report.outDir });
+    expect(summary.completed).toBe(0);
+    expect(existsSync(path.join(report.outDir, "synthetic.pdf"))).toBe(true);
+    expect(existsSync(path.join(report.outDir, "synthetic.pdf.md"))).toBe(false);
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
-    // The raw PDF bytes never leak into the manifest.
+    // The raw PDF bytes never leak into the foreground manifest.
     expect(JSON.stringify(JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"))))
       .not.toContain("synthetic\\n");
   });
 
-  it("includes an uninspectable binary but never copies a private key", async () => {
+  it("includes an uninspectable binary with warning but keeps private keys local", async () => {
     writeFileSync(path.join(dir, "model.bin"), Buffer.from([0x00, 0xff, 0x12, 0x34]));
     writeFileSync(path.join(dir, "private.key"), Buffer.from([0x00, 0xff, 0x55, 0xaa]));
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
 
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
-    expect(readFileSync(path.join(report.outDir, "model.bin")))
-      .toEqual(readFileSync(path.join(dir, "model.bin")));
+    expect(existsSync(path.join(report.outDir, "model.bin"))).toBe(true);
     expect(report.files.find((item) => item.relpath === "model.bin")).toMatchObject({
       outcome: "included-unverified",
       transmission: "approved",
+      availabilityStatus: "available-with-warning",
+      originalShared: true,
     });
-    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).not.toBe(true);
+    expect(report.files.find((item) => item.relpath === "model.bin")?.omitted).toBe(false);
     expect(existsSync(path.join(report.outDir, "private.key"))).toBe(false);
     expect(report.files.find((item) => item.relpath === "private.key")).toMatchObject({
       action: "local-only",
@@ -681,10 +758,7 @@ describe("prepareWorkspace", () => {
     expect(existsSync(path.join(report.outDir, "synthetic-companion.txt"))).toBe(true);
   });
 
-  it("ALWAYS delivers a sensitive tabular file that can't be transformed (passed with a warning, never excluded)", async () => {
-    // PROMISE: csv/tsv/txt/xlsx are always passed. A sensitive table that cannot be
-    // verifiably de-identified is included as the original WITH a clear warning +
-    // failure category — never kept local. Only credentials are kept local.
+  it("includes a non-credential malformed table with an explicit unverified warning", async () => {
     const raw = 'full name,student id,grade\n"unterminated,S-1,A';
     put("malformed.csv", raw);
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
@@ -695,12 +769,12 @@ describe("prepareWorkspace", () => {
       status: "ok",
       omitted: false,
       outcome: "included-unverified",
+      availabilityStatus: "available-with-warning",
+      originalShared: true,
     });
     expect(entry?.failureCategory).toBeTruthy(); // honest reason preserved
     expect(entry?.error).toBeTruthy();
-    // The file IS delivered to the workspace (the promise), with the original bytes.
     expect(existsSync(path.join(report.outDir, "malformed.csv"))).toBe(true);
-    expect(readFileSync(path.join(report.outDir, "malformed.csv"), "utf8")).toBe(raw);
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   });
 
@@ -887,13 +961,22 @@ describe("prepareWorkspace", () => {
     // The file is on disk under the pseudonymized name, not the original.
     expect(existsSync(path.join(report.outDir, entry!.relpath))).toBe(true);
     expect(existsSync(path.join(report.outDir, "health", "20260715-110046-A000000.csv"))).toBe(false);
-    // The reverse mapping is available for the operator via the manifest only.
-    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    // METADATA BOUNDARY: `manifest.json` is INSIDE the prepared workspace, so the
+    // reverse mapping must NOT live there — the raw identifier appears nowhere in it.
+    // The manifest carries the delivered name plus the file's stable public identity.
+    const manifestRaw = readFileSync(path.join(report.outDir, "manifest.json"), "utf8");
+    const manifest = JSON.parse(manifestRaw);
     expect(manifest.filenamesPseudonymized).toBeGreaterThanOrEqual(1);
-    const manifestEntry = manifest.files.find((f: { originalRelpath?: string }) =>
-      f.originalRelpath?.includes("A000000"),
+    expect(manifestRaw).not.toContain("A000000");
+    const manifestEntry = manifest.files.find(
+      (f: { relpath: string }) => f.relpath === entry!.relpath,
     );
-    expect(manifestEntry.relpath).toBe(entry!.relpath);
+    expect(manifestEntry).toBeDefined();
+    expect(manifestEntry.originalRelpath).toBeUndefined();
+    expect(manifestEntry.documentId).toMatch(/^doc-[0-9a-f]{12}$/);
+    expect(manifestEntry.documentId).toBe(entry!.documentId);
+    // The private mapping is still available IN MEMORY for the local UI.
+    expect(entry!.originalRelpath).toContain("A000000");
   });
 
   it("a workspace whose generated handoff trips its own rescan never fails: handoff sanitized, not thrown", async () => {
@@ -919,7 +1002,7 @@ describe("prepareWorkspace", () => {
     expect(report.files.some((f) => f.relpath.includes("report-"))).toBe(true);
   });
 
-  it("a volatile .DS_Store rewritten during preparation never fails the run (still included)", async () => {
+  it("a volatile .DS_Store rewritten during preparation never fails the run and remains local", async () => {
     // macOS Finder rewrites .DS_Store on its own schedule; over a long prep it will
     // mutate. That must never fail the source-integrity assertion. The file itself
     // stays included in the workspace — only its churn is exempt from integrity.
@@ -935,9 +1018,9 @@ describe("prepareWorkspace", () => {
         writeFileSync(path.join(dir, "sub", ".DS_Store"), Buffer.from([1, 2, 3]));
       },
     });
-    // Preparation completed (no throw) and .DS_Store is still delivered.
+    // Preparation completed (no throw); uninspectable metadata is not delivered.
     expect(report.files.some((f) => f.relpath === ".DS_Store")).toBe(true);
-    expect(existsSync(path.join(report.outDir, ".DS_Store"))).toBe(true);
+    expect(existsSync(path.join(report.outDir, ".DS_Store"))).toBe(false);
   });
 
   it("FINAL ARTIFACT: no delivered CSV/nested/TXT/XLSX contains raw names or IDs; grades remain", async () => {
@@ -996,8 +1079,8 @@ describe("prepareWorkspace", () => {
     put("safe.md", "Synthetic safe content.\n");
     put("yuhi.yaml", 'version: "1"\nrules: []\n');
     const partial = await prepareWorkspace(dir, { provider: fakeProvider() });
-    // The malformed table is DELIVERED with a warning (always-pass promise); the user
-    // can still explicitly exclude it, producing a fresh immutable run below.
+    // The malformed table is warning-included; an explicit exclusion creates a fresh
+    // immutable run with a distinct user decision.
     expect(partial.files.find((file) => file.relpath === "malformed.csv")?.outcome).toBe(
       "included-unverified",
     );
@@ -1140,7 +1223,15 @@ describe("prepareWorkspace", () => {
     expect(manifest.reduction.sensitiveMasked).toBe(1);
     expect(manifest.sourceModified).toBe(0);
     expect(Array.isArray(manifest.provenance)).toBe(true);
-    expect(manifest.provenance.some((p: { source: string }) => p.source === "data/students.csv")).toBe(true);
+    // Provenance records the agent-visible name + identity. `source` — the private half
+    // of the mapping — is never published into the agent-visible manifest.
+    const csvProvenance = manifest.provenance.find(
+      (p: { relpath: string }) => p.relpath === "data/students.csv",
+    );
+    expect(csvProvenance).toBeDefined();
+    expect(csvProvenance.source).toBeUndefined();
+    expect(csvProvenance.documentId).toMatch(/^doc-[0-9a-f]{12}$/);
+    expect(manifest.provenance.every((p: { source?: string }) => p.source === undefined)).toBe(true);
 
     // Report-level reduction matches manifest.
     expect(report.report.filesSummarized).toBe(1);
@@ -1223,10 +1314,11 @@ describe("prepareWorkspace", () => {
     const salaryDecision = report.decisions?.find((d) => d.relpath === "data/salaries.csv");
     expect(salaryDecision?.action).toBe("local-only");
     expect(salaryDecision?.ruleName).toBe("salary-restricted");
-    expect(readFileSync(path.join(report.outDir, "logo.bin"))).toEqual(files["logo.bin"]);
+    expect(existsSync(path.join(report.outDir, "logo.bin"))).toBe(true);
     expect(report.files.find((f) => f.relpath === "logo.bin")).toMatchObject({
       outcome: "included-unverified",
       transmission: "approved",
+      availabilityStatus: "available-with-warning",
     });
     expect(report.report.filesSummarized).toBe(2);
     const metrics = buildPreparedMetrics(report);
@@ -1273,8 +1365,15 @@ describe("prepareWorkspace", () => {
     expect(manifestRaw).not.toContain(rawDescription);
     expect(manifestRaw).not.toContain(rawSecret);
     expect(manifestRaw).not.toContain('"description"');
-    expect(manifest.files.find((file: { relpath: string }) => file.relpath === "secret.txt"))
+    // The blocked file's NAME does not cross the metadata boundary — it is identified in
+    // the manifest by its public identity, and its aggregates are still recorded there.
+    expect(manifestRaw).not.toContain("secret.txt");
+    const blocked = report.files.find((file) => file.relpath === "secret.txt");
+    expect(blocked?.omitted).toBe(true);
+    expect(manifest.files.find((file: { documentId?: string }) => file.documentId === blocked!.documentId))
       .toMatchObject({
+        relpath: `${blocked!.documentId}.txt`,
+        displayName: `${blocked!.documentId}.txt`,
         findingCategoryCounts: expect.any(Object),
         findingSeverityCounts: expect.any(Object),
         unresolvedHighRiskCount: 0,
@@ -1495,3 +1594,365 @@ function readFileNames(root: string): string[] {
   walk(root);
   return output;
 }
+
+// ===========================================================================
+// v0.3.3 LOCAL-MODEL RELIABILITY: per-file timeout + circuit breaker + budget.
+// All timeouts are driven by an INJECTABLE fake clock — no real sleeps anywhere.
+// ===========================================================================
+
+/** Injectable clock/timer whose timers fire ONLY when the test explicitly asks. */
+function makeFakeScheduler() {
+  let current = 0;
+  let seq = 0;
+  const timers = new Map<number, { cb: () => void; at: number }>();
+  return {
+    now: () => current,
+    setTimer(cb: () => void, ms: number): () => void {
+      const id = seq++;
+      timers.set(id, { cb, at: current + ms });
+      return () => {
+        timers.delete(id);
+      };
+    },
+    /** Advance virtual time (used to exercise the cumulative time budget). */
+    advance(ms: number) {
+      current += ms;
+    },
+    /** Fire every timer whose deadline is due at the current virtual time. */
+    fireDue() {
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= current) {
+          timers.delete(id);
+          timer.cb();
+        }
+      }
+    },
+    pendingCount() {
+      return timers.size;
+    },
+  };
+}
+
+type FakeScheduler = ReturnType<typeof makeFakeScheduler>;
+
+/** Await a prepare that may be blocked on a hung provider: between event-loop turns,
+ *  fire any pending per-file timeout timer so the loop advances. Real hangs (a
+ *  never-resolving provider) resolve via the fired timer; fast calls cancel their own
+ *  timers before we ever fire, so they are never falsely timed out. */
+async function driveToCompletion<T>(promise: Promise<T>, scheduler: FakeScheduler): Promise<T> {
+  let settled = false;
+  const tracked = promise.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (error) => {
+      settled = true;
+      throw error;
+    },
+  );
+  for (let i = 0; i < 200_000 && !settled; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    if (settled) break;
+    if (scheduler.pendingCount() > 0) {
+      scheduler.advance(1_000_000);
+      scheduler.fireDue();
+    }
+  }
+  return tracked;
+}
+
+/** A provider whose `generate()` NEVER resolves (a wedged Ollama). Counts calls so a
+ *  test can prove the timeout wrap is on the REAL provider call path. */
+function hangingProvider(counter: { calls: number }): LocalModelProvider {
+  return {
+    id: "hang",
+    endpoint: "",
+    defaultModel: "m",
+    async health() {
+      return { ok: true, detail: "", endpoint: "" };
+    },
+    async listModels() {
+      return ["m"];
+    },
+    generate() {
+      counter.calls += 1;
+      return new Promise<string>(() => {});
+    },
+  };
+}
+
+/** A provider that resolves instantly (a merely-slow model, modelled by call count). */
+function countingProvider(
+  counter: { calls: number },
+  onCall?: () => void,
+): LocalModelProvider {
+  return {
+    id: "count",
+    endpoint: "",
+    defaultModel: "m",
+    async health() {
+      return { ok: true, detail: "", endpoint: "" };
+    },
+    async listModels() {
+      return ["m"];
+    },
+    async generate() {
+      counter.calls += 1;
+      onCall?.();
+      return "Summary: clean synthetic summary.";
+    },
+  };
+}
+
+/** yuhi.yaml that routes every *.md file through the local-model summarize pipeline,
+ *  so these tests actually exercise the inline `summarize-local` call. */
+const SUMMARIZE_MD_CONFIG = [
+  'version: "1"',
+  "defaults:",
+  "  action: allow",
+  "rules:",
+  "  - name: summarize-markdown",
+  "    match:",
+  "      paths:",
+  '        - "**/*.md"',
+  "    action: prepare-locally",
+  "    processors: [summarize-local, safety-check]",
+  '    reason: "route markdown through local summarization for reliability tests"',
+  "",
+].join("\n");
+
+/** SHA-256 of the whole source tree (paths + bytes) to prove SOURCE IS NEVER MODIFIED. */
+function sourceTreeHash(root: string): string {
+  const hash = createHash("sha256");
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
+      const p = path.join(d, entry.name);
+      const rel = path.relative(root, p);
+      if (entry.isDirectory()) {
+        hash.update(`D:${rel}\n`);
+        walk(p);
+      } else {
+        hash.update(`F:${rel}\n`);
+        hash.update(readFileSync(p));
+      }
+    }
+  };
+  walk(root);
+  return hash.digest("hex");
+}
+
+function keptLocalCount(files: { omitted?: boolean; action: string }[]): number {
+  return files.filter((f) => f.omitted && f.action === "local-only").length;
+}
+
+describe("local-model reliability: timeout, circuit breaker, and budget", () => {
+  it("keeps a file local (never delivered) when its summarize-local call never resolves, and COMPLETES", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    put("notes.md", `# Notes\n${"synthetic project prose. ".repeat(30)}`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await driveToCompletion(
+      prepareWorkspace(dir, {
+        provider: hangingProvider(counter),
+        deadlineScheduler: scheduler,
+        localModelTimeoutMs: 5,
+      }),
+      scheduler,
+    );
+    // The provider WAS called (proves the timeout wraps the real call path) — once.
+    expect(counter.calls).toBe(1);
+    const entry = report.files.find(
+      (f) => f.relpath === "notes.md" || f.originalRelpath === "notes.md",
+    );
+    expect(entry?.omitted).toBe(true);
+    expect(entry?.action).toBe("local-only");
+    // Never written to the delivered workspace.
+    expect(existsSync(path.join(report.outDir, "notes.md"))).toBe(false);
+    // Success-with-warnings: launch still allowed, degradation surfaced.
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+    expect(report.degraded?.localModelDisabled).toBe(true);
+    expect(report.degraded?.filesKeptLocalAfterTimeout).toBeGreaterThanOrEqual(1);
+    expect(report.degraded?.circuitBreakerReason).toBe("per-file-timeout");
+    expect(report.degraded?.warnings.some((w) => w.reason === "local-summary-timeout")).toBe(true);
+  });
+
+  it("after the first timeout the circuit opens: subsequent files are kept-local with ZERO further provider calls", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 12; i += 1) {
+      put(`docs/f${String(i).padStart(3, "0")}.md`, `# Doc ${i}\nshort synthetic prose ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await driveToCompletion(
+      prepareWorkspace(dir, {
+        provider: hangingProvider(counter),
+        deadlineScheduler: scheduler,
+        localModelTimeoutMs: 5,
+      }),
+      scheduler,
+    );
+    expect(counter.calls).toBe(1); // one hang, then circuit open — no more calls
+    expect(keptLocalCount(report.files)).toBe(12); // every summarize target kept local
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("opens the circuit on the CALL-COUNT budget (slow-but-not-hung model), then stops calling", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 40; i += 1) {
+      put(`docs/n${String(i).padStart(3, "0")}.md`, `# Note ${i}\nshort synthetic prose ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: countingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelMaxCalls: 10,
+    });
+    expect(counter.calls).toBe(10); // capped at the call budget
+    expect(report.degraded?.localModelDisabled).toBe(true);
+    expect(report.degraded?.circuitBreakerReason).toBe("call-count-exceeded");
+    expect(keptLocalCount(report.files)).toBeGreaterThanOrEqual(30);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("opens the circuit on the cumulative TIME budget", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 20; i += 1) {
+      put(`docs/t${String(i).padStart(3, "0")}.md`, `# T ${i}\nsynthetic prose ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    // Each call "consumes" 8s of virtual local-model time; the 20s budget trips after 3.
+    const report = await prepareWorkspace(dir, {
+      provider: countingProvider(counter, () => scheduler.advance(8_000)),
+      deadlineScheduler: scheduler,
+      localModelTimeoutMs: 1_000_000, // never trips per-file
+      localModelTotalBudgetMs: 20_000,
+      localModelMaxCalls: 1000, // don't let the call-count cap interfere
+    });
+    expect(counter.calls).toBe(3);
+    expect(report.degraded?.circuitBreakerReason).toBe("time-budget-exceeded");
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("foreground-budget-ZERO (deferLocalSummary): makes ZERO provider calls, all summarize targets kept-local", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 30; i += 1) put(`docs/z${i}.md`, `# Z ${i}\nprose\n`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: hangingProvider(counter), // would hang if ever called
+      deadlineScheduler: scheduler,
+      deferLocalSummary: true,
+    });
+    expect(counter.calls).toBe(0);
+    expect(report.degraded?.circuitBreakerReason).toBe("deferred");
+    expect(keptLocalCount(report.files)).toBe(30);
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  });
+
+  it("localModelMaxCalls:0 is equivalent to deferred (zero provider calls)", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    for (let i = 0; i < 5; i += 1) put(`docs/q${i}.md`, `# Q ${i}\nprose\n`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: hangingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelMaxCalls: 0,
+    });
+    expect(counter.calls).toBe(0);
+    expect(keptLocalCount(report.files)).toBe(5);
+  });
+
+  it("a global Cancel during an in-flight summarize call still rejects with AbortError", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    put("notes.md", `# Notes\n${"prose ".repeat(30)}`);
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const ac = new AbortController();
+    const promise = prepareWorkspace(dir, {
+      provider: hangingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelTimeoutMs: 1_000_000, // per-file timeout will not trip first
+      signal: ac.signal,
+    });
+    let settled = false;
+    void promise.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (let i = 0; i < 20_000 && counter.calls === 0 && !settled; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(counter.calls).toBe(1); // the call is genuinely in flight
+    ac.abort();
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it(
+    "SCALE: a 5,000+ file summarize repo with a HUNG model completes in bounded time; source + secrets untouched",
+    async () => {
+      put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+      const total = 5_200;
+      for (let i = 0; i < total; i += 1) {
+        put(`src/f${String(i).padStart(5, "0")}.md`, `# File ${i}\nsynthetic body ${i}\n`);
+      }
+      // One summarize file carries a distinctive secret — it must never be delivered.
+      const secret = "SUPERSECRETVALUE_UNIQUE_1a2b3c4d5e";
+      put("src/f00001.md", `# secret file\nSECRET_TOKEN=${secret}\n`);
+      const beforeHash = sourceTreeHash(dir);
+
+      const counter = { calls: 0 };
+      const scheduler = makeFakeScheduler();
+      const startedAt = Date.now();
+      const report = await driveToCompletion(
+        prepareWorkspace(dir, {
+          provider: hangingProvider(counter),
+          deadlineScheduler: scheduler,
+          localModelTimeoutMs: 3,
+        }),
+        scheduler,
+      );
+      const elapsedMs = Date.now() - startedAt;
+
+      // Terminates fast (real reproduction would run ~30 min): circuit opens after the
+      // FIRST hang, so the provider is called exactly ONCE for 5,200 summarize files.
+      expect(counter.calls).toBe(1);
+      expect(report.degraded?.localModelDisabled).toBe(true);
+      // Every summarize target kept-local (never delivered un-inspected).
+      expect(keptLocalCount(report.files)).toBe(total);
+      const delivered = deliveredText(report.outDir);
+      expect(delivered).not.toContain(secret); // secrets exposed = 0
+      expect(delivered).not.toContain("SECRET_TOKEN=");
+      // SOURCE IS NEVER MODIFIED.
+      expect(sourceTreeHash(dir)).toBe(beforeHash);
+      // Success-with-warnings; launch still allowed.
+      expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+      // Bounded: generous ceiling — the point is it finishes, not 30 minutes.
+      expect(elapsedMs).toBeLessThan(90_000);
+    },
+    120_000,
+  );
+
+  it("SCALE: a 5,000+ file repo with a SLOW model stops at the call budget and finishes fast", async () => {
+    put("yuhi.yaml", SUMMARIZE_MD_CONFIG);
+    const total = 5_100;
+    for (let i = 0; i < total; i += 1) {
+      put(`src/g${String(i).padStart(5, "0")}.md`, `# G ${i}\nbody ${i}\n`);
+    }
+    const counter = { calls: 0 };
+    const scheduler = makeFakeScheduler();
+    const report = await prepareWorkspace(dir, {
+      provider: countingProvider(counter),
+      deadlineScheduler: scheduler,
+      localModelMaxCalls: 25,
+    });
+    expect(counter.calls).toBe(25); // provider NOT called for the remaining ~5,075 files
+    expect(report.degraded?.circuitBreakerReason).toBe("call-count-exceeded");
+    expect(report.tabularAcceptance?.launchAllowed).toBe(true);
+  }, 120_000);
+});

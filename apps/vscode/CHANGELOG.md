@@ -5,6 +5,145 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.6]
+
+Theme: **Safe Patch Review** — *Review first. Apply safely.*
+
+- Captures an agent-private, deterministic snapshot immediately before each Claude Code or
+  Codex launch. Snapshot failure prevents launch; another session cannot silently reuse it.
+- Detects created, modified, deleted, renamed, binary, and mode changes in the Prepared
+  Repository. FULL text files can be selected by file or hunk; compressed files, background
+  artifacts, binaries, mode changes, credentials, PII, internal metadata, and conflicts are
+  blocked from Source Apply.
+- Adds a session-scoped **Trusted Apply** boundary. Caller-supplied risk, eligibility, hashes,
+  paths, or content are not trusted. Yuhi reloads private state, recomputes patch and Working
+  Tree identities, rescans exact bytes, and rechecks Source hashes and path containment.
+- Adds private backup, atomic replacement, verified rollback, transactional Undo, Discard,
+  metadata-only history, and masked diff output. Nothing is automatically applied, committed,
+  pushed, or published.
+- Adds CLI `yuhi patch status|diff|validate|apply|undo|history|discard` using the same Core
+  review and Apply contracts as VS Code.
+- Adds an agent-visible **metadata boundary**. A real workspace names its data after the
+  person in it (`9999990001 評定-0722.xlsx`), so withholding a file's bytes while publishing
+  its name disclosed the identifier anyway. A file whose original is not delivered now
+  appears on every agent-readable surface — manifest, background status, session, mode
+  summary, handoff, document index — only as a stable `documentId` and a kind-only label
+  (`doc-<hex>.pdf`); generated context artifacts are named by identity; and long non-date
+  digit runs in delivered filenames are pseudonymized. Exclusions are still reported in
+  full: the boundary removes names, not counts.
+
+Known limitation: Node.js does not expose descriptor-relative `openat(2)` operations. Yuhi
+therefore repeats `O_NOFOLLOW`, canonical containment, symlink, and hash checks at every
+critical boundary and fails closed, but does not claim an OS-level filesystem sandbox.
+
+## [0.3.5]
+
+Theme: **Progressive Context** — *Start fast. Context gets better in the background.*
+
+### Progressive Context
+
+- Heavy preparation — **PDF / DOCX extraction, OCR, and local summarization** — no longer
+  blocks launch. It runs in a **persistent background queue** *after* Yuhi Mode is ready, so
+  you reach Claude Code / Codex fast and the context keeps improving behind you. Foreground
+  wall-time does not grow with how many background items are pending.
+- **Safety-gated, atomic publish.** Every background result is normalized, pseudonymized, and
+  safety-inspected *before* anything is written; only a verified, sanitized companion is
+  published atomically into the agent-visible workspace. A result carrying a secret or PII is
+  **kept local** — the original source and raw document are never delivered, and a failure
+  leaves no partial artifact.
+- **Immutable Context ID + incrementing Context Revision.** The base **Context ID** stays
+  byte-identical as background work completes; each safely-published artifact bumps a
+  deterministic **Context Revision** (`revisionId`) that folds in the immutable Context ID
+  plus the published set. It is time-, path-, machine-, user-, and **agent-independent** —
+  Claude and Codex reuse the *same* prepared run and compute the *same* revision, with **no
+  re-scan or re-preparation** when you switch agents. Each session manifest records the
+  revision it used.
+- **Panel status, Cancel, and Refresh.** The panel honestly shows background progress
+  (per-kind counts, safe artifacts added, files kept local, current revision) sourced only
+  from a path-safe public status file. **Cancel background processing** stops the run
+  promptly; **Refresh Context** re-reads the status and recomputes the revision (never a
+  re-prepare).
+- **Private-state boundary.** The queue's private records, pre-inspection staging bytes, and
+  cancel flags live *outside* every agent-visible root (under the managed base). The panel and
+  the agent read only the single public status file — never an absolute path, provider detail,
+  or raw error.
+
+## [0.3.4]
+
+Theme: **one prepared repository, multiple agents** — *Prepare once. Run with Claude or Codex.*
+
+### Launch with Claude Code or Codex
+
+- After a prepare, the review offers **Launch with [ Claude Code ] [ Codex ]** — the same
+  prepared repository, reused by either agent with no re-scan or re-preparation. Each
+  agent's **availability** is detected (and an uninstalled agent shows a calm
+  "not found — install and try again" hint; Yuhi never installs anything for you). The
+  last-used agent is remembered and offered as the default.
+- Every launch goes through an **Agent Adapter** — Yuhi's core stays agent-agnostic. The
+  adapter detects the CLI, generates the agent's instruction file (`CLAUDE.md` for Claude,
+  `AGENTS.md` for Codex) additively without clobbering your own content, and launches it in
+  the prepared repository. A changed Safety Mode still gates launch until you re-prepare.
+
+### Context ID
+
+- Each prepared run now has a deterministic **Context ID** (`sha256:…`) derived from the
+  source content, Safety Mode, and compression settings — identical for the same repository
+  state regardless of which agent you run or when. It's shown in the panel and recorded per
+  session, so you can tell which agent used which prepared context.
+
+### CLI
+
+- `yuhi launch claude` / `yuhi launch codex` (with `--run <id>` to pick a prepared run) —
+  detects the agent, prints a short **Ready for the chosen agent** summary (Context ID,
+  files visible, reduction, secrets exposed), and launches it in the prepared repository.
+
+## [0.3.3]
+
+Theme: **safe, lightweight, and explainable context preparation** — get into Yuhi Mode
+fast, keep the prepared context small, and always be able to explain why.
+
+### Context Compression (opt-in)
+
+- **Structure compression** for TypeScript/JavaScript: keeps imports, exports, class /
+  interface / type / enum declarations, function and method **signatures**, decorators,
+  and doc-comments, and drops implementation bodies (replaced with `{ /* ... */ }`) to
+  shrink the context sent to the agent. Enable with the **Context Compression** toggle
+  or `yuhi.compress`; set an optional **Token Budget** (`yuhi.tokenBudget`).
+- **Arrow-function bodies** are now compressed too: `const fn = () => { … }` collapses to
+  its signature, which markedly improves reduction on function- and test-heavy files.
+  Expression-body arrows are kept in full on purpose — `() => ({ … })` (config objects)
+  and `() => <div/>` (JSX) preserve structure a coding agent needs.
+- Every file's outcome is explainable: kept full, structurally compressed, or excluded —
+  each with a stable reason (e.g. `structural-compression`, `parse-failed`,
+  `compression-not-smaller`). Unsupported languages and any parser/parse failure fall
+  back to the full file — never a partial or silently dropped one. The original source is
+  never modified.
+- Declaration (`.d.ts`) files and files below the size threshold are kept full. Context
+  Compression is **OFF by default** — opt in per run. Reduction is content-dependent and
+  honest: method- and arrow-heavy files compress a lot (a ~190k-token repo → ~41%, with
+  body-heavy test files ~85%), while small or declaration-only repositories stay near 0%.
+
+### Faster, never-stuck preparation
+
+- Preparation no longer waits on the local summarization model on the launch path, so
+  **Yuhi Mode opens quickly** even on large repositories and even when a local model is
+  slow or unavailable. Files that would need local summarization to be de-identified are
+  kept **local** and clearly reported (they are not shared with the agent). Reliability
+  guards — per-file timeout, cancellation, and a circuit breaker — keep a single slow file
+  from stalling the whole run.
+
+### Choose settings before the first prepare
+
+- The Yuhi panel now offers **Safety Mode**, **Context Compression**, and **Token Budget**
+  before the first prepare — no need to prepare once to reach the selector. Choices are the
+  same `yuhi.*` workspace settings used everywhere, and stay in sync with VS Code Settings.
+- A small **`Yuhi v…`** badge in the panel shows the installed extension version.
+
+### Clearer kept-local documents
+
+- When a PDF/DOCX/PPTX can't be inspected, the local placeholder now reports an accurate
+  original size (bytes/KB, not a misleading `0.0 MB`) and a specific reason.
+
 ## [0.3.2]
 
 ### Safety Mode

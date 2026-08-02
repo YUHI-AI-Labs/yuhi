@@ -118,11 +118,49 @@ export function classifyStudentRecordHeaders(headers: readonly string[]): Studen
   };
 }
 
+/**
+ * Whether row 0 carries DATA rather than column headings.
+ *
+ * Treating row 0 as a header unconditionally silently exempts it from both the
+ * transform and the post-transform rescan, so a headerless export leaks its first
+ * record verbatim (and a single-row file leaks entirely). A heading cell is never
+ * an email address or a phone number, so an unambiguous data shape in row 0 is a
+ * reliable, conservative signal that the table starts there.
+ */
+export function tableStartsWithData(row: readonly string[]): boolean {
+  return row.some((cell) => {
+    const value = cell.trim();
+    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value) || /^\+?[0-9][0-9 ()-]{7,}$/.test(value);
+  });
+}
+
+/** First row index that holds records (0 for a headerless table). */
+export function tableBodyStart(rows: readonly (readonly string[])[]): number {
+  return tableStartsWithData(rows[0] ?? []) ? 0 : 1;
+}
+
 export function classifyStudentRecordTable(rows: readonly (readonly string[])[]): StudentRecordClassification {
-  const base = classifyStudentRecordHeaders(rows[0] ?? []);
+  const bodyStart = tableBodyStart(rows);
+  // A data row must never be mined for header aliases.
+  const base = bodyStart === 0
+    ? classifyStudentRecordHeaders([])
+    : classifyStudentRecordHeaders(rows[0] ?? []);
   const indexes = [...base.directIdentifierIndexes];
   const types = [...base.directIdentifierTypes];
-  const sampled = rows.slice(1, 51);
+  const sampled = rows.slice(bodyStart, bodyStart + 50);
+  // A header-matched `name` column holding plain numbers is an aggregate, not a
+  // person — pivot count columns ("個数 / フルネーム") land here. Pseudonymizing
+  // them buys no privacy and destroys the distribution the table exists to show.
+  for (let position = indexes.length - 1; position >= 0; position -= 1) {
+    if (types[position] !== "name") continue;
+    const values = sampled.map((row) => (row[indexes[position]!] ?? "").trim()).filter(Boolean);
+    if (values.length === 0) continue;
+    const numeric = values.filter((value) => /^-?\d+(?:\.\d+)?$/.test(value)).length;
+    if (numeric / values.length >= 0.9) {
+      indexes.splice(position, 1);
+      types.splice(position, 1);
+    }
+  }
   for (let index = 0; index < (rows[0]?.length ?? 0); index += 1) {
     if (indexes.includes(index)) continue;
     const values = sampled.map((row) => (row[index] ?? "").trim()).filter(Boolean);
@@ -335,10 +373,17 @@ function withPreamble(preamble: string[][], delimiter: "," | "\t", body: string)
 
 export interface StudentAliasContext {
   identifierToEntity: Map<string, number | null>;
-  entityIdentifiers: Map<number, Map<DirectIdentifierType, string>>;
+  /** Per-entity committed identifiers, keyed by `type#columnIndex` (a table may
+   *  legitimately carry several columns of the same identifier type). */
+  entityIdentifiers: Map<number, Map<string, string>>;
   nextEntity: number;
   /** Value-keyed stable tokens for attributes tokenized by value (e.g. phone). */
   attributeTokens: Map<string, string>;
+  /** Value-keyed stable tokens for columns tokenized per column (see
+   *  `columnScopedAlias`). Keyed `columnIndex\u0000type:value`. */
+  columnTokens: Map<string, string>;
+  /** Next ordinal per `columnIndex\u0000type` token namespace. */
+  columnTokenCounts: Map<string, number>;
 }
 
 export function createStudentAliasContext(): StudentAliasContext {
@@ -347,6 +392,8 @@ export function createStudentAliasContext(): StudentAliasContext {
     entityIdentifiers: new Map(),
     nextEntity: 1,
     attributeTokens: new Map(),
+    columnTokens: new Map(),
+    columnTokenCounts: new Map(),
   };
 }
 
@@ -376,8 +423,53 @@ function generalizeAddress(value: string): string {
   return coarse.length > 0 ? coarse : "[address removed]";
 }
 
+/** One entity may hold one value per identifier COLUMN, not per type. */
+function entitySlot(item: { type: DirectIdentifierType; index: number }): string {
+  return `${item.type}#${item.index}`;
+}
+
 function identifierKey(type: DirectIdentifierType, value: string): string {
   return `${type}:${value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ")}`;
+}
+
+const COLUMN_TOKEN_PREFIX: Record<DirectIdentifierType, string> = {
+  name: "PERSON",
+  "student-id": "SID",
+  "student-card": "CARD",
+  "employee-id": "EID",
+  "account-id": "ACCOUNT",
+  "institutional-id": "INST",
+  email: "ADDR",
+  phone: "PHONE",
+  address: "PLACE",
+};
+
+/**
+ * Token for a column whose identifier type occupies SEVERAL columns of the table
+ * (course code + teacher code + term code all classified `account-id`, say).
+ *
+ * Entity-keyed aliasing is wrong here on both axes: it gives one repeated value a
+ * different token on every row (destroying `GROUP BY`), and it gives three
+ * different columns the SAME token on one row (inventing an equality that does
+ * not exist). Tokens are therefore keyed by (column, value): equal values in a
+ * column always share a token, and separate columns never collide.
+ */
+function columnScopedAlias(
+  context: StudentAliasContext,
+  type: DirectIdentifierType,
+  columnIndex: number,
+  columnLetter: string,
+  value: string,
+): string {
+  const namespace = `${columnIndex}\u0000${type}`;
+  const key = `${namespace}:${identifierKey(type, value)}`;
+  const existing = context.columnTokens.get(key);
+  if (existing) return existing;
+  const next = (context.columnTokenCounts.get(namespace) ?? 0) + 1;
+  context.columnTokenCounts.set(namespace, next);
+  const token = `${COLUMN_TOKEN_PREFIX[type]}-${columnLetter}-${String(next).padStart(3, "0")}`;
+  context.columnTokens.set(key, token);
+  return token;
 }
 
 function aliasFor(
@@ -404,7 +496,7 @@ export function tabularDirectIdentifierValues(input: string): string[] {
   const { table } = parseTableWithPreamble(input);
   const classification = classifyStudentRecordTable(table.rows);
   const values = new Set<string>();
-  for (const row of table.rows.slice(1)) {
+  for (const row of table.rows.slice(tableBodyStart(table.rows))) {
     for (const index of classification.directIdentifierIndexes) {
       const value = (row[index] ?? "").trim();
       if (value) values.add(value);
@@ -429,6 +521,23 @@ export function pseudonymizeStudentRecords(
       : classification.directIdentifierTypes.includes("employee-id")
         ? "employee"
         : "person";
+  // A type that occupies more than one column cannot be resolved to a single
+  // entity attribute — those columns are tokenized per (column, value) instead.
+  const typeColumns = new Map<DirectIdentifierType, number[]>();
+  classification.directIdentifierIndexes.forEach((columnIndex, offset) => {
+    const type = classification.directIdentifierTypes[offset]!;
+    typeColumns.set(type, [...(typeColumns.get(type) ?? []), columnIndex]);
+  });
+  const columnLetters = new Map<number, string>();
+  const columnScoped = new Set<DirectIdentifierType>();
+  for (const [type, columns] of typeColumns) {
+    if (columns.length < 2) continue;
+    columnScoped.add(type);
+    columns.forEach((columnIndex, ordinal) => {
+      columnLetters.set(columnIndex, String.fromCharCode(65 + (ordinal % 26)));
+    });
+  }
+  const bodyStart = tableBodyStart(table.rows);
   const entitiesBefore = context.nextEntity;
   let valuesReplaced = 0;
   let conflicts = 0;
@@ -443,7 +552,7 @@ export function pseudonymizeStudentRecords(
     name: 99,
     address: 99,
   };
-  for (const row of table.rows.slice(1)) {
+  for (const row of table.rows.slice(bodyStart)) {
     const identifiers = classification.directIdentifierIndexes.map((index, offset) => ({
       index,
       type: classification.directIdentifierTypes[offset]!,
@@ -456,7 +565,8 @@ export function pseudonymizeStudentRecords(
     // against any residual identifier elsewhere in the output.
     if (identifiers.length === 0) continue;
     const strong = identifiers
-      .filter((item) => item.type !== "name" && item.type !== "address")
+      .filter((item) =>
+        item.type !== "name" && item.type !== "address" && !columnScoped.has(item.type))
       .sort((a, b) => priority[a.type] - priority[b.type]);
     const linked = strong
       .map((item) => context.identifierToEntity.get(identifierKey(item.type, item.value)))
@@ -476,7 +586,7 @@ export function pseudonymizeStudentRecords(
       const known = context.entityIdentifiers.get(entity);
       if (known) {
         for (const item of strong) {
-          const prior = known.get(item.type);
+          const prior = known.get(entitySlot(item));
           if (prior !== undefined && prior !== identifierKey(item.type, item.value)) {
             conflicted = true;
             break;
@@ -502,18 +612,20 @@ export function pseudonymizeStudentRecords(
     // can never corrupt the deterministic mapping used by good rows.
     if (!conflicted && strong.length > 0) {
       const known =
-        context.entityIdentifiers.get(entity) ?? new Map<DirectIdentifierType, string>();
+        context.entityIdentifiers.get(entity) ?? new Map<string, string>();
       for (const item of strong) {
         const key = identifierKey(item.type, item.value);
-        known.set(item.type, key);
+        known.set(entitySlot(item), key);
         context.identifierToEntity.set(key, entity);
       }
       context.entityIdentifiers.set(entity, known);
     }
     // Pseudonymize EVERY identifier in the row (best effort) with the chosen entity.
     for (const item of identifiers) {
-      row[item.index] =
-        item.type === "phone"
+      row[item.index] = columnScoped.has(item.type)
+        ? columnScopedAlias(
+            context, item.type, item.index, columnLetters.get(item.index) ?? "A", item.value)
+        : item.type === "phone"
           ? phoneToken(context, item.value)
           : item.type === "address"
             ? generalizeAddress(item.value)
@@ -530,7 +642,7 @@ export function pseudonymizeStudentRecords(
     }
   }
   const direct = new Set(classification.directIdentifierIndexes);
-  for (let rowIndex = 1; rowIndex < table.rows.length; rowIndex += 1) {
+  for (let rowIndex = bodyStart; rowIndex < table.rows.length; rowIndex += 1) {
     for (let column = 0; column < table.rows[0]!.length; column += 1) {
       if (!direct.has(column) && table.rows[rowIndex]![column] !== originalRows[rowIndex]![column]) {
         throw new Error("Tabular transformation changed a non-identifier value.");
@@ -554,7 +666,7 @@ export function aggregateStudentRecords(input: string): StudentRecordTransform {
   }
   const outputRows: string[][] = [["metric", "records", "numeric_mean"]];
   for (const index of classification.performanceIndexes) {
-    const values = table.rows.slice(1)
+    const values = table.rows.slice(tableBodyStart(table.rows))
       .map((row) => Number(row[index]))
       .filter((value) => Number.isFinite(value));
     const mean = values.length > 0

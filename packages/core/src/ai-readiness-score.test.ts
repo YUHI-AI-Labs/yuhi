@@ -14,7 +14,10 @@ describe("AI Readiness Score", () => {
     expect(score.categories.map((c) => c.name)).toEqual([
       "Secrets blocked", "Documents prepared", "Repository structure", "Context reduction",
     ]);
-    for (const c of score.categories) expect(c.stars).toBeGreaterThanOrEqual(0), expect(c.stars).toBeLessThanOrEqual(5);
+    for (const c of score.categories) {
+      expect(c.stars).toBeGreaterThanOrEqual(0);
+      expect(c.stars).toBeLessThanOrEqual(5);
+    }
   });
   it("badge + formatted output are shareable strings", () => {
     const score = buildAiReadinessScore(buildAiReadinessReport(files));

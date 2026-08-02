@@ -317,18 +317,21 @@ export function formatOpenedMessage(s: PreparedSummary): string {
 
 /** Pure status text calculation, shared by activation wiring and unit tests. */
 export function formatPreparedStatusText(metrics: PreparedMetrics): string {
-  return metrics.sensitiveValuesMasked > 0 || metrics.filesExcluded > 0
-    ? `$(shield) Prepared by Yuhi · ${metrics.sensitiveValuesMasked} masked · ${metrics.filesExcluded} excluded`
-    : `$(shield) Prepared by Yuhi · −${metrics.estimatedReductionPercent.toFixed(1)}% context`;
+  return `$(shield) Prepared by Yuhi · Estimated context reduction ${metrics.estimatedReductionPercent.toFixed(1)}%`;
 }
 
-export function preparedStatusTooltipLines(runId: string, metrics: PreparedMetrics): string[] {
+export function preparedStatusTooltipLines(
+  runId: string,
+  metrics: PreparedMetrics,
+  publicSummary?: import("@yuhi/core").PublicPreparedContextSummary,
+): string[] {
   const runtime = buildPreparedRuntimeBoundary("claude-code-sandbox");
   return [
     "**Prepared by Yuhi**",
     `Run ID: \`${runId}\``,
     "Agent: Claude Code",
-    `Estimated context reduction: ${metrics.estimatedReductionPercent.toFixed(1)}%`,
+    `Estimated context reduction: ${publicSummary?.reductionPercent === null || publicSummary?.reductionPercent === undefined ? "Not measured" : `${publicSummary.reductionPercent.toFixed(1)}%`}`,
+    `Estimated tokens: ${publicSummary?.originalEstimatedTokens ?? "Not measured"} before → ${publicSummary?.preparedEstimatedTokens ?? "Not measured"} after`,
     `Sensitive findings detected: ${metrics.sensitiveFindings}`,
     `Sensitive values masked: ${metrics.sensitiveValuesMasked}`,
     `Files kept local: ${metrics.filesKeptLocal}`,
@@ -362,9 +365,9 @@ This is a generated **Yuhi Prepared Workspace**.
 - Missing information should be reported instead of retrieving files from parent
   directories or absolute paths.
 - Yuhi controls the initial prepared context.
-- Yuhi writes a best-effort filesystem-deny policy for Claude Code (home directory, /tmp, /private/tmp).
-- Workspace boundary: advisory — defense-in-depth over the initial context, not OS-level isolation.
-- Known sensitive locations are denied best-effort, but user-approved external paths may still be accessible.
+- Runtime permission and sandbox behavior follows the user-selected Yuhi preset.
+- Workspace boundary: advisory — prepared context, not OS-level isolation.
+- External paths may still be accessible when the runtime or user permits them.
 
 ## Guidance for any AI agent working here
 
@@ -386,13 +389,16 @@ Base all analysis and edits only on files available in this prepared workspace.
 If required information is missing, stop and report what is missing rather than
 opening external paths.
 
-Yuhi controls the prepared input context and writes a best-effort Claude Code
-filesystem-deny policy for this workspace. This is an advisory, defense-in-depth
-boundary — not OS-level isolation. User-approved external paths may still be
-accessible, so treat missing information as missing rather than reaching outside.
+Yuhi controls the prepared input context. Runtime permission and sandbox behavior
+follows the user-selected preset. This remains an advisory context boundary, not
+OS-level isolation. External paths may still be accessible, so treat missing
+information as missing rather than reaching outside.
 `;
 
-export function formatPreparedWorkspaceNotice(metrics: PreparedMetrics): string {
+export function formatPreparedWorkspaceNotice(
+  metrics: PreparedMetrics,
+  summary?: import("@yuhi/core").YuhiModeSummary,
+): string {
   const runtime = buildPreparedRuntimeBoundary("claude-code-sandbox");
   return PREPARED_WORKSPACE_NOTICE.replace(
     "This is a generated **Yuhi Prepared Workspace**.",
@@ -402,10 +408,12 @@ export function formatPreparedWorkspaceNotice(metrics: PreparedMetrics): string 
       "## Context preparation",
       "",
       "- Initial context prepared by Yuhi.",
-      `- Files excluded: ${metrics.filesExcluded}.`,
-      `- Files kept local: ${metrics.filesKeptLocal}.`,
+      `- Verified files available: ${summary?.contextAvailability.availableVerified ?? "Not measured"}.`,
+      `- Files available with warnings: ${summary?.contextAvailability.availableWithWarning ?? "Not measured"}.`,
+      `- Known-risk files blocked: ${summary?.contextAvailability.knownRisksBlocked ?? metrics.sensitiveFilesExcluded}.`,
+      `- Unavailable after processing failure: ${summary?.contextAvailability.unavailableAfterFailure ?? "Not measured"}.`,
       `- Sensitive values masked: ${metrics.sensitiveValuesMasked}.`,
-      `- Estimated context reduction: ${metrics.estimatedReductionPercent.toFixed(1)}%.`,
+      `- Estimated context reduction: ${(summary?.contextEfficiency.representationReductionPercent ?? metrics.estimatedReductionPercent).toFixed(1)}%.`,
       "- Original files modified: 0.",
       "",
       "## Runtime boundary",
@@ -439,10 +447,11 @@ export async function writePreparedNotice(
   mkDir: (p: string) => Promise<void> = async (p) => {
     await mkdir(p, { recursive: true });
   },
+  summary?: import("@yuhi/core").YuhiModeSummary,
 ): Promise<string> {
   const target = path.join(outDir, PREPARED_NOTICE_RELPATH);
   await mkDir(path.dirname(target));
-  await writer(target, metrics ? formatPreparedWorkspaceNotice(metrics) : PREPARED_WORKSPACE_NOTICE);
+  await writer(target, metrics ? formatPreparedWorkspaceNotice(metrics, summary) : PREPARED_WORKSPACE_NOTICE);
   return target;
 }
 
@@ -494,12 +503,91 @@ export const PREPARED_SESSION_RELPATH = path.join(".yuhi", "session.json");
 export const PREPARED_AUDIT_RELPATH = path.join(".yuhi", "launch-audit.jsonl");
 export const CLAUDE_SANDBOX_RELPATH = path.join(".claude", "settings.json");
 
-export const CLAUDE_SANDBOX_POLICY = {
+export type ClaudePermissionMode = "standard" | "plan" | "acceptEdits" | "auto" | "custom";
+export type YuhiSandboxPreset = "standard" | "guarded" | "locked-down";
+
+let defaultSandboxPreset: YuhiSandboxPreset = "guarded";
+let defaultPermissionMode: ClaudePermissionMode = "standard";
+
+export function configureClaudeWorkspacePolicyDefaults(options: {
+  sandboxPreset: YuhiSandboxPreset;
+  permissionMode: ClaudePermissionMode;
+}): void {
+  defaultSandboxPreset = options.sandboxPreset;
+  defaultPermissionMode = options.permissionMode;
+}
+
+type ClaudeWorkspacePolicy = {
+  sandbox?: {
+    enabled: boolean;
+    failIfUnavailable?: boolean;
+    allowUnsandboxedCommands?: boolean;
+    excludedCommands?: readonly string[];
+    autoAllowBashIfSandboxed?: boolean;
+    filesystem?: { denyRead?: readonly string[]; allowRead?: readonly string[] };
+  };
+  permissions?: {
+    defaultMode?: string;
+    disableBypassPermissionsMode?: "disable";
+    deny?: readonly string[];
+  };
+  yuhi: { sandboxPreset: YuhiSandboxPreset; permissionMode: ClaudePermissionMode };
+};
+
+export function buildClaudeWorkspacePolicy(
+  sandboxPreset: YuhiSandboxPreset = "guarded",
+  permissionMode: ClaudePermissionMode = "standard",
+): ClaudeWorkspacePolicy {
+  const defaultMode = permissionMode === "standard" || permissionMode === "custom"
+    ? undefined
+    : permissionMode;
+  const permissions = defaultMode ? { defaultMode } : {};
+  if (sandboxPreset === "standard") {
+    return { permissions, yuhi: { sandboxPreset, permissionMode } };
+  }
+  if (sandboxPreset === "guarded") {
+    return {
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: false,
+        allowUnsandboxedCommands: true,
+        excludedCommands: [],
+        autoAllowBashIfSandboxed: true,
+        filesystem: { allowRead: ["."] },
+      },
+      permissions,
+      yuhi: { sandboxPreset, permissionMode },
+    };
+  }
+  return {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      excludedCommands: [],
+      autoAllowBashIfSandboxed: false,
+      filesystem: { denyRead: ["~/", "/tmp", "/private/tmp"], allowRead: ["."] },
+    },
+    permissions: {
+      ...permissions,
+      disableBypassPermissionsMode: "disable",
+      deny: ["Read(//tmp/**)", "Read(//private/tmp/**)"],
+    },
+    yuhi: { sandboxPreset, permissionMode },
+  };
+}
+
+/** Backward-compatible exported default. Guarded preserves Auto mode and prompts for escape. */
+export const CLAUDE_SANDBOX_POLICY = buildClaudeWorkspacePolicy("guarded", "standard");
+
+export const CLAUDE_LOCKED_DOWN_POLICY = {
   sandbox: {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
     excludedCommands: [],
+    // Auto Mode may approve Bash only while Claude's own sandbox is active. Yuhi still
+    // forbids unsandboxed commands and bypass-permissions mode.
     autoAllowBashIfSandboxed: false,
     filesystem: {
       denyRead: ["~/", "/tmp", "/private/tmp"],
@@ -509,42 +597,33 @@ export const CLAUDE_SANDBOX_POLICY = {
   permissions: {
     defaultMode: "default",
     disableBypassPermissionsMode: "disable",
-    disableAutoMode: "disable",
     deny: [
       "Read(//tmp/**)",
       "Read(//private/tmp/**)",
     ],
   },
+  yuhi: { sandboxPreset: "locked-down", permissionMode: "standard" },
 } as const;
 
 export async function writeAndVerifyClaudeSandboxPolicy(
   root: string,
   outDir: string,
+  options: { sandboxPreset?: YuhiSandboxPreset; permissionMode?: ClaudePermissionMode } = {},
 ): Promise<string> {
   await assertPreparedPath(root, outDir);
   const target = path.join(outDir, CLAUDE_SANDBOX_RELPATH);
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  await writeFile(target, JSON.stringify(CLAUDE_SANDBOX_POLICY, null, 2) + "\n", {
+  const policy = buildClaudeWorkspacePolicy(
+    options.sandboxPreset ?? defaultSandboxPreset,
+    options.permissionMode ?? defaultPermissionMode,
+  );
+  await writeFile(target, JSON.stringify(policy, null, 2) + "\n", {
     encoding: "utf8",
     mode: 0o600,
   });
   await chmod(target, 0o600);
-  const saved = JSON.parse(await readFile(target, "utf8")) as typeof CLAUDE_SANDBOX_POLICY;
-  if (
-    saved.sandbox?.enabled !== true ||
-    saved.sandbox?.failIfUnavailable !== true ||
-    saved.sandbox?.allowUnsandboxedCommands !== false ||
-    !Array.isArray(saved.sandbox?.excludedCommands) ||
-    saved.sandbox.excludedCommands.length !== 0 ||
-    !saved.sandbox?.filesystem?.denyRead?.includes("~/") ||
-    !saved.sandbox?.filesystem?.denyRead?.includes("/tmp") ||
-    !saved.sandbox?.filesystem?.denyRead?.includes("/private/tmp") ||
-    saved.sandbox?.filesystem?.allowRead?.[0] !== "." ||
-    !saved.permissions?.deny?.includes("Read(//tmp/**)") ||
-    !saved.permissions?.deny?.includes("Read(//private/tmp/**)") ||
-    saved.permissions?.disableBypassPermissionsMode !== "disable" ||
-    saved.permissions?.disableAutoMode !== "disable"
-  ) {
+  const saved = JSON.parse(await readFile(target, "utf8")) as ClaudeWorkspacePolicy;
+  if (JSON.stringify(saved) !== JSON.stringify(policy)) {
     throw new Error("Yuhi could not verify the Claude Code sandbox policy. Launch blocked.");
   }
   return target;
@@ -568,29 +647,23 @@ export async function verifyExistingClaudeSandboxPolicy(outDir: string): Promise
 export async function claudeSandboxPolicyDiagnostic(
   outDir: string,
 ): Promise<{ valid: boolean; present: boolean; failedAssertion?: string }> {
-  let saved: typeof CLAUDE_SANDBOX_POLICY;
+  let saved: ClaudeWorkspacePolicy;
   try {
     saved = JSON.parse(
       await readFile(path.join(outDir, CLAUDE_SANDBOX_RELPATH), "utf8"),
-    ) as typeof CLAUDE_SANDBOX_POLICY;
+    ) as ClaudeWorkspacePolicy;
   } catch {
     return { valid: false, present: false, failedAssertion: "policy-file-missing-or-unreadable" };
   }
+  const preset = saved.yuhi?.sandboxPreset;
+  const mode = saved.yuhi?.permissionMode;
+  if (!preset || !mode) return { valid: false, present: true, failedAssertion: "yuhi-policy-metadata" };
+  const expected = buildClaudeWorkspacePolicy(preset, mode);
   const checks: [string, boolean][] = [
-    ["sandbox.enabled===true", saved.sandbox?.enabled === true],
-    ["sandbox.failIfUnavailable===true", saved.sandbox?.failIfUnavailable === true],
-    ["sandbox.allowUnsandboxedCommands===false", saved.sandbox?.allowUnsandboxedCommands === false],
-    ["sandbox.excludedCommands===[]", Array.isArray(saved.sandbox?.excludedCommands) && saved.sandbox.excludedCommands.length === 0],
-    ["sandbox.filesystem.denyRead⊇[~/,/tmp,/private/tmp]",
-      !!saved.sandbox?.filesystem?.denyRead?.includes("~/") &&
-      !!saved.sandbox?.filesystem?.denyRead?.includes("/tmp") &&
-      !!saved.sandbox?.filesystem?.denyRead?.includes("/private/tmp")],
-    ["sandbox.filesystem.allowRead[0]===.", saved.sandbox?.filesystem?.allowRead?.[0] === "."],
-    ["permissions.deny⊇[Read(//tmp/**),Read(//private/tmp/**)]",
-      !!saved.permissions?.deny?.includes("Read(//tmp/**)") &&
-      !!saved.permissions?.deny?.includes("Read(//private/tmp/**)")],
-    ["permissions.disableBypassPermissionsMode===disable", saved.permissions?.disableBypassPermissionsMode === "disable"],
-    ["permissions.disableAutoMode===disable", saved.permissions?.disableAutoMode === "disable"],
+    ["policy-matches-selected-preset", JSON.stringify(saved) === JSON.stringify(expected)],
+    ["auto-mode-not-disabled", !("disableAutoMode" in (saved.permissions ?? {}))],
+    ["bypass-not-forced-outside-locked-down",
+      preset === "locked-down" || saved.permissions?.disableBypassPermissionsMode === undefined],
   ];
   const failed = checks.find(([, ok]) => !ok);
   return failed
@@ -709,7 +782,18 @@ export async function writePreparedArtifacts(
 ): Promise<void> {
   await assertPreparedPath(root, report.outDir);
   await writeAndVerifyClaudeSandboxPolicy(root, report.outDir);
-  await writePreparedNotice(report.outDir, buildPreparedMetrics(report));
+  // Use a recursive mkdir: `.yuhi/` already exists by now (writeAndVerifyClaudeSandboxPolicy
+  // created it), so a non-recursive mkdir would throw EEXIST. Matches writePreparedNotice's
+  // own default mkDir behavior.
+  await writePreparedNotice(
+    report.outDir,
+    buildPreparedMetrics(report),
+    writeFile,
+    async (p) => {
+      await mkdir(p, { recursive: true });
+    },
+    report.yuhiModeSummary,
+  );
   const contextInstruction = path.join(report.outDir, PREPARED_CONTEXT_INSTRUCTION_RELPATH);
   await mkdir(path.dirname(contextInstruction), { recursive: true });
   await writeFile(contextInstruction, PREPARED_CONTEXT_INSTRUCTION, "utf8");

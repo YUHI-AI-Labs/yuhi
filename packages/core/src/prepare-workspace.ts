@@ -1,8 +1,9 @@
 import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { isSafelyYuhiManaged, writeWorkspaceMarker } from "./workspace-marker.js";
-import { buildDocumentArtifact, PDF_INSPECTION_LIMIT_BYTES, OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES, type DocumentSourceType } from "./document-artifact.js";
+import { PDF_INSPECTION_LIMIT_BYTES, OFFICE_DOCUMENT_INSPECTION_LIMIT_BYTES, type DocumentSourceType } from "./document-artifact.js";
 import { availableParallelism, totalmem } from "node:os";
 import { homedir, platform } from "node:os";
 import path from "node:path";
@@ -31,10 +32,16 @@ import {
   type FileInfo,
   type DocumentInspector,
   type StudentAliasContext,
+  YUHI_VERSION,
 } from "@yuhi/shared";
-import { runDetectors, redactText, PdfDocumentInspector } from "@yuhi/scanner";
+import { isArchivePath, zipEncryptionFromHeader } from "@yuhi/shared";
+import { computeContextId, type ContextIdSourceFile } from "./context-id.js";
+import { runDetectors, redactText } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
+// Type-only import — erased at build, so it never loads the compression parser. The
+// compression MODULE is loaded lazily (dynamic import) only when `compress: true`.
+import type { BudgetFileInput } from "./compression/index.js";
 import {
   DEFAULT_PREPARE_SAFETY_MODE,
   escalatesUnverified,
@@ -43,9 +50,149 @@ import {
   type SafetyMode,
 } from "./safety-mode.js";
 import { runLocalPreparation } from "./route-executor.js";
+import {
+  BackgroundQueue,
+  privateBackgroundDir,
+  buildPublicStatus,
+  writePublicStatus,
+  type BackgroundPreparationKind,
+} from "./background/index.js";
+import { writePrivateRunSourceBinding } from "./patch/private-state.js";
+import {
+  buildWithheldRedactions,
+  documentIdFor,
+  redactMetadata,
+  withheldDisplayName,
+} from "./metadata-boundary.js";
+import {
+  buildPublicPreparedContextSummary,
+  type PublicPreparedContextSummary,
+} from "./public-prepared-summary.js";
+import {
+  buildYuhiModeSummary,
+  renderYuhiModeHandoff,
+  type YuhiModeSummary,
+} from "./yuhi-mode-summary.js";
 
 /** The pipeline every summarize target is run through (local model → mask → gate). */
 const PREPARE_PIPELINE: ProcessorSpec[] = ["summarize-local", "pseudonymize", "safety-check"];
+
+/**
+ * Default hard per-file wall-clock cap on the inline local-model (`summarize-local` /
+ * Ollama) call. A stalled local model must NEVER trap the "Preparing safe copies"
+ * loop: after this many ms the in-flight request is aborted and the file is routed
+ * to kept-local (never delivered un-inspected) so Yuhi Mode still launches.
+ */
+export const DEFAULT_LOCAL_MODEL_TIMEOUT_MS = 10_000;
+
+/**
+ * Injectable clock + timer so the per-file local-model timeout can be driven by a
+ * fake clock in tests (no real sleeps). The default uses the system clock and an
+ * unref'd `setTimeout` (it never keeps the process alive on its own).
+ */
+export interface DeadlineScheduler {
+  /** Monotonic-ish wall clock in ms. */
+  now(): number;
+  /** Schedule `callback` after `ms`; returns a function that cancels it. */
+  setTimer(callback: () => void, ms: number): () => void;
+}
+
+/** Real-time scheduler used in production. */
+export const systemDeadlineScheduler: DeadlineScheduler = {
+  now: () => Date.now(),
+  setTimer: (callback, ms) => {
+    const timer = setTimeout(callback, ms);
+    (timer as { unref?: () => void }).unref?.();
+    return () => clearTimeout(timer);
+  },
+};
+
+/**
+ * Stable, privacy-safe warning vocabulary for the local-model reliability fix. Each
+ * record carries the repo-relative path only (never an absolute path or any secret /
+ * source content) and lives in the manifest / degraded-completion surface — NOT the
+ * public aggregate report.
+ */
+export interface PreparationWarning {
+  relpath: string;
+  stage: "summarize-local";
+  reason:
+    | "local-summary-timeout"
+    | "local-model-unavailable"
+    | "local-model-disabled"
+    | "local-summary-deferred";
+  /** "kept-local" — the FILE was withheld; "summary-skipped" — an already-delivered
+   *  file's optional context summary was skipped (the file itself stays delivered). */
+  action: "kept-local" | "summary-skipped";
+  /** Wall-clock ms the timed-out call consumed before it was aborted. */
+  elapsedMs?: number;
+}
+
+/** Result of a time-bounded local-model call. `elapsedMs` (measured on the injected
+ *  clock) feeds the cumulative run budget for BOTH outcomes. */
+type TimedLocalModelResult<T> =
+  | { status: "ok"; value: T; elapsedMs: number }
+  | { status: "timeout"; elapsedMs: number };
+
+/**
+ * Run a single inline local-model call under a HARD per-file timeout.
+ *
+ * A fresh `AbortController` is created for this call; when the timeout fires the
+ * controller is aborted (so a signal-aware provider cancels its request) and the
+ * result resolves as `{ status: "timeout" }` — the loop continues, and if the
+ * provider ignores the abort its late result is simply ignored (never awaited, never
+ * piled up). The GLOBAL `parentSignal` (user Cancel) still rejects with `AbortError`
+ * exactly as before, so intentional cancellation stays fatal while a per-file timeout
+ * does not. Only one such call is ever in flight at a time (the loop is sequential).
+ */
+async function runLocalModelCall<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  scheduler: DeadlineScheduler,
+  parentSignal: AbortSignal | undefined,
+): Promise<TimedLocalModelResult<T>> {
+  if (parentSignal?.aborted) throw new DOMException("prepareWorkspace aborted", "AbortError");
+  const controller = new AbortController();
+  const start = scheduler.now();
+  let cancelTimer: () => void = () => {};
+  let onParentAbort: (() => void) | undefined;
+  const detach = (): void => {
+    cancelTimer();
+    if (onParentAbort && parentSignal) parentSignal.removeEventListener("abort", onParentAbort);
+  };
+  try {
+    return await new Promise<TimedLocalModelResult<T>>((resolve, reject) => {
+      let settled = false;
+      cancelTimer = scheduler.setTimer(() => {
+        if (settled) return;
+        settled = true;
+        controller.abort(); // cancel the wedged provider request (best-effort)
+        resolve({ status: "timeout", elapsedMs: Math.max(0, scheduler.now() - start) });
+      }, ms);
+      onParentAbort = () => {
+        if (settled) return;
+        settled = true;
+        controller.abort();
+        reject(new DOMException("prepareWorkspace aborted", "AbortError"));
+      };
+      parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+      work(controller.signal).then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          resolve({ status: "ok", value, elapsedMs: Math.max(0, scheduler.now() - start) });
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        },
+      );
+    });
+  } finally {
+    detach();
+  }
+}
 
 /**
  * Per-format inspection limits (isolated constants — easy to make configurable).
@@ -110,6 +257,8 @@ function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext 
         new Map(identifiers),
       ]),
     ),
+    columnTokens: new Map(context.columnTokens),
+    columnTokenCounts: new Map(context.columnTokenCounts),
     nextEntity: context.nextEntity,
     attributeTokens: new Map(context.attributeTokens),
   };
@@ -125,9 +274,16 @@ export interface PreparedFileEntry {
   relpath: string;
   /**
    * The original repo-relative path when `relpath` was pseudonymized to strip an
-   * identifier from the filename. Manifest-only mapping — never surfaced to Claude.
+   * identifier from the filename. PRIVATE mapping — held in memory for the local UI
+   * and never written to an agent-visible surface (see `metadata-boundary.ts`).
    */
   originalRelpath?: string;
+  /**
+   * Stable public identity of this file's source document (`doc-<hex>`). This is what
+   * agent-visible surfaces use to line an entry up across manifest / status / summary
+   * when its filename may not cross the boundary.
+   */
+  documentId?: string;
   /** The policy action that routed this file. */
   action: Action;
   /** Preparation outcome; "skipped" for verbatim/omitted files that weren't run. */
@@ -139,11 +295,25 @@ export interface PreparedFileEntry {
     | "excluded-by-user"
     | "excluded-by-policy"
     | "local-only-unverified"
+    // v0.3.6: the original carries a KNOWN sensitive finding (not merely "not yet
+    // inspected"), so it never leaves the machine in any Safety Mode; only a
+    // verified companion may reach the agent.
+    | "local-only-known-risk"
     | "local-only-unsupported"
     | "local-only-transformation-failed"
     | "blocked-high-risk"
     | "malformed"
-    | "failed";
+    | "failed"
+    // v0.3.5: the file's original stays local-only, but a persistent background item
+    // was successfully enqueued to produce its safe companion after Yuhi Mode launches.
+    | "background-processing-pending";
+  /** Public, agent-neutral availability state. Never implies verification from mere inclusion. */
+  availabilityStatus?: AgentAvailabilityStatus;
+  inspectionStatus?: "verified" | "pending" | "failed" | "not-applicable";
+  backgroundStatus?: "none" | "pending" | "processing" | "completed" | "failed" | "cancelled";
+  originalShared?: boolean;
+  warningCode?: "inspection-pending" | "inspection-failed" | "verification-incomplete";
+  knownFindingsPresent?: boolean;
   transmission: TransmissionState;
   beforeChars: number;
   afterChars: number;
@@ -166,7 +336,7 @@ export interface PreparedFileEntry {
     sourceType: DocumentSourceType;
     sourceSize: number;
     extractionMethod: string;
-    extractionStatus: "extracted" | "unsupported" | "failed" | "skipped-oversize";
+    extractionStatus: "extracted" | "unsupported" | "failed" | "skipped-oversize" | "pending";
     deliveredArtifactType:
       | "sanitized-pdf-companion"
       | "sanitized-docx-companion"
@@ -233,6 +403,98 @@ export interface PreparedFileEntry {
   /** Set when a Safety Mode preset (Strict / Maximum Privacy) kept this file local
    *  even though Balanced would have delivered it — an escalation, not a failure. */
   keptLocalBySafetyMode?: SafetyMode;
+  /**
+   * v0.3.3 structure-compression outcome for this delivered file. Only set when the
+   * optional compression pass ran (`compress: true`); otherwise absent and the run is
+   * byte-for-byte identical to a run without compression.
+   *   `full`       — delivered unchanged.
+   *   `compressed` — implementation bodies omitted (delivered file overwritten).
+   *   `excluded`   — dropped from the delivered workspace to fit the token budget.
+   */
+  contextRepresentation?: "full" | "compressed" | "excluded";
+  /** Flat budget/compression reason (user-included/entry-point/compressed/parse-failed/budget/...). */
+  compressionReason?: string;
+  /** Estimated tokens of the delivered file BEFORE compression. */
+  originalTokens?: number;
+  /** Estimated tokens actually delivered (0 when excluded). */
+  preparedTokens?: number;
+}
+
+export type AgentAvailabilityStatus =
+  | "available-verified"
+  | "available-with-warning"
+  | "transformed-available"
+  | "background-processing"
+  | "excluded-known-risk"
+  | "excluded-by-user"
+  | "processing-failed";
+
+function refreshPublicAvailability(files: PreparedFileEntry[]): void {
+  for (const file of files) {
+    const pending = file.outcome === "background-processing-pending";
+    const included = !file.omitted && file.status === "ok" && file.transmission === "approved";
+    const warning = included && (pending || file.outcome === "included-unverified");
+    file.availabilityStatus = file.outcome === "excluded-by-user"
+      ? "excluded-by-user"
+      : included && file.transformed
+        ? "transformed-available"
+        : warning
+          ? "available-with-warning"
+          : included
+            ? "available-verified"
+            : pending
+              ? "background-processing"
+              : file.status === "error" || file.outcome === "failed" || file.outcome === "local-only-transformation-failed"
+                ? "processing-failed"
+                : "excluded-known-risk";
+    file.inspectionStatus = warning || pending
+      ? "pending"
+      : file.availabilityStatus === "processing-failed"
+        ? "failed"
+        : included
+          ? "verified"
+          : "not-applicable";
+    file.backgroundStatus = pending ? "pending" : file.backgroundStatus ?? "none";
+    file.originalShared = file.document?.originalSharedWithAgent ??
+      (included && !file.transformed && file.outcome === "included-unverified");
+    if (warning) file.warningCode = "inspection-pending";
+    else if (file.availabilityStatus === "processing-failed") file.warningCode = "inspection-failed";
+    else delete file.warningCode;
+    file.knownFindingsPresent = Object.values(file.findingCategoryCounts ?? {})
+      .some((count) => count > 0);
+  }
+}
+
+/** One file's line in the compression summary (aggregate + relpath — public-safe). */
+export interface CompressionFileReport {
+  relpath: string;
+  representation: "full" | "compressed" | "excluded";
+  reason: string;
+  originalTokens: number;
+  preparedTokens: number;
+}
+
+/**
+ * Aggregate outcome of the optional v0.3.3 structure-compression pass, mirroring the
+ * budget selector's summary. Present on `PrepareReport` only when `compress: true`.
+ * All numbers are aggregate; the per-file list carries only relpaths (already shown in
+ * the review), so this whole structure is safe to surface to the CLI / VS Code.
+ */
+export interface CompressionReport {
+  originalTokens: number;
+  preparedTokens: number;
+  reductionPercent: number;
+  fullFiles: number;
+  compressedFiles: number;
+  excludedFiles: number;
+  compressionReductionTokens: number;
+  exclusionReductionTokens: number;
+  targetBudget: number | null;
+  actualTokens: number;
+  status: "within-budget" | "best-effort" | "no-budget";
+  budgetReason?: string;
+  warnings: string[];
+  files: CompressionFileReport[];
 }
 
 /** Classify a transformation-failure reason. Structural failures are eligible for
@@ -280,45 +542,42 @@ function parseTabularRegion(text: string): ParsedDelimitedTable {
   }
 }
 
-/** Handoff section listing every file NOT copied into the workspace, with its reason. */
+/** Metadata-safe handoff summary for files not copied into the workspace. Individual
+ * names stay in the user-only Review surface, never in agent instructions. */
 function describeUnavailableFiles(files: PreparedFileEntry[]): string[] {
   const kept = files.filter((f) => f.omitted);
   if (kept.length === 0) return [];
+  const byCategory = new Map<string, number>();
+  for (const file of kept) {
+    const category = file.failureCategory ?? file.outcome ?? "policy";
+    byCategory.set(category, (byCategory.get(category) ?? 0) + 1);
+  }
   return [
     "## Files unavailable to the agent",
     "",
-    "These files were intentionally NOT copied into this Prepared Workspace. Do not try",
-    "to retrieve them from the original workspace or any external path — report the",
-    "required source as unavailable when needed.",
+    `${kept.length} file(s) were excluded because of an actual finding or explicit policy.`,
+    "Individual names are available only in Yuhi's user-facing Review file decisions.",
     "",
-    ...kept.map((f) => {
-      const reason =
-        f.error ??
-        (f.action === "block"
-          ? "excluded by policy"
-          : ["local-only", "inject", "ask", "metadata-only"].includes(f.action)
-            ? "kept local by policy"
-            : "not included");
-      return `- \`${f.relpath}\` — kept local (${f.failureCategory ?? f.outcome ?? "policy"}): ${reason}`;
-    }),
+    ...[...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b)).map(
+      ([category, count]) => `- ${category}: ${count}`,
+    ),
     "",
   ];
 }
 
-/** Handoff section listing files that ARE available but could not be fully verified. */
+/** Metadata-safe count of files available with a warning. */
 function describeUnverifiedFiles(files: PreparedFileEntry[]): string[] {
-  const unverified = files.filter((f) => f.outcome === "included-unverified" && !f.omitted);
+  const unverified = files.filter(
+    (f) =>
+      !f.omitted &&
+      (f.outcome === "included-unverified" || f.outcome === "background-processing-pending"),
+  );
   if (unverified.length === 0) return [];
   return [
     "## Files included but not fully verified",
     "",
-    "These files ARE available in the workspace, but Yuhi could not fully transform or",
-    "verify them. Review before sharing sensitive information.",
-    "",
-    ...unverified.map(
-      (f) =>
-        `- \`${f.relpath}\` — included with warning${f.failureCategory ? ` (${f.failureCategory})` : ""}${f.error ? `: ${f.error}` : ""}`,
-    ),
+    `${unverified.length} file(s) are available with warnings while local inspection continues.`,
+    "Inspection unavailable or pending does not imply that a file is safe or verified.",
     "",
   ];
 }
@@ -333,6 +592,16 @@ export interface ProvenanceEntry {
 /** Structured result returned to the CLI / VS Code. */
 export interface PrepareReport {
   runId: string;
+  /**
+   * Deterministic, agent-independent Context ID (`sha256:<hex>`, v0.3.4). Same
+   * repo state + same prep settings ⇒ identical id; changing the AGENT does not
+   * change it. Computed from the same inputs the pipeline already has (no re-scan).
+   *
+   * ALWAYS present on a report produced by {@link prepareWorkspace}. Optional on
+   * the TYPE only so a report reconstructed from a legacy on-disk manifest (which
+   * predates the field) still satisfies the interface.
+   */
+  contextId?: string;
   /** Absolute path of <dir>/.yuhi/prepared/<runId>. */
   outDir: string;
   /** Aggregate reduction across processed files (token values are estimates). */
@@ -348,6 +617,32 @@ export interface PrepareReport {
   sourceModified: number;
   /** The resolved effective Safety Mode this run was prepared with. */
   safetyMode: SafetyMode;
+  /**
+   * v0.3.3 local-model reliability: present when the inline `summarize-local` model
+   * timed out or was disabled by the circuit breaker / budget. Lets the CLI / VS Code
+   * reach "Ready … with warnings" instead of hanging in "Preparing…". Public-safe:
+   * warnings carry repo-relative paths only, never absolute paths or content.
+   */
+  degraded?: {
+    localModelDisabled: boolean;
+    /** Files withheld (kept local) because the local model timed out / was disabled. */
+    filesKeptLocalAfterTimeout: number;
+    /** How many summarize-local calls actually hit the per-file timeout. */
+    localModelTimeouts: number;
+    /** Why the circuit opened, when it did. */
+    circuitBreakerReason?:
+      | "per-file-timeout"
+      | "time-budget-exceeded"
+      | "call-count-exceeded"
+      | "deferred";
+    warnings: PreparationWarning[];
+  };
+  /** v0.3.3 structure-compression summary; present ONLY when `compress: true`. */
+  compression?: CompressionReport;
+  /** One public-safe summary shared by every product surface. */
+  publicSummary?: PublicPreparedContextSummary;
+  /** Canonical user-facing Yuhi Mode projection shared by all product surfaces. */
+  yuhiModeSummary?: YuhiModeSummary;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
   tabularAcceptance?: {
     entitiesPseudonymized: number;
@@ -415,11 +710,65 @@ export interface PrepareWorkspaceOptions {
   managedWorkspaceBase?: string;
   /** Explicit, caller-confirmed exclusions for a new recovery run. */
   excludeRelpaths?: readonly string[];
+  /** Explicit, caller-confirmed warning inclusion. Known credentials/policy blocks still win. */
+  includeWithWarningRelpaths?: readonly string[];
+  /** User-owned type decisions, expressed as lowercase extensions including the dot. */
+  includeWithWarningExtensions?: readonly string[];
+  excludeExtensions?: readonly string[];
   /** Safety Mode preset — shapes the effective policy (defaults to Balanced). */
   safetyMode?: SafetyMode;
   /** Deterministic lifecycle seam for cancellation/recovery integration. */
   onCheckpoint?: (checkpoint: PreparationCheckpoint) => void;
+  /**
+   * Opt-in v0.3.3 structure compression. When false (default) NOTHING compression-
+   * related — including the `typescript` parser — is ever loaded, and the prepared
+   * output is byte-for-byte identical to today. When true, delivered source files may
+   * be body-omitted or (under a token budget) excluded from the delivered workspace.
+   * SOURCE FILES ARE NEVER TOUCHED; only files under the managed workspace change.
+   */
+  compress?: boolean;
+  /** User-facing compression choice. `auto` is the recommended default. */
+  compressionMode?: "off" | "auto" | "on";
+  /** Best-effort token budget for the delivered context; null/undefined = no budget. */
+  tokenBudget?: number | null;
+  /** Files at/under this many tokens stay full (too small to be worth compressing). */
+  compressionThresholdTokens?: number;
+  /**
+   * Hard per-file wall-clock cap (ms) on the inline local-model (`summarize-local` /
+   * Ollama) call. A single stalled call must never trap the loop. Default
+   * `DEFAULT_LOCAL_MODEL_TIMEOUT_MS` (10 000). On exceed, the file is kept local and
+   * the circuit opens (see below).
+   */
+  localModelTimeoutMs?: number;
+  /**
+   * Cumulative local-model wall-time budget (ms) for the WHOLE run. When the local
+   * model is not hung but merely slow across thousands of files, exceeding this cap
+   * opens the circuit so the run still finishes fast. Default 60 000. Measured on
+   * `deadlineScheduler` so it is deterministic in tests.
+   */
+  localModelTotalBudgetMs?: number;
+  /**
+   * Max provider-backed `summarize-local` calls per run. Exceeding it opens the
+   * circuit (belt-and-braces with the time budget). Default 50. `0` opens the circuit
+   * from the START — no provider call is ever made (see `deferLocalSummary`).
+   */
+  localModelMaxCalls?: number;
+  /**
+   * Foreground-budget-zero: when true (or `localModelMaxCalls === 0`) the circuit is
+   * OPEN FROM THE START — every summarize target is immediately kept local with ZERO
+   * provider calls and zero waiting. Used by VS Code's foreground prepare so Yuhi Mode
+   * launches instantly; the local summaries run later in the background. Kept-local
+   * files are never delivered un-inspected.
+   */
+  deferLocalSummary?: boolean;
+  /** Injectable clock + timer for the local-model timeout / budget (tests use a fake
+   *  clock so timeouts fire with no real sleeps). Defaults to the system clock. */
+  deadlineScheduler?: DeadlineScheduler;
 }
+
+/** Defaults for the local-model reliability caps (all overridable via options). */
+export const DEFAULT_LOCAL_MODEL_TOTAL_BUDGET_MS = 60_000;
+export const DEFAULT_LOCAL_MODEL_MAX_CALLS = 50;
 
 export type PreparationCheckpoint = "workspace-created";
 
@@ -539,13 +888,34 @@ function normalizedSourcePath(relpath: string): string {
 }
 
 /**
+ * True when a pure-digit token reads as a date or time rather than an ID: `20260715`
+ * (YYYYMMDD), `202607` (YYYYMM), `0722` (MMDD), `110046` (HHMMSS). Calendar-valid
+ * only — `9999990001` has no 99th month, so it is not a date.
+ */
+function isDateLikeDigits(token: string): boolean {
+  const asMonth = (value: string): boolean => Number(value) >= 1 && Number(value) <= 12;
+  const asDay = (value: string): boolean => Number(value) >= 1 && Number(value) <= 31;
+  if (token.length === 8) {
+    return asMonth(token.slice(4, 6)) && asDay(token.slice(6, 8));
+  }
+  if (token.length === 6) {
+    // YYYYMM, or a HHMMSS timestamp (`110046`).
+    if (asMonth(token.slice(4, 6))) return true;
+    return Number(token.slice(0, 2)) <= 23 && Number(token.slice(2, 4)) <= 59 && Number(token.slice(4, 6)) <= 59;
+  }
+  return token.length <= 4;
+}
+
+/**
  * A path token is a direct identifier if it looks like a keyed ID (letter prefix
- * + digits, e.g. `A000000`, `EMP12345`) or contains an email. Pure-digit tokens
- * (dates like `20260715`, times like `110046`, counts) are intentionally NOT
- * treated as identifiers, so useful non-identifying context in the name survives.
+ * + digits, e.g. `A000000`, `EMP12345`), contains an email, or is a long pure-digit
+ * run that is NOT a date/time (`9999990001` — a real student number; school exports
+ * arrive as `9999990001 評定-0722.xlsx`). Short digit groups and calendar-valid dates
+ * stay intact so useful non-identifying context in the name survives.
  */
 function isIdentifierToken(token: string): boolean {
   if (token.includes("@")) return true;
+  if (/^\d{5,}$/.test(token) && !isDateLikeDigits(token)) return true;
   return /^[A-Za-z]{1,6}\d{3,}[A-Za-z0-9]*$/.test(token);
 }
 
@@ -758,6 +1128,8 @@ function findingCategory(detector: string): string {
   if (id.includes("bank") || id.includes("iban")) return "bank-account";
   if (id.includes("national") || id.includes("ssn")) return "national-id";
   if (id.includes("private-key")) return "private-key";
+  // An entropy hit is an unclassified credential, not a benign string.
+  if (id.includes("entropy")) return "credential";
   if (id.includes("token")) return "access-token";
   if (id.includes("key") || id.includes("secret") || id.includes("entropy")) return "credential";
   return id || "custom";
@@ -845,6 +1217,78 @@ export async function prepareWorkspace(
     1,
     Math.floor(options.localModelParallelism ?? recommendedLocalModelParallelism()),
   );
+  // ===== LOCAL-MODEL RELIABILITY (v0.3.3) =====
+  // Injectable clock + the three caps that keep the inline summarize-local (Ollama)
+  // step from trapping the run — whether it HANGS on one file (per-file timeout) or is
+  // merely SLOW across thousands (cumulative time / call-count budget).
+  const scheduler = options.deadlineScheduler ?? systemDeadlineScheduler;
+  const localModelTimeoutMs = Math.max(
+    1,
+    Math.floor(options.localModelTimeoutMs ?? DEFAULT_LOCAL_MODEL_TIMEOUT_MS),
+  );
+  const localModelTotalBudgetMs = Math.max(
+    1,
+    Math.floor(options.localModelTotalBudgetMs ?? DEFAULT_LOCAL_MODEL_TOTAL_BUDGET_MS),
+  );
+  const localModelMaxCalls = Math.max(
+    0,
+    Math.floor(options.localModelMaxCalls ?? DEFAULT_LOCAL_MODEL_MAX_CALLS),
+  );
+  // Foreground-budget-zero: circuit open from the start, no provider call ever.
+  const deferLocalSummary = options.deferLocalSummary === true || localModelMaxCalls === 0;
+  // Circuit-breaker + budget state (all measured on `scheduler`, so tests are
+  // deterministic). Once `localModelDisabled` is set, NO further provider call is made.
+  let localModelDisabled = deferLocalSummary;
+  let circuitBreakerReason:
+    | "per-file-timeout"
+    | "time-budget-exceeded"
+    | "call-count-exceeded"
+    | "deferred"
+    | undefined = deferLocalSummary ? "deferred" : undefined;
+  let localModelBudgetSpentMs = 0;
+  let localModelCallsMade = 0;
+  let filesKeptLocalAfterTimeout = 0;
+  const degradedWarnings: PreparationWarning[] = [];
+  const recordLocalModelWarning = (
+    relpath: string,
+    reason: PreparationWarning["reason"],
+    action: PreparationWarning["action"],
+    elapsedMs?: number,
+  ): void => {
+    degradedWarnings.push({
+      relpath,
+      stage: "summarize-local",
+      reason,
+      action,
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+    });
+  };
+  /**
+   * Should the local model be skipped for THIS summarize target? Opens the circuit
+   * (once) when the cumulative time budget or call-count cap is already exceeded, so
+   * every remaining call is skipped with zero further provider work. Returns a reason
+   * when the model must be skipped; `undefined` when a call may proceed.
+   */
+  const localModelGateClosed = (): boolean => {
+    if (localModelDisabled) return true;
+    if (localModelCallsMade >= localModelMaxCalls) {
+      localModelDisabled = true;
+      circuitBreakerReason ??= "call-count-exceeded";
+      progress(
+        `Local model disabled for this run: ${localModelCallsMade} summarize call(s) reached the ${localModelMaxCalls}-call budget. Remaining files kept local; launch continues.`,
+      );
+      return true;
+    }
+    if (localModelBudgetSpentMs >= localModelTotalBudgetMs) {
+      localModelDisabled = true;
+      circuitBreakerReason ??= "time-budget-exceeded";
+      progress(
+        `Local model disabled for this run: cumulative local-model time reached the ${localModelTotalBudgetMs}ms budget. Remaining files kept local; launch continues.`,
+      );
+      return true;
+    }
+    return false;
+  };
   detail("discover", "Files discovered", plan.scan.files.length, plan.scan.files.length);
   let localModelRequests = 0;
   let localModelSucceeded = 0;
@@ -928,6 +1372,19 @@ export async function prepareWorkspace(
 
   const files: PreparedFileEntry[] = [];
   const provenance: ProvenanceEntry[] = [];
+  // v0.3.5: deferred heavy work to register as persistent BACKGROUND items after the
+  // fast phase. Each descriptor pins the ORIGINAL (kept-local) file — enqueued only
+  // once the deterministic Context ID is known; on a successful enqueue the paired
+  // entry's outcome is flipped to `background-processing-pending` (never before).
+  const backgroundEnqueue: {
+    entry: PreparedFileEntry;
+    kind: BackgroundPreparationKind;
+    relpath: string;
+    sourceArtifactPath: string;
+    sourceContentHash: string;
+    processorVersion: string;
+    originalSharedWithWarning: boolean;
+  }[] = [];
   let beforeTokens = 0;
   let afterTokens = 0;
   let approx = false;
@@ -936,6 +1393,9 @@ export async function prepareWorkspace(
   let sensitiveMasked = 0;
   let studentAliases = createStudentAliasContext();
   const explicitExclusions = new Set(options.excludeRelpaths ?? []);
+  const explicitWarningInclusions = new Set(options.includeWithWarningRelpaths ?? []);
+  const warningExtensions = new Set((options.includeWithWarningExtensions ?? []).map((value) => value.toLowerCase()));
+  const excludedExtensions = new Set((options.excludeExtensions ?? []).map((value) => value.toLowerCase()));
   let identifierColumnsTransformed = 0;
   let analyticalColumnsPreserved = 0;
   let transformedSensitiveTables = 0;
@@ -974,36 +1434,74 @@ export async function prepareWorkspace(
       ...(pages !== undefined ? { pages } : {}),
     };
     progress(`Generating local document context · ${documentIndex.length + 1}`);
+    // Circuit / budget gate: once the local model is disabled (a prior per-file
+    // timeout, or the cumulative time / call-count budget), skip the optional summary
+    // immediately — no provider call, no 10s wait. The DOCUMENT itself was already
+    // delivered on its own inspection above; only this enrichment summary is skipped.
+    if (localModelGateClosed()) {
+      // Distinguish an INTENTIONAL foreground deferral (deferLocalSummary) from a
+      // timeout/budget shutdown, so the manifest reads honestly and never implies the
+      // summary will be produced later. Background connection is a future version.
+      const gateReason = circuitBreakerReason === "deferred" ? "local-summary-deferred" : "local-model-disabled";
+      recordLocalModelWarning(relpath, gateReason, "summary-skipped");
+      documentSummariesRejected += 1;
+      documentIndex.push({ ...metadata, status: "rejected" });
+      return { status: "rejected" };
+    }
     const summaryProvider = getMeasuredProvider();
     if (!summaryProvider) {
       progress("Generating local context: skipped (no local model configured)");
+      recordLocalModelWarning(relpath, "local-model-unavailable", "summary-skipped");
       documentIndex.push({ ...metadata, status: "unavailable" });
       return { status: "unavailable" };
     }
 
     let prepared: Awaited<ReturnType<typeof runLocalPreparation>>;
     try {
-      prepared = await runLocalPreparation(
-        extractedText,
-        ["summarize-local", "safety-check"],
-        {
-          provider: summaryProvider,
-          mode: effectiveMode,
-          localModelParallelism,
-          ...(signal !== undefined ? { signal } : {}),
-        },
+      // The per-file timeout + AbortController wrap the REAL provider call: the work
+      // callback below is what invokes `summarize-local` → `summaryProvider.generate()`
+      // (via createSummarizer). If generate never resolves, the timer fires, aborts the
+      // request, and this resolves as a timeout — the loop advances instead of hanging.
+      progress(`Local context ${relpath}: summarize-local started`);
+      localModelCallsMade += 1;
+      const outcome = await runLocalModelCall(
+        (childSignal) =>
+          runLocalPreparation(extractedText, ["summarize-local", "safety-check"], {
+            provider: summaryProvider,
+            mode: effectiveMode,
+            localModelParallelism,
+            signal: childSignal,
+          }),
+        localModelTimeoutMs,
+        scheduler,
+        signal,
       );
+      localModelBudgetSpentMs += outcome.elapsedMs;
+      if (outcome.status === "timeout") {
+        // Open the circuit on the FIRST per-file timeout: every subsequent summarize
+        // target is skipped/kept-local with no further wait. The document stays delivered.
+        localModelDisabled = true;
+        circuitBreakerReason ??= "per-file-timeout";
+        recordLocalModelWarning(relpath, "local-summary-timeout", "summary-skipped", outcome.elapsedMs);
+        progress(
+          `Local context ${relpath}: summarize-local timed out after ${outcome.elapsedMs}ms → summary skipped; circuit breaker opened (local model disabled for this run); continuing.`,
+        );
+        documentSummariesRejected += 1;
+        documentIndex.push({ ...metadata, status: "rejected" });
+        return { status: "rejected" };
+      }
+      prepared = outcome.value;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       documentSummariesRejected += 1;
       documentIndex.push({ ...metadata, status: "rejected" });
       return;
     }
-    const stem = path.basename(relpath, path.extname(relpath))
-      .replace(/[^A-Za-z0-9._-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "document";
-    const suffix = createHash("sha256").update(relpath).digest("hex").slice(0, 8);
-    const summaryRelpath = `.yuhi/context/${stem}.${suffix}.summary.md`;
+    // METADATA BOUNDARY: this artifact's NAME is agent-visible, and `.yuhi/` paths are
+    // deliberately skipped by the filename de-identification pass below — so the name
+    // must come from the document's identity, never from the source basename (which is
+    // where the identifier lives: `9999990001 評定-0722.xlsx`).
+    const summaryRelpath = `.yuhi/context/${documentIdFor(relpath, salt)}.summary.md`;
     const markdown =
       `# Document Summary\n\n${prepared.output.trim()}\n\n---\n\n` +
       `Generated locally by Yuhi. The extracted source text was not stored.\n`;
@@ -1031,27 +1529,46 @@ export async function prepareWorkspace(
     return { status: "created", summaryRelpath };
   };
 
-  // Local PDF text extractor for building sanitized companions in the fast phase.
-  // Falls back to a placeholder when pdftotext/OCR are unavailable or produce no text.
-  const pdfInspector = options.documentInspector ?? new PdfDocumentInspector();
-  const extractPdfText = async (
-    absPath: string,
-  ): Promise<{ text: string; method: "pdf-text" | "ocr" | "none"; pageCount?: number }> => {
-    let text = "";
-    try {
-      const result = await pdfInspector.inspect({ relpath: path.basename(absPath), absPath }, (t) => {
-        text = t;
-      });
-      return {
-        text,
-        method: result.extractionMethod,
-        ...(result.pageCount !== undefined ? { pageCount: result.pageCount } : {}),
-      };
-    } catch {
-      return { text: "", method: "none" };
-    }
+  // v0.3.5: PDF/DOCX/PPTX heavy extraction (incl. OCR) no longer runs in the foreground.
+  // Documents are enqueued as `document-extraction` items and their sanitized companions
+  // are produced + safety-gated + published by `runBackgroundForRun` after launch.
+
+  /**
+   * Route a summarize target to KEPT-LOCAL because the local model timed out or was
+   * disabled (circuit open / budget). The file's de-identification pipeline never
+   * completed, so it is withheld (omitted, `action: "local-only"`) — NEVER delivered
+   * un-inspected — and nothing is written to `outDir` for it. Records a privacy-safe
+   * warning (relpath only) and counts it for degraded-completion reporting.
+   */
+  const keepFileLocalAfterLocalModel = (
+    relpath: string,
+    content: string,
+    reason: PreparationWarning["reason"],
+    publicError: string,
+    elapsedMs?: number,
+  ): void => {
+    recordLocalModelWarning(relpath, reason, "kept-local", elapsedMs);
+    const tok = tokenEstimate(content);
+    beforeTokens += tok.tokens;
+    approx = approx || tok.approx;
+    filesExcluded += 1;
+    filesKeptLocalAfterTimeout += 1;
+    files.push({
+      relpath,
+      action: "local-only",
+      status: "skipped",
+      outcome: "local-only-transformation-failed",
+      transmission: "blocked",
+      beforeChars: content.length,
+      afterChars: 0,
+      transformed: false,
+      omitted: true,
+      limitation: "transformation-unavailable",
+      // A timeout is an operational limit, NOT a safety verdict — categorize as unknown.
+      failureCategory: "unknown",
+      error: publicError,
+    });
   };
-  let documentsWithoutOriginal = 0;
 
   let decisionsProcessed = 0;
   for (const decision of plan.evaluation.decisions) {
@@ -1061,7 +1578,10 @@ export async function prepareWorkspace(
     const info = infoByPath.get(decision.relpath);
     const relpath = decision.relpath;
 
-    if (explicitExclusions.has(relpath)) {
+    const fileExtension = path.extname(relpath).toLowerCase();
+    const explicitlyIncludedWithWarning =
+      explicitWarningInclusions.has(relpath) || (!!fileExtension && warningExtensions.has(fileExtension));
+    if (explicitExclusions.has(relpath) || (!!fileExtension && excludedExtensions.has(fileExtension))) {
       filesExcluded += 1;
       files.push({
         relpath,
@@ -1078,74 +1598,100 @@ export async function prepareWorkspace(
       continue;
     }
 
-    // ===== DOCUMENT COMPANION ROUTING (PDF / DOCX / DOCM / PPTX / PPTM) =====
-    // The ORIGINAL document binary is NEVER placed in the Prepared Workspace. Yuhi
-    // extracts the text locally, sanitizes it, and delivers a Markdown companion (or a
-    // safe placeholder when extraction is impossible / oversized / macro-only). The
-    // original stays in the source workspace, untouched. Runs AFTER the explicit
-    // block/credential/local-only handling above (those `continue` earlier), so a
-    // hard-blocked document never reaches here — size never overrides a security block.
+    // ===== DOCUMENT ROUTING (PDF / DOCX / DOCM / PPTX / PPTM) → BACKGROUND QUEUE =====
+    // Progressive Context: document extraction / OCR remains OFF the foreground path.
+    // Balanced and Strict make the useful original available WITH AN EXPLICIT WARNING
+    // while a private queue item prepares a verified companion. Maximum Privacy keeps
+    // the original local. Credentials and explicit blocks never
+    // enter this path.
     const docType = info ? documentSourceType(relpath) : undefined;
-    if (info && docType && !info.flags.isSymlink) {
-      const artifact = await buildDocumentArtifact({
-        sourceType: docType,
-        absPath: info.absPath,
-        sizeBytes: info.size,
-        readBuffer: () => readFile(info.absPath),
-        extractPdfText,
-      });
-      const companionRelpath = `${relpath}.md`; // identifier tokens de-identified by the rename pass
-      await writeMirrored(outDir, companionRelpath, artifact.markdown);
-      provenance.push({ relpath: companionRelpath, source: relpath, action: "prepare-locally" });
-      documentsWithoutOriginal += 1;
-      if (artifact.kind === "companion") sensitiveMasked += artifact.redactionCount > 0 ? 1 : 0;
-      else unsupportedOrUnverifiedFiles += 1;
-      const deliveredArtifactType =
-        artifact.kind === "companion"
-          ? (`sanitized-${docType === "docm" ? "docx" : docType === "pptm" ? "pptx" : docType}-companion` as const)
-          : ("safe-placeholder" as const);
+    if (
+      info &&
+      docType &&
+      !info.flags.isSymlink &&
+      decision.action !== "block" &&
+      !/(?:private-key|credential|secret-director)/i.test(decision.ruleName)
+    ) {
       const before = tokenEstimate(String(info.size));
-      const after = tokenEstimate(artifact.markdown);
       beforeTokens += before.tokens;
-      afterTokens += after.tokens;
-      approx = approx || after.approx;
-      files.push({
-        relpath: companionRelpath,
+      approx = true;
+      // "Not yet inspected" and "known to contain sensitive data" are DIFFERENT
+      // states and must not share one policy. Available-with-warning exists for
+      // the former only: a document the scanner already flagged is kept local in
+      // every mode, and the agent receives its verified companion instead.
+      const knownSensitiveFinding = decision.findings.some(
+        (finding) => finding.severity !== "low",
+      );
+      const shareWithWarning =
+        !knownSensitiveFinding &&
+        (safetyMode !== "maximum-privacy" || explicitlyIncludedWithWarning);
+      if (shareWithWarning) {
+        await copyMirrored(outDir, relpath, info.absPath);
+        provenance.push({ relpath, source: relpath, action: "allow" });
+        afterTokens += before.tokens;
+      }
+      const entry: PreparedFileEntry = {
+        relpath,
         originalRelpath: relpath,
-        action: "prepare-locally",
-        status: "ok",
-        outcome: artifact.kind === "companion" ? "included-transformed" : "included-unverified",
-        transmission: "approved",
+        action: shareWithWarning ? "allow" : "prepare-locally",
+        status: shareWithWarning ? "ok" : "skipped",
+        outcome: shareWithWarning
+          ? "included-unverified"
+          : knownSensitiveFinding
+            ? "local-only-known-risk"
+            : "local-only-unverified",
+        transmission: shareWithWarning ? "approved" : "blocked",
         beforeChars: info.size,
-        afterChars: artifact.markdown.length,
-        transformed: artifact.kind === "companion",
-        transformations: artifact.kind === "companion" ? ["summarized"] : [],
-        maskedValues: artifact.redactionCount,
+        afterChars: shareWithWarning ? info.size : 0,
+        transformed: false,
+        omitted: !shareWithWarning,
+        limitation: "inspection-unavailable",
+        availabilityStatus: shareWithWarning ? "available-with-warning" : "background-processing",
+        inspectionStatus: "pending",
+        backgroundStatus: "pending",
+        originalShared: shareWithWarning,
+        warningCode: "inspection-pending",
+        knownFindingsPresent: knownSensitiveFinding,
         document: {
           sourceType: docType,
           sourceSize: info.size,
-          extractionMethod: artifact.extractionMethod,
-          extractionStatus: artifact.extractionStatus,
-          deliveredArtifactType,
-          originalSharedWithAgent: false,
-          redactionCount: artifact.redactionCount,
-          residualNameRisk: artifact.residualNameRisk,
-          macroDetected: artifact.macroDetected,
-          embeddedObjectCount: artifact.embeddedObjectCount,
-          imageCount: artifact.imageCount,
-          hiddenContentDetected: artifact.hiddenContentDetected,
-          extractedParagraphCount: artifact.extractedParagraphCount,
-          extractedTableCount: artifact.extractedTableCount,
-          extractedSlideCount: artifact.extractedSlideCount,
-          extractedNotesCount: artifact.extractedNotesCount,
+          extractionMethod: "none",
+          extractionStatus: "pending",
+          deliveredArtifactType: "none",
+          originalSharedWithAgent: shareWithWarning,
+          redactionCount: 0,
+          residualNameRisk: false,
+          macroDetected: false,
+          embeddedObjectCount: 0,
+          imageCount: 0,
+          hiddenContentDetected: false,
+          extractedParagraphCount: 0,
+          extractedTableCount: 0,
+          extractedSlideCount: 0,
+          extractedNotesCount: 0,
         },
-        ...(artifact.warnings.length ? { error: artifact.warnings.join(" ") } : {}),
-        ...(artifact.kind === "placeholder"
-          ? { limitation: "transformation-unavailable" as const }
-          : {}),
+      };
+      files.push(entry);
+      backgroundEnqueue.push({
+        entry,
+        // A single `document-extraction` item covers PDF text WITH OCR fallback (the
+        // injected extractor decides pdf-text vs. OCR) and DOCX/PPTX unzip — all heavy
+        // work runs in the background behind the safety-gated publisher.
+        kind: "document-extraction",
+        relpath,
+        sourceArtifactPath: info.absPath,
+        // Cheap, stable idempotency seed — never load the (possibly large) document
+        // into memory in the foreground just to hash it.
+        sourceContentHash: info.sha256 ?? createHash("sha256").update(`${relpath}:${info.size}`).digest("hex"),
+        processorVersion: `document-extraction@${YUHI_VERSION}`,
+        originalSharedWithWarning: shareWithWarning,
       });
       progress(
-        `Document ${relpath}: delivered ${artifact.kind === "companion" ? "sanitized companion" : "safe placeholder"}; original kept local.`,
+        shareWithWarning
+          ? `Document ${relpath}: included with an inspection-pending warning; verified companion queued in background.`
+          : knownSensitiveFinding
+            ? `Document ${relpath}: known sensitive finding — original kept local in every mode; verified companion queued in background.`
+            : `Document ${relpath}: original kept local; safe companion queued in background.`,
       );
       decisionsProcessed += 1;
       if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
@@ -1157,8 +1703,8 @@ export async function prepareWorkspace(
 
     // PER-FORMAT SIZE STRATEGY (no single 2 MB gate). A file too large to inspect for
     // its type — a PDF over 64 MB, or any other file over the in-memory ceiling — is
-    // passed through as-is WITH A WARNING (delivered, `included-unverified`), never
-    // hanging or OOM-ing the run. Text and spreadsheets under the ceiling fall through
+    // kept local rather than loaded into memory, never hanging or OOM-ing the run.
+    // Text and spreadsheets under the ceiling fall through
     // to normal de-identification regardless of size. Explicit policy `block` and
     // symlinks (handled below) always win over size.
     const oversizeReason =
@@ -1166,9 +1712,9 @@ export async function prepareWorkspace(
         ? oversizePassThroughReason(info.inspection.fileType, info.size)
         : undefined;
     if (info && oversizeReason) {
-      if (keepUnverifiedLocal) {
-        // Strict / Maximum Privacy: never deliver content that could not be
-        // verified. Keep the oversized file local (not copied to the workspace).
+      if (safetyMode === "maximum-privacy" && !explicitlyIncludedWithWarning) {
+        // Never deliver content that could not be verified. Keep the oversized file
+        // local (not copied to the workspace), without blocking Yuhi Mode.
         unsupportedOrUnverifiedFiles += 1;
         beforeTokens += Math.ceil(info.size / 4);
         approx = true;
@@ -1196,11 +1742,11 @@ export async function prepareWorkspace(
       }
       await copyMirrored(outDir, relpath, info.absPath);
       provenance.push({ relpath, source: relpath, action: "allow" });
-      unsupportedOrUnverifiedFiles += 1;
-      const approxTokens = Math.ceil(info.size / 4);
-      beforeTokens += approxTokens;
-      afterTokens += approxTokens;
+      const estimated = Math.ceil(info.size / 4);
+      beforeTokens += estimated;
+      afterTokens += estimated;
       approx = true;
+      unsupportedOrUnverifiedFiles += 1;
       files.push({
         relpath,
         action: "allow",
@@ -1211,14 +1757,67 @@ export async function prepareWorkspace(
         afterChars: info.size,
         transformed: false,
         omitted: false,
-        limitation: "transformation-unavailable",
-        failureCategory: "structural",
+        limitation: "inspection-incomplete",
+        availabilityStatus: "available-with-warning",
+        inspectionStatus: "pending",
+        backgroundStatus: "none",
+        originalShared: true,
+        warningCode: "inspection-pending",
+        knownFindingsPresent: false,
         error: oversizeReason,
       });
       decisionsProcessed += 1;
-      if (decisionsProcessed % 25 === 0 || decisionsProcessed === plan.evaluation.decisions.length) {
-        progress(`Preparing safe copies · ${decisionsProcessed}/${plan.evaluation.decisions.length} files`);
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+      continue;
+    }
+
+    // ===== ARCHIVE ROUTING =====
+    // An archive is opaque to every scanner Yuhi has. Delivering the original
+    // "with an inspection-pending warning" would hand the agent bytes that were
+    // never de-identified and — when encrypted — never CAN be. Archives therefore
+    // never reach the Prepared Workspace, and their entry names are never read,
+    // so no archive-internal identifier can reach a public surface.
+    if (info && !info.flags.isSymlink && isArchivePath(relpath)) {
+      let encryption: ReturnType<typeof zipEncryptionFromHeader> = "unknown";
+      try {
+        const handle = await open(info.absPath, "r");
+        try {
+          const head = Buffer.alloc(8);
+          const { bytesRead } = await handle.read(head, 0, 8, 0);
+          encryption = zipEncryptionFromHeader(head.subarray(0, bytesRead));
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        encryption = "unknown";
       }
+      const reasonCode = encryption === "encrypted"
+        ? "encrypted-archive-uninspectable"
+        : "archive-uninspectable";
+      filesExcluded += 1;
+      unsupportedOrUnverifiedFiles += 1;
+      beforeTokens += tokenEstimate(String(info.size)).tokens;
+      approx = true;
+      files.push({
+        relpath,
+        action: "local-only",
+        status: "skipped",
+        outcome: "local-only-known-risk",
+        transmission: "blocked",
+        beforeChars: info.size,
+        afterChars: 0,
+        transformed: false,
+        omitted: true,
+        limitation: "inspection-unavailable",
+        availabilityStatus: "excluded-known-risk",
+        inspectionStatus: "not-applicable",
+        backgroundStatus: "none",
+        originalShared: false,
+        knownFindingsPresent: decision.findings.length > 0,
+        error: reasonCode,
+      });
+      progress(`Archive ${relpath}: ${reasonCode} — kept on this computer; contents never inspected.`);
+      decisionsProcessed += 1;
       detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
       continue;
     }
@@ -1228,6 +1827,61 @@ export async function prepareWorkspace(
     const unsupportedHighRisk = unverifiedInspection && decision.findings.some(
       (finding) => finding.severity === "high" || finding.severity === "critical",
     );
+    const balancedWarningEligible =
+      (safetyMode !== "maximum-privacy" || explicitlyIncludedWithWarning) &&
+      !!info &&
+      !info.flags.isSymlink &&
+      // Corrected policy: an uninspectable binary/unknown type is still USEFUL context.
+      // Balanced/Strict deliver the original WITH an inspection-pending warning; only
+      // KNOWN risks (credentials/private keys via ruleName, high/critical findings) and
+      // OS metadata below stay excluded. Maximum Privacy keeps it local (guarded above).
+      unverifiedInspection &&
+      decision.action === "local-only" &&
+      !unsupportedHighRisk &&
+      !isArchivePath(relpath) &&
+      path.basename(relpath) !== ".DS_Store" &&
+      !/(?:credential|private-key|secret-director)/i.test(decision.ruleName) &&
+      !decision.findings.some((finding) => finding.severity === "high" || finding.severity === "critical");
+    if (balancedWarningEligible) {
+      await copyMirrored(outDir, relpath, info.absPath);
+      provenance.push({ relpath, source: relpath, action: "allow" });
+      const estimated = Math.ceil(info.size / 4);
+      beforeTokens += estimated;
+      afterTokens += estimated;
+      approx = true;
+      unsupportedOrUnverifiedFiles += 1;
+      files.push({
+        relpath,
+        action: "allow",
+        status: "ok",
+        outcome: "included-unverified",
+        transmission: "approved",
+        beforeChars: info.size,
+        afterChars: info.size,
+        transformed: false,
+        omitted: false,
+        limitation: unsupportedInspection ? "inspection-unavailable" : "inspection-incomplete",
+        availabilityStatus: "available-with-warning",
+        inspectionStatus: "pending",
+        backgroundStatus: "none",
+        originalShared: true,
+        warningCode: "inspection-pending",
+        knownFindingsPresent: decision.findings.length > 0,
+        inspection: {
+          fileType: info.inspection.fileType,
+          inspectionAttempted: info.inspection.inspectionAttempted,
+          inspectionSucceeded: info.inspection.inspectionSucceeded,
+          parserAvailable: info.inspection.parserAvailable,
+          scannerAvailable: info.inspection.scannerAvailable,
+          transformerAvailable: info.inspection.transformers.length > 0,
+          postTransformVerifierAvailable: info.inspection.verifierAvailable,
+          contentVerified: false,
+        },
+      });
+      decisionsProcessed += 1;
+      detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+      continue;
+    }
     // Final routing is capability/policy driven. Unsupported content is kept
     // local explicitly; symlinks and policy exclusions remain separate.
     if (!info || info.flags.isSymlink || isExcludedAction(decision.action)) {
@@ -1311,9 +1965,10 @@ export async function prepareWorkspace(
           !rawPresent &&
           verified.directIdentifierColumns > 0 &&
           verified.sensitiveSheets === transformed.sensitiveSheets;
-        if (!fullyClean && keepUnverifiedLocal) {
-          // Strict / Maximum Privacy: a best-effort-only de-identified workbook was
-          // not fully verified → keep it local rather than deliver it with a warning.
+        if (!fullyClean) {
+          // A best-effort-only workbook is not publishable in any mode. The exact
+          // transformed candidate is discarded; the raw workbook never becomes a
+          // fallback. Yuhi Mode still launches with other safe files.
           unsupportedOrUnverifiedFiles += 1;
           beforeTokens += tokenEstimate(sourceBytes.toString("base64")).tokens;
           approx = true;
@@ -1377,29 +2032,23 @@ export async function prepareWorkspace(
             ? error.message
             : "Workbook could not be transformed.";
         const category = classifyTransformFailure(reason);
-        // The workbook could not be safely transformed. Excel is always delivered:
-        // include the ORIGINAL (structure preserved) with a clear unverified warning and
-        // the exact reason + category, rather than dropping it. (A workbook cannot be
-        // re-scanned for secrets once parsing failed; the unverified warning is the
-        // signal to review before sharing.)
-        await writeMirrored(outDir, relpath, sourceBytes);
-        provenance.push({ relpath, source: relpath, action: decision.action });
+        // Transformation failed: raw fallback is forbidden. Keep the workbook local
+        // and let Yuhi Mode continue with the rest of the verified workspace.
         const tokens = tokenEstimate(sourceBytes.toString("base64"));
         beforeTokens += tokens.tokens;
-        afterTokens += tokens.tokens;
         approx = true;
         unsupportedOrUnverifiedFiles += 1;
         files.push({
           relpath,
-          action: "allow",
-          status: "ok",
-          outcome: "included-unverified",
-          transmission: "approved",
+          action: "local-only",
+          status: "skipped",
+          outcome: "local-only-transformation-failed",
+          transmission: "blocked",
           beforeChars: sourceBytes.length,
-          afterChars: sourceBytes.length,
+          afterChars: 0,
           transformations: [],
           transformed: false,
-          omitted: false,
+          omitted: true,
           error: reason,
           limitation: "transformation-unavailable",
           failureCategory: category,
@@ -1411,8 +2060,8 @@ export async function prepareWorkspace(
 
     if (
       decision.action === "allow" &&
-      (info.inspection.fileType === "pdf" ||
-        (!info.inspection.contentVerified && info.inspection.fileType === "binary"))
+      info.inspection.fileType === "pdf" &&
+      info.inspection.contentVerified
     ) {
       const sourceBytes = await readFile(info.absPath);
       await writeMirrored(outDir, relpath, sourceBytes);
@@ -1488,7 +2137,7 @@ export async function prepareWorkspace(
         decision.processors && decision.processors.length > 0
           ? decision.processors
           : isRedactTarget(decision)
-            ? (["pseudonymize", "safety-check"] satisfies ProcessorSpec[])
+            ? (["redact-secrets", "pseudonymize", "safety-check"] satisfies ProcessorSpec[])
             : PREPARE_PIPELINE;
       // Phase 1 (the fast blocking phase that gates Yuhi Mode) MUST NOT invoke the
       // local model. Ollama summarization is optional Phase-3 enrichment, so drop
@@ -1500,16 +2149,105 @@ export async function prepareWorkspace(
       const needsLocalModel = pipeline.some(
         (processor) => processorId(processor) === "summarize-local",
       );
-      const pipelineProvider = needsLocalModel ? getMeasuredProvider() : undefined;
       const fileAliases = cloneStudentAliases(studentAliases);
-      const prep = await runLocalPreparation(content, pipeline, {
-        ...(pipelineProvider !== undefined ? { provider: pipelineProvider } : {}),
-        salt,
-        mode: effectiveMode,
-        localModelParallelism,
-        studentAliases: fileAliases,
-        ...(signal !== undefined ? { signal } : {}),
-      });
+
+      // ── LOCAL-MODEL HANG / SLOWNESS PROTECTION ──────────────────────────────
+      // Only files that actually invoke `summarize-local` (Ollama) can hang here.
+      // When the circuit is already open (an earlier per-file timeout, or the run's
+      // cumulative time / call-count budget was reached), keep this file LOCAL right
+      // away — its de-identification pipeline never ran, so it must NEVER be delivered
+      // un-inspected. Yuhi Mode still launches with the safe files.
+      let prep: Awaited<ReturnType<typeof runLocalPreparation>>;
+      if (needsLocalModel && localModelGateClosed()) {
+        // Two honest cases. INTENTIONAL deferral (deferLocalSummary — e.g. VS Code's
+        // foreground prepare runs zero local-model calls): the file is kept local now
+        // and is NOT auto-processed later in this version — reason local-summary-deferred.
+        // Otherwise the local model was shut down by a timeout/budget — local-model-disabled.
+        const deferred = circuitBreakerReason === "deferred";
+        keepFileLocalAfterLocalModel(
+          relpath,
+          content,
+          deferred ? "local-summary-deferred" : "local-model-disabled",
+          deferred
+            ? "This file needs local summarization to be de-identified, which was not run during " +
+                "preparation, so it was kept on this computer and not shared. Review or include it later."
+            : "Local model was disabled for this run (timeout or budget); this file needs local " +
+                "summarization to be de-identified, so it was kept on this computer. Review or include it later.",
+        );
+        // v0.3.5: an INTENTIONAL foreground deferral (deferLocalSummary) is registered as
+        // a persistent background item so its safe companion is produced after launch. A
+        // timeout/budget shutdown (local-model-disabled) is NOT auto-processed later — it
+        // stays kept-local. The entry becomes `background-processing-pending` only if the
+        // enqueue below succeeds; the original file is never delivered un-inspected.
+        if (deferred && info) {
+          backgroundEnqueue.push({
+            entry: files[files.length - 1]!,
+            kind: "summarize-local",
+            relpath,
+            sourceArtifactPath: info.absPath,
+            sourceContentHash:
+              info.sha256 ?? createHash("sha256").update(content).digest("hex"),
+            processorVersion: `summarize-local@${YUHI_VERSION}`,
+            originalSharedWithWarning: false,
+          });
+        }
+        decisionsProcessed += 1;
+        detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+        continue;
+      }
+      if (needsLocalModel) {
+        const pipelineProvider = getMeasuredProvider();
+        // The timeout + AbortController below wrap the REAL provider call: the work
+        // callback invokes `runLocalPreparation` whose `summarize-local` step calls
+        // `pipelineProvider.generate()`. A never-resolving generate() trips the timer.
+        progress(`Preparing ${relpath}: summarize-local started`);
+        localModelCallsMade += 1;
+        const outcome = await runLocalModelCall(
+          (childSignal) =>
+            runLocalPreparation(content, pipeline, {
+              ...(pipelineProvider !== undefined ? { provider: pipelineProvider } : {}),
+              salt,
+              mode: effectiveMode,
+              localModelParallelism,
+              studentAliases: fileAliases,
+              signal: childSignal,
+            }),
+          localModelTimeoutMs,
+          scheduler,
+          signal,
+        );
+        localModelBudgetSpentMs += outcome.elapsedMs;
+        if (outcome.status === "timeout") {
+          // FIRST per-file timeout opens the circuit for the rest of the run.
+          localModelDisabled = true;
+          circuitBreakerReason ??= "per-file-timeout";
+          progress(
+            `Preparing ${relpath}: summarize-local timed out after ${outcome.elapsedMs}ms → kept local; circuit breaker opened (local model disabled for this run); continuing.`,
+          );
+          keepFileLocalAfterLocalModel(
+            relpath,
+            content,
+            "local-summary-timeout",
+            "Local preparation timed out on this computer; the file was kept local so Yuhi Mode " +
+              "could launch. Review or include it later.",
+            outcome.elapsedMs,
+          );
+          decisionsProcessed += 1;
+          detail("prepare", "Preparing safe copies", decisionsProcessed, plan.evaluation.decisions.length);
+          continue;
+        }
+        prep = outcome.value;
+      } else {
+        // No local model in this file's pipeline (e.g. redact: pseudonymize +
+        // safety-check) — fully deterministic, cannot hang. Run it directly.
+        prep = await runLocalPreparation(content, pipeline, {
+          salt,
+          mode: effectiveMode,
+          localModelParallelism,
+          studentAliases: fileAliases,
+          ...(signal !== undefined ? { signal } : {}),
+        });
+      }
 
       const entry: PreparedFileEntry = {
         relpath,
@@ -1588,7 +2326,10 @@ export async function prepareWorkspace(
         const survivingCredential = transformedFindings.some(
           (finding) =>
             !finding.detector.startsWith("tabular-") &&
-            (finding.severity === "high" || finding.severity === "critical") &&
+            // A high-entropy string on a secret-like assignment is reported at
+            // `medium` — that is exactly the shape of an unredacted AWS secret
+            // access key, so a residual one must keep the file local.
+            finding.severity !== "low" &&
             findingCategory(finding.detector) === "credential",
         );
         // Always visible: log every stage PASS/FAIL for this file.
@@ -1778,25 +2519,21 @@ export async function prepareWorkspace(
         });
         filesExcluded += 1;
       } else {
-        // ALWAYS-PASS promise: a non-credential high-risk file (that reached the
-        // verbatim route without a safe transform) is DELIVERED as the original with
-        // an explicit warning — marked included-unverified so it never blocks launch.
-        await writeMirrored(outDir, relpath, content);
-        provenance.push({ relpath, source: relpath, action: decision.action });
-        afterTokens += tok.tokens;
+        // High-risk content without a verified transform stays local. This is a file
+        // decision, not a workspace launch blocker.
         files.push({
           relpath,
-          action: "allow",
-          status: "ok",
-          outcome: "included-unverified",
-          transmission: "approved",
+          action: "local-only",
+          status: "skipped",
+          outcome: "local-only-transformation-failed",
+          transmission: "blocked",
           beforeChars: content.length,
-          afterChars: content.length,
+          afterChars: 0,
           transformed: false,
-          omitted: false,
+          omitted: true,
           limitation: "transformation-unavailable",
           failureCategory: "reidentification-risk",
-          error: "High-risk content could not be de-identified; included with a warning.",
+          error: "High-risk content could not be de-identified; kept local.",
         });
         unsupportedOrUnverifiedFiles += 1;
       }
@@ -1923,20 +2660,15 @@ export async function prepareWorkspace(
   }
 
   // ===== SAFETY-MODE CENTRALIZED ESCALATION PASS =====
-  // Strict / Maximum Privacy forbid delivering content that could not be fully
-  // inspected/verified. The two inline escalations above cover the oversized and
-  // XLSX-degraded routes, but `included-unverified` is delivered from several other
-  // sites (raw PDF/binary pass-through, unverifiable text, structural fallbacks). A
-  // single post-loop sweep guarantees NOTHING unverified survives to delivery, and —
-  // under Maximum Privacy — that no delivered file still carries a sensitive finding.
-  // Runs only in Strict/Maximum Privacy; Balanced is a strict no-op. It never weakens
-  // a hard block: credentials / private keys / `.env` are already withheld raw before
-  // this point, and this pass only ever escalates a delivered file to local-only.
-  if (keepUnverifiedLocal) {
+  // Safety-mode escalation applies only to ACTUAL sensitive findings. Inspection
+  // unavailable/incomplete is not a finding and must remain included with a warning in
+  // every mode; otherwise one unsupported parser silently empties the agent workspace.
+  // Hard blocks (credentials/private keys/explicit policy) were withheld earlier.
+  {
     const zeroFindings = requiresZeroFindings(safetyMode);
     for (const entry of files) {
       if (entry.omitted) continue;
-      const keepUnverified = entry.outcome === "included-unverified";
+      const keepUnverified = keepUnverifiedLocal && entry.outcome === "included-unverified";
       // Maximum Privacy also keeps local any still-delivered file whose transformed
       // copy carried a sensitive finding. A clean verified file is left delivered, and
       // sanitized document companions (safe by construction) are never touched.
@@ -1967,6 +2699,184 @@ export async function prepareWorkspace(
         }) — not delivered to the agent.`,
       );
     }
+  }
+
+  // ===== v0.3.3 STRUCTURE COMPRESSION (opt-in) =====
+  // Runs AFTER the per-file loop, filename de-identification, and the Safety-Mode
+  // escalation, and BEFORE the final integrity gate / context building. This is the
+  // ONLY place the compression module — and thus the `typescript` parser — is loaded,
+  // so a `compress: false` run loads nothing extra and is byte-for-byte identical to a
+  // run without compression. It reads DELIVERED files from `outDir`, decides a
+  // representation via the deterministic token budget, then rewrites (compressed),
+  // removes (excluded), or leaves (full) the DELIVERED copy. SOURCE FILES ARE NEVER
+  // READ OR WRITTEN HERE — only files under `outDir` change.
+  let compressionReport: CompressionReport | undefined;
+  if (options.compress) {
+    const compression = await import("./compression/index.js");
+    const registry = new compression.CompressorRegistry()
+      .register(new compression.TypeScriptCompressor())
+      .register(new compression.JavaScriptCompressor())
+      .register(new compression.LargeArtifactCompressor());
+    const compressionThresholdTokens = options.compressionThresholdTokens ?? 2000;
+
+    interface CompressionCandidate {
+      entry: PreparedFileEntry;
+      compressedContent?: string;
+      /** Specific compressor outcome reason (kept distinct from the budget reason). */
+      compressorReason?: string;
+      input: BudgetFileInput;
+    }
+    const candidates: CompressionCandidate[] = [];
+    for (const entry of files) {
+      // Only agent-facing delivered source text: skip omitted files, Yuhi's own
+      // `.yuhi/` internals, and generated document companions/placeholders.
+      if (entry.omitted) continue;
+      if (entry.relpath.startsWith(".yuhi/")) continue;
+      if (entry.document) continue;
+      let content: string;
+      try {
+        content = await readFile(path.join(outDir, ...entry.relpath.split("/")), "utf8");
+      } catch {
+        continue; // unreadable/binary delivered artifact — leave it exactly as delivered
+      }
+      const signals = compression.deriveMustKeepSignals(entry.relpath);
+      const supported = registry.find(entry.relpath, content) !== undefined;
+      // Only files a compressor SUPPORTS are parsed; everything else is measured for the
+      // budget as a plain full file (never compressed, never force-excluded if MustKeep).
+      const result = supported
+        ? await registry.compress({ relpath: entry.relpath, content })
+        : undefined;
+      const fullTokens = result ? result.originalTokens : compression.estimateTokens(content);
+      const parseFailed = result?.warnings.some(
+        (w) => w.code === "parse-failed" || w.code === "compressor-unavailable",
+      );
+      // Distinct compressor outcome (kept SEPARATE per the reason vocabulary): the
+      // parser could not be loaded vs a real syntax error vs compressed-but-not-smaller.
+      const compressorReason: string | undefined = result?.warnings.some(
+        (w) => w.code === "compressor-unavailable",
+      )
+        ? "compressor-unavailable"
+        : result?.warnings.some((w) => w.code === "parse-failed")
+          ? "parse-failed"
+          : result?.warnings.some((w) => w.code === "too-small")
+            ? "compression-not-smaller"
+            : undefined;
+      const input: BudgetFileInput = {
+        relpath: entry.relpath,
+        fullTokens,
+        ...(result?.representation === "compressed"
+          ? { compressedTokens: result.compressedTokens }
+          : {}),
+        ...(signals.entryPoint ? { entryPoint: true } : {}),
+        ...(signals.packageManifest ? { packageManifest: true } : {}),
+        ...(signals.configFile ? { configFile: true } : {}),
+        ...(signals.agentInstruction ? { agentInstruction: true } : {}),
+        ...(parseFailed ? { parseFailed: true } : {}),
+      };
+      candidates.push({
+        entry,
+        ...(result?.representation === "compressed" ? { compressedContent: result.content } : {}),
+        ...(compressorReason ? { compressorReason } : {}),
+        input,
+      });
+    }
+
+    const budget = compression.selectRepresentations(
+      candidates.map((c) => c.input),
+      { tokenBudget: options.tokenBudget ?? null, compressionThresholdTokens },
+    );
+    const decisionByPath = new Map(budget.decisions.map((d) => [d.relpath, d]));
+
+    // APPLY the decisions to the DELIVERED workspace only. The compressors and the
+    // budget selector are pure, so identical inputs + options yield identical delivered
+    // bytes and an identical summary.
+    for (const candidate of candidates) {
+      const decision = decisionByPath.get(candidate.input.relpath);
+      if (!decision) continue;
+      const deliveredAbs = path.join(outDir, ...candidate.entry.relpath.split("/"));
+      candidate.entry.contextRepresentation = decision.representation;
+      // Split the compressor-outcome reasons from the budget's generic ones, while
+      // keeping MustKeep reasons (entry-point, package-manifest, …) authoritative.
+      candidate.entry.compressionReason =
+        candidate.compressorReason &&
+        (decision.reason === "parse-failed" || decision.reason === "not-compressible")
+          ? candidate.compressorReason
+          : decision.reason;
+      candidate.entry.originalTokens = decision.fullTokens;
+      candidate.entry.preparedTokens = decision.finalTokens;
+      if (decision.representation === "compressed" && candidate.compressedContent !== undefined) {
+        // Preserve the useful original at its normal path. The compact form is an
+        // additional initial-context representation under .yuhi/context/, never a
+        // destructive replacement. Parser/output failure therefore falls back to FULL.
+        const compactRelpath = `.yuhi/context/compact/${candidate.entry.relpath}.md`;
+        const compact = [
+          "# Yuhi compact representation",
+          "",
+          `Source: ${candidate.entry.relpath}`,
+          "",
+          "The full original remains available at the source path in this Prepared Workspace.",
+          "",
+          "```",
+          candidate.compressedContent,
+          "```",
+          "",
+        ].join("\n");
+        const compactFindings = runDetectors(compact, {
+          entropyThreshold: plan.context.config.scan.entropy_threshold,
+          keywords: plan.context.config.scan.keywords,
+          relpath: compactRelpath,
+        });
+        if (compactFindings.length === 0) {
+          await writeMirrored(outDir, compactRelpath, compact);
+          afterTokens = Math.max(0, afterTokens - candidate.input.fullTokens + decision.finalTokens);
+        } else {
+          candidate.entry.contextRepresentation = "full";
+          candidate.entry.compressionReason = "verification-failed-full-fallback";
+          candidate.entry.preparedTokens = candidate.input.fullTokens;
+        }
+      } else if (decision.representation === "excluded") {
+        // A token target is advisory. It must never make a useful source file vanish.
+        // Keep FULL and report best-effort instead of deleting repository capability.
+        void deliveredAbs;
+        candidate.entry.contextRepresentation = "full";
+        candidate.entry.compressionReason = "budget-unmet-full-fallback";
+        candidate.entry.preparedTokens = candidate.input.fullTokens;
+      }
+    }
+
+    const actualFiles = candidates.map((candidate) => ({
+      relpath: candidate.entry.relpath,
+      representation: candidate.entry.contextRepresentation === "compressed" ? "compressed" as const : "full" as const,
+      reason: candidate.entry.compressionReason ?? "not-compressible",
+      originalTokens: candidate.input.fullTokens,
+      preparedTokens: candidate.entry.contextRepresentation === "compressed"
+        ? candidate.entry.preparedTokens ?? candidate.input.fullTokens
+        : candidate.input.fullTokens,
+    }));
+    const actualOriginal = actualFiles.reduce((sum, file) => sum + file.originalTokens, 0);
+    const actualPrepared = actualFiles.reduce((sum, file) => sum + file.preparedTokens, 0);
+    const actualReduced = Math.max(0, actualOriginal - actualPrepared);
+
+    compressionReport = {
+      originalTokens: actualOriginal,
+      preparedTokens: actualPrepared,
+      reductionPercent: actualOriginal > 0 ? (actualReduced / actualOriginal) * 100 : 0,
+      fullFiles: actualFiles.filter((file) => file.representation === "full").length,
+      compressedFiles: actualFiles.filter((file) => file.representation === "compressed").length,
+      excludedFiles: 0,
+      compressionReductionTokens: actualReduced,
+      exclusionReductionTokens: 0,
+      targetBudget: budget.summary.targetBudget,
+      actualTokens: actualPrepared,
+      status: options.tokenBudget === null || options.tokenBudget === undefined
+        ? "no-budget"
+        : actualPrepared <= options.tokenBudget ? "within-budget" : "best-effort",
+      ...(budget.summary.budgetReason !== undefined
+        ? { budgetReason: budget.summary.budgetReason }
+        : {}),
+      warnings: budget.summary.warnings,
+      files: actualFiles,
+    };
   }
 
   // ===== MANDATORY FINAL-ARTIFACT SECURITY GATE =====
@@ -2132,6 +3042,48 @@ export async function prepareWorkspace(
     }
   }
 
+  // ===== AGENT-VISIBLE METADATA BOUNDARY =====
+  // The withheld set is final here (policy blocks, safety-mode escalation, and both
+  // final gates have all run). Give every entry its stable public identity, then build
+  // the redaction list for the names that may NOT cross into the prepared workspace:
+  // a real filename is identifying data (`9999990001 評定-0722.xlsx`), so withholding
+  // a file's bytes while publishing its name would disclose the identifier anyway.
+  // `files` itself keeps the private paths — the local UI shows the user their own
+  // filenames; only what is WRITTEN at or below `outDir` goes through the boundary.
+  for (const entry of files) {
+    entry.documentId = documentIdFor(entry.originalRelpath ?? entry.relpath, salt);
+  }
+  const metadataRedactions = buildWithheldRedactions({
+    withheld: files
+      .filter((entry) => entry.omitted === true)
+      .map((entry) => ({
+        sourceRelpath: entry.originalRelpath ?? entry.relpath,
+        documentId: entry.documentId ?? documentIdFor(entry.relpath, salt),
+      })),
+    delivered: files.filter((entry) => entry.omitted !== true).map((entry) => entry.relpath),
+  });
+  /** Project one agent-visible surface through the boundary before writing it. */
+  const publicSurface = <T,>(value: T): T => redactMetadata(value, metadataRedactions);
+  /** The public label for an entry: a delivered name, or a kind-only withheld label. */
+  const publicEntryName = (entry: PreparedFileEntry): string =>
+    entry.omitted === true
+      ? withheldDisplayName(
+          entry.originalRelpath ?? entry.relpath,
+          entry.documentId ?? documentIdFor(entry.relpath, salt),
+        )
+      : entry.relpath;
+  /**
+   * The public label for a SOURCE path. Surfaces built from source paths (the document
+   * index) must print the DELIVERED name — the source name may have been pseudonymized
+   * away or withheld entirely, and printing it would undo either control.
+   */
+  const publicSourceName = (sourceRelpath: string): string => {
+    const entry = files.find((file) => (file.originalRelpath ?? file.relpath) === sourceRelpath);
+    return entry
+      ? publicEntryName(entry)
+      : withheldDisplayName(sourceRelpath, documentIdFor(sourceRelpath, salt));
+  };
+
   extractedDocuments.clear();
   detail("context", "Generating local context", documentIndex.length, documentIndex.length);
   if (documentIndex.length === 0) {
@@ -2144,7 +3096,7 @@ export async function prepareWorkspace(
     const documentEntries =
       documentIndex.length > 0
         ? documentIndex.flatMap((document) => [
-            `### ${document.relpath}`,
+            `### ${publicSourceName(document.relpath)}`,
             "",
             `- Inspection: ${
               document.method === "ocr"
@@ -2183,7 +3135,7 @@ export async function prepareWorkspace(
       "",
       ...documentEntries,
     ].join("\n");
-    await writeMirrored(outDir, ".yuhi/context/document-index.md", index);
+    await writeMirrored(outDir, ".yuhi/context/document-index.md", publicSurface(index));
   }
 
   const beforeChars = files.reduce((n, f) => (f.omitted ? n : n + f.beforeChars), 0);
@@ -2305,6 +3257,15 @@ export async function prepareWorkspace(
     (file) => file.status === "ok" && !file.omitted && file.transformed,
   ).length;
   const localOnlyProjectFiles = files.filter((file) => file.omitted).length;
+  refreshPublicAvailability(files);
+  let publicSummary = buildPublicPreparedContextSummary({
+    files,
+    ...(compressionReport ? { compression: compressionReport } : {}),
+    reduction: report,
+    originalWorkspaceModified: originalSourceFilesModified > 0,
+    secretsExposed: unresolvedCredential ? 1 : 0,
+  });
+  const estimatedContextReduction = publicSummary.reductionPercent;
   const agentHandoff = [
     "# Yuhi Agent Handoff",
     "",
@@ -2327,6 +3288,12 @@ export async function prepareWorkspace(
     `- Context summaries created: ${documentSummariesCreated}`,
     `- Files not included: ${localOnlyProjectFiles}`,
     "- Original workspace files modified during preparation: 0",
+    `- Estimated context reduction: ${estimatedContextReduction === null ? "Not measured" : `${estimatedContextReduction.toFixed(1)}%`}`,
+    `- Estimated tokens: ${publicSummary.originalEstimatedTokens ?? "Not measured"} before → ${publicSummary.preparedEstimatedTokens ?? "Not measured"} after`,
+    `- Background pending: ${publicSummary.backgroundPendingFiles}`,
+    `- Excluded for safety: ${publicSummary.excludedForSafetyFiles}`,
+    `- Kept local after processing failure: ${publicSummary.keptLocalAfterFailureFiles}`,
+    "- Actual agent usage may differ because of system prompts, tool output, conversation history, and caching.",
     "",
     ...describeUnavailableFiles(files),
     ...describeUnverifiedFiles(files),
@@ -2364,6 +3331,8 @@ export async function prepareWorkspace(
     `- Project files available: ${availableProjectFiles}`,
     `- Files transformed locally: ${transformedProjectFiles}`,
     `- Files not included: ${localOnlyProjectFiles}`,
+    `- Estimated context reduction: ${estimatedContextReduction === null ? "Not measured" : `${estimatedContextReduction.toFixed(1)}%`}`,
+    `- Estimated tokens: ${publicSummary.originalEstimatedTokens ?? "Not measured"} before → ${publicSummary.preparedEstimatedTokens ?? "Not measured"} after`,
     "",
     "Some files could not be fully verified or were kept local. Their names are omitted",
     "here for safety — open “Review file decisions” in Yuhi for the full list.",
@@ -2398,24 +3367,176 @@ export async function prepareWorkspace(
       runDetectors(masked, handoffScan).length === 0 ? masked : listingFreeHandoff;
     progress("Agent handoff: sanitized ID-like content from generated listings; handoff still written.");
   }
-  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", safeHandoff);
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", publicSurface(safeHandoff));
+
+  // Degraded-completion summary for the local-model reliability fix. Present when the
+  // inline model timed out / was disabled, so the CLI / VS Code reach "Ready … with
+  // warnings" instead of hanging. Public-safe: relpaths only, no absolute paths/content.
+  const localModelTimeouts = degradedWarnings.filter(
+    (warning) => warning.reason === "local-summary-timeout",
+  ).length;
+  const degraded =
+    degradedWarnings.length > 0 || localModelDisabled
+      ? {
+          localModelDisabled,
+          filesKeptLocalAfterTimeout,
+          localModelTimeouts,
+          ...(circuitBreakerReason ? { circuitBreakerReason } : {}),
+          warnings: degradedWarnings,
+        }
+      : undefined;
+
+  // Deterministic, agent-independent Context ID (v0.3.4). Derived from the SAME
+  // inputs the pipeline already computed — SOURCE file relpaths + content hashes
+  // (from the scan; no re-scan), the resolved safety mode, the policy hash, the
+  // compression toggle, the token budget, and the reduction settings. It excludes
+  // time, randomness (runId), user/machine, absolute paths, and the agent id.
+  const manifestSchemaVersion = 2;
+  const contextIdSourceFiles: ContextIdSourceFile[] = plan.scan.files.map((file) => ({
+    relpath: file.relpath,
+    sha256: file.sha256 ?? null,
+    size: file.size,
+  }));
+  const contextId = computeContextId({
+    yuhiVersion: YUHI_VERSION,
+    manifestSchemaVersion,
+    sourceFiles: contextIdSourceFiles,
+    safetyMode,
+    policyHash: plan.context.policyHash,
+    compression: options.compress === true,
+    tokenBudget: options.tokenBudget ?? null,
+    reductionMode: effectiveMode,
+    compressionThresholdTokens: options.compressionThresholdTokens ?? null,
+  });
+
+  // ===== v0.3.5 FOREGROUND → BACKGROUND QUEUE REGISTRATION =====
+  // Persist each deferred item into the run's PRIVATE queue (under the managed base,
+  // NOT the agent-visible prepared root) so the heavy work (summarize-local / document
+  // extraction / OCR) runs AFTER Yuhi Mode has launched. The foreground made ZERO
+  // heavy-processor calls; this is only durable JSON book-keeping. A file's status
+  // becomes `background-processing-pending` ONLY after its enqueue succeeds — an enqueue
+  // failure leaves it kept-local (never mislabeled), and its original stays local-only.
+  if (backgroundEnqueue.length > 0) {
+    try {
+      // Private state lives OUTSIDE every agent-visible root; the agent never sees the
+      // queue records (which carry absolute source paths). `managedBase` contains all
+      // run dirs, so `<managedBase>/.internal/background/<runId>` is not a prepared root.
+      const queue = await BackgroundQueue.open(privateBackgroundDir(managedBase, runId));
+      for (const pending of backgroundEnqueue) {
+        try {
+          await queue.enqueue({
+            runId,
+            contextId,
+            relpath: pending.relpath,
+            // The public half of the boundary: an agent-facing path ONLY when the
+            // original was actually delivered (Balanced's include-with-warning). The
+            // public status and any published companion use this, never `relpath`.
+            ...(pending.entry.omitted !== true ? { publicRelpath: pending.entry.relpath } : {}),
+            ...(pending.entry.documentId ? { documentId: pending.entry.documentId } : {}),
+            kind: pending.kind,
+            sourceArtifactPath: pending.sourceArtifactPath,
+            sourceContentHash: pending.sourceContentHash,
+            processorVersion: pending.processorVersion,
+            policyHash: plan.context.policyHash,
+            originalSharedWithWarning: pending.originalSharedWithWarning,
+          });
+          // Pending is asserted ONLY on a durable enqueue success.
+          pending.entry.outcome = "background-processing-pending";
+        } catch {
+          // Enqueue failed for this item → keep it local-only; do not mislabel it.
+        }
+      }
+      // Seed the PUBLIC, path-safe status file the agent/CLI/UI reads (all pending).
+      // Contains only counts + safe per-item fields — never an absolute/staging path.
+      await writePublicStatus(outDir, buildPublicStatus(queue.list(runId))).catch(() => {});
+    } catch {
+      // The queue could not be opened → every deferred file stays kept-local. The run
+      // still launches; nothing is delivered un-inspected.
+    }
+  }
+
+  // Queue registration changes local-only candidates into the distinct durable
+  // background-pending state. Recompute the ONE shared summary only after that state is
+  // final, then replace the handoff with a compact count-only version. Pending is never
+  // reported as excluded and no individual filename enters agent instructions.
+  refreshPublicAvailability(files);
+  publicSummary = buildPublicPreparedContextSummary({
+    files,
+    ...(compressionReport ? { compression: compressionReport } : {}),
+    reduction: report,
+    originalWorkspaceModified: originalSourceFilesModified > 0,
+    secretsExposed: unresolvedCredential ? 1 : 0,
+  });
+  const initialIndexText = await readFile(path.join(outDir, ".yuhi/context/document-index.md"), "utf8")
+    .catch(() => "");
+  const compactEntries = files.filter((file) => file.contextRepresentation === "compressed");
+  const largeCompactEntries = compactEntries.filter((file) => /\.(?:html?|json|csv|tsv|log)$/i.test(file.relpath));
+  const largeArtifactReduction = largeCompactEntries.reduce(
+    (sum, file) => sum + Math.max(0, (file.originalTokens ?? 0) - (file.preparedTokens ?? 0)),
+    0,
+  );
+  const structuralReduction = compactEntries.reduce(
+    (sum, file) => sum + Math.max(0, (file.originalTokens ?? 0) - (file.preparedTokens ?? 0)),
+    0,
+  ) - largeArtifactReduction;
+  let yuhiModeSummary = buildYuhiModeSummary({
+    files,
+    prepared: publicSummary,
+    launchAllowed,
+    compressionMode: options.compressionMode ?? (options.compress === true ? "auto" : "off"),
+    initialAgentContextTokens: tokenEstimate(initialIndexText).tokens,
+    largeArtifactsRepresented: largeCompactEntries.length,
+    reductionByStructuralCompression: Math.max(0, structuralReduction),
+    reductionByLargeArtifactRepresentation: largeArtifactReduction,
+  });
+  let finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
+  yuhiModeSummary = buildYuhiModeSummary({
+    files,
+    prepared: publicSummary,
+    launchAllowed,
+    compressionMode: yuhiModeSummary.contextEfficiency.compressionMode,
+    initialAgentContextTokens: tokenEstimate(initialIndexText + finalHandoff).tokens,
+    largeArtifactsRepresented: largeCompactEntries.length,
+    reductionByStructuralCompression: Math.max(0, structuralReduction),
+    reductionByLargeArtifactRepresentation: largeArtifactReduction,
+  });
+  finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
+  await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", publicSurface(finalHandoff));
+  await writeMirrored(
+    outDir,
+    ".yuhi/yuhi-mode-summary.json",
+    publicSurface(JSON.stringify(yuhiModeSummary, null, 2) + "\n"),
+  );
 
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: manifestSchemaVersion,
+    // Deterministic Context ID — the agent-independent identity of this prepared
+    // context. Emitted into the Context Manifest so any agent adapter can attach a
+    // per-run Agent Session to it (see @yuhi/agents session manifest).
+    contextId,
     ...(createdAt !== undefined ? { createdAt } : {}),
     runId,
     reductionMode: effectiveMode,
     // The RESOLVED effective Safety Mode this run was prepared with (not the raw input).
     // Consumed by freshness checks: selecting a different mode makes the run stale.
     safetyMode,
+    ...(compressionReport ? { compression: compressionReport } : {}),
+    publicSummary,
+    yuhiModeSummary,
     files: files.map((f) => {
       // Decisions are keyed by the ORIGINAL path; a pseudonymized entry must look up
       // its decision by originalRelpath, not the Claude-facing name.
       const lookupPath = f.originalRelpath ?? f.relpath;
       const decision = plan.evaluation.decisions.find((d) => d.relpath === lookupPath);
       return {
-        relpath: f.relpath,
-        ...(f.originalRelpath ? { originalRelpath: f.originalRelpath } : {}),
+        // METADATA BOUNDARY: `manifest.json` sits INSIDE the prepared workspace, so it
+        // is agent-visible. A delivered file keeps the (already de-identified) name the
+        // agent can see anyway; a WITHHELD file is reduced to its identity plus a
+        // kind-only label, and `originalRelpath` — the private pseudonym mapping — is
+        // never written here at all.
+        relpath: publicEntryName(f),
+        documentId: f.documentId ?? documentIdFor(lookupPath, salt),
+        ...(f.omitted ? { displayName: publicEntryName(f) } : {}),
         action: f.action,
         status: f.status,
         outcome: f.outcome,
@@ -2431,6 +3552,18 @@ export async function prepareWorkspace(
         ...(f.transformations !== undefined ? { transformations: f.transformations } : {}),
         ...(f.maskedValues !== undefined ? { maskedValues: f.maskedValues } : {}),
         ...(f.transformed !== undefined ? { transformed: f.transformed } : {}),
+        ...(f.availabilityStatus ? { availabilityStatus: f.availabilityStatus } : {}),
+        ...(f.inspectionStatus ? { inspectionStatus: f.inspectionStatus } : {}),
+        ...(f.backgroundStatus ? { backgroundStatus: f.backgroundStatus } : {}),
+        ...(f.originalShared !== undefined ? { originalShared: f.originalShared } : {}),
+        ...(f.warningCode ? { warningCode: f.warningCode } : {}),
+        ...(f.knownFindingsPresent !== undefined
+          ? { knownFindingsPresent: f.knownFindingsPresent }
+          : {}),
+        ...(f.contextRepresentation ? { contextRepresentation: f.contextRepresentation } : {}),
+        ...(f.compressionReason ? { compressionReason: f.compressionReason } : {}),
+        ...(f.originalTokens !== undefined ? { originalTokens: f.originalTokens } : {}),
+        ...(f.preparedTokens !== undefined ? { preparedTokens: f.preparedTokens } : {}),
         ...(f.document ? { document: f.document } : {}),
         ...(decision !== undefined
           ? (() => {
@@ -2460,12 +3593,23 @@ export async function prepareWorkspace(
     }),
     reduction: report,
     filenamesPseudonymized,
+    // NOTE: `provenance` below is projected the same way — `source` (the raw original
+    // path) is the private half of the mapping and is dropped, not published.
     finalRescan: {
       identifierLeaks: finalIdentifierLeaks,
       credentialKeptLocal: finalCredentialKeptLocal,
       verified: files.filter((f) => f.finalRescanVerified === true).length,
     },
-    provenance,
+    provenance: provenance.map((record) => {
+      const entry = files.find(
+        (file) => file.relpath === record.relpath || file.originalRelpath === record.source,
+      );
+      return {
+        relpath: entry ? publicEntryName(entry) : record.relpath,
+        ...(entry?.documentId ? { documentId: entry.documentId } : {}),
+        action: record.action,
+      };
+    }),
     sourceModified: originalSourceFilesModified,
     status: launchAllowed ? "ready" : "blocked",
     launchAllowed,
@@ -2486,6 +3630,7 @@ export async function prepareWorkspace(
       hasLimitations:
         unsupportedOrUnverifiedFiles > 0 ||
         unverifiedTransformations > 0 ||
+        filesKeptLocalAfterTimeout > 0 ||
         plan.evaluation.decisions.some(
           (decision) => decision.ruleName === "document:personal-information-warning",
         ),
@@ -2530,6 +3675,10 @@ export async function prepareWorkspace(
         (file) => file.outcome === "included-unverified" && !file.omitted,
       ).length,
     },
+    // Local-model reliability degradation (relpaths only — never absolute paths /
+    // content). Present only when the inline model timed out / was disabled, so the
+    // manifest of a normal run is byte-for-byte unchanged.
+    ...(degraded ? { degraded } : {}),
     security: {
       transformedFiles: files.filter(
         (file) => file.status === "ok" && !file.omitted && file.transformed,
@@ -2584,11 +3733,23 @@ export async function prepareWorkspace(
         : {}),
     },
   };
-  await writeFile(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  // Structural projection above is the primary control; the boundary pass is the
+  // backstop that also covers free-text fields (a policy `reason`, an error note).
+  await writeFile(
+    path.join(outDir, "manifest.json"),
+    JSON.stringify(publicSurface(manifest), null, 2) + "\n",
+    "utf8",
+  );
+  // Patch/source mapping is private operational state. It must never be written to
+  // manifest/session/public status or anywhere below the agent-visible workspace.
+  // Failure never delays Yuhi Mode startup; the agent-launch gate will fail closed
+  // with a metadata-safe snapshot-unavailable error if the binding is absent.
+  await writePrivateRunSourceBinding(managedBase, runId, root).catch(() => {});
   progress(`Prepared safe copies · ${provenance.length} files`);
 
   return {
     runId,
+    contextId,
     outDir,
     report,
     files,
@@ -2597,6 +3758,10 @@ export async function prepareWorkspace(
     decisions: plan.evaluation.decisions,
     sourceModified: originalSourceFilesModified,
     safetyMode,
+    ...(degraded ? { degraded } : {}),
+    ...(compressionReport ? { compression: compressionReport } : {}),
+    publicSummary,
+    yuhiModeSummary,
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,
@@ -2613,6 +3778,7 @@ export async function prepareWorkspace(
       hasLimitations:
         unsupportedOrUnverifiedFiles > 0 ||
         unverifiedTransformations > 0 ||
+        filesKeptLocalAfterTimeout > 0 ||
         plan.evaluation.decisions.some(
           (decision) => decision.ruleName === "document:personal-information-warning",
         ),

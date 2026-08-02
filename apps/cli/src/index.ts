@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
-import * as path from "node:path";
 import { cliVersion } from "./version.js";
 import {
   YuhiError,
@@ -22,6 +21,7 @@ import {
   resolvePreparedRunReference,
   readPreparedRunSession,
   writePreparedRunSession,
+  runBackgroundForRun,
   createWorkspaceForDir,
   listWorkspaces,
   inspectWorkspace,
@@ -32,13 +32,11 @@ import {
   exportAudit,
   KNOWN_AGENT_IDS,
   buildAdapter,
-  reviewAgentChanges,
-  deriveWorkflowState,
   formatPreparationReport,
+  formatCompressionReport,
   isSafetyMode,
   safetyModeLabel,
   type SafetyMode,
-  type AgentChangeBaseline,
 } from "@yuhi/core";
 import { loadConfig, resolveSafetyMode } from "@yuhi/config";
 import { createLocalModelProvider } from "@yuhi/local";
@@ -70,6 +68,23 @@ import {
   cliPrepareExitCode,
   formatCliPrepareResult,
 } from "./prepare-output.js";
+import { performLaunch } from "./launch.js";
+import {
+  performBackgroundStatus,
+  performBackgroundStart,
+  performBackgroundCancel,
+  performBackgroundRetry,
+  maybeWaitBackground,
+} from "./background.js";
+import {
+  patchApply,
+  patchDiff,
+  patchDiscard,
+  patchHistoryCommand,
+  patchStatus,
+  patchUndoCommand,
+  patchValidate,
+} from "./patch.js";
 
 interface Globals {
   json: boolean;
@@ -124,7 +139,7 @@ function action(handler: (cmd: Command) => Promise<number | void>) {
 }
 
 async function main(): Promise<void> {
-  const { main: mainArgv } = splitForwarded(process.argv);
+  const { main: mainArgv, forwarded } = splitForwarded(process.argv);
 
   const program = new Command();
   program
@@ -582,6 +597,9 @@ async function main(): Promise<void> {
     .command("prepare [dir]")
     .description("Prepare a local, reduced copy of your context (never sent anywhere)")
     .option("--safety-mode <mode>", "balanced | strict | maximum-privacy (default: balanced)")
+    .option("--compress", "opt-in v0.3.3 structure compression of the delivered context", false)
+    .option("--token-budget <n>", "best-effort token budget for the delivered context")
+    .option("--wait-background", "opt-in: run deferred background preparation to completion before returning", false)
     .action(
       action(async (cmd) => {
         const { g, dir } = getContext(cmd);
@@ -596,6 +614,24 @@ async function main(): Promise<void> {
             return 3;
           }
           safetyMode = rawSafetyMode;
+        }
+
+        const compress = Boolean(cmd.opts().compress);
+        const rawTokenBudget = cmd.opts().tokenBudget as string | undefined;
+        let tokenBudget: number | null = null;
+        if (rawTokenBudget !== undefined) {
+          const parsed = Number(rawTokenBudget);
+          if (!Number.isInteger(parsed) || parsed <= 0) {
+            console.error(
+              `${symbols.err()} Invalid --token-budget '${rawTokenBudget}'. Use a positive integer.`,
+            );
+            return 3;
+          }
+          tokenBudget = parsed;
+        }
+        if (tokenBudget !== null && !compress) {
+          console.error(`${symbols.err()} --token-budget requires --compress.`);
+          return 3;
         }
 
         const target = await assertSafeSourceWorkspace(cmd.args[0] ?? dir);
@@ -621,8 +657,26 @@ async function main(): Promise<void> {
           providerFactory,
           ...(mode !== undefined ? { mode } : {}),
           safetyMode: effectiveSafetyMode,
+          compress,
+          ...(tokenBudget !== null ? { tokenBudget } : {}),
         });
         await writePreparedRunSession(res);
+
+        // Opt-in: wait for deferred background preparation to finish before
+        // returning. Default `yuhi prepare` is unchanged (enqueue only, no wait).
+        await maybeWaitBackground({
+          wait: Boolean(cmd.opts().waitBackground),
+          runId: res.runId,
+          preparedDir: res.outDir,
+          run: ({ runId, preparedDir, signal }) =>
+            runBackgroundForRun({
+              runId,
+              preparedDir,
+              config: loaded.config,
+              providerFactory,
+              ...(signal ? { signal } : {}),
+            }),
+        });
 
         const result = buildCliPrepareResult(res);
         if (g.json) printJson(result);
@@ -636,6 +690,11 @@ async function main(): Promise<void> {
               : `${result.filesIncluded} files available`;
           console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
           console.log(formatCliPrepareResult(result));
+          // v0.3.3: when compression ran, follow the summary with the compression block.
+          // With --json the same data is already inside the JSON result (nothing extra).
+          if (res.compression) {
+            console.log("\n" + formatCompressionReport(res.compression, "terminal"));
+          }
         } else {
           console.error(yuhiBanner("partial") + "\n");
           console.error(formatCliPrepareResult(result));
@@ -673,6 +732,37 @@ async function main(): Promise<void> {
       }),
     );
 
+  // ---- report-compression ----  the v0.3.3 Context Compression summary for a run
+  program
+    .command("report-compression <run>")
+    .description("Show the v0.3.3 Context Compression summary for a prepared run")
+    .option("--format <format>", "terminal | json", "terminal")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const format = String(cmd.opts().format ?? "terminal");
+        if (format !== "terminal" && format !== "json") {
+          console.error(`${symbols.err()} Unknown --format '${format}'. Use: terminal, json.`);
+          return 3;
+        }
+        try {
+          const { session } = await readPreparedRunSession(cmd.args[0]!);
+          const compression = session.summary.compression;
+          if (!compression) {
+            if (g.json) printJson({ command: "report-compression", compression: null });
+            else console.log("This run was prepared without --compress.");
+            return 0;
+          }
+          if (g.json) return void printJson(compression);
+          process.stdout.write(formatCompressionReport(compression, format) + "\n");
+          return 0;
+        } catch {
+          console.error("Recovery required\n\nSafe error category: invalid-or-missing-run");
+          return 3;
+        }
+      }),
+    );
+
   program
     .command("review <run>")
     .description("Review metadata for a Prepared Workspace without exposing source data")
@@ -698,47 +788,10 @@ async function main(): Promise<void> {
   program
     .command("review-agent-changes <run>")
     .description("Review post-agent Prepared Workspace changes; never applies automatically")
-    .requiredOption("--original <dir>", "original workspace used for conflict checks")
-    .requiredOption("--baseline <file>", "metadata-only baseline captured before agent execution")
     .action(
       action(async (cmd) => {
         const { g } = getContext(cmd);
-        const opts = cmd.opts() as { original: string; baseline: string };
-        const prepared = resolvePreparedRunReference(cmd.args[0]!);
-        await readPreparedRunSession(cmd.args[0]!);
-        const original = await assertSafeSourceWorkspace(opts.original);
-        const baseline = JSON.parse(await readFile(path.resolve(opts.baseline), "utf8")) as AgentChangeBaseline;
-        if (
-          baseline?.schemaVersion !== 2 ||
-          typeof baseline.runId !== "string" ||
-          !Array.isArray(baseline.files)
-        ) {
-          console.error("Invalid input\n\nSafe error category: invalid-agent-baseline");
-          return 3;
-        }
-        const review = await reviewAgentChanges(baseline, prepared, original);
-        const output = {
-          command: "review-agent-changes",
-          runId: baseline.runId,
-          changedFileCount: review.changes.length,
-          changes: review.changes,
-          security: review.security,
-          applyAllowed: review.applyAllowed,
-          blockers: review.blockers,
-          applyResult: "unavailable-in-cli",
-          workflowState: deriveWorkflowState({
-            changedFileCount: review.changes.length,
-            reviewingChanges: true,
-          }),
-        };
-        if (g.json) printJson(output);
-        else {
-          console.log(`AI Agent completed\n\nChanges detected: ${output.changedFileCount}`);
-          console.log(`Security scan: ${output.security.safe ? "Passed" : "Blocked"}`);
-          console.log(`Apply: ${output.applyResult}`);
-          if (output.blockers.length > 0) console.log(`Blockers: ${output.blockers.join(", ")}`);
-        }
-        return 0;
+        return patchStatus({ runRef: cmd.args[0]!, json: g.json });
       }),
     );
 
@@ -807,6 +860,7 @@ async function main(): Promise<void> {
         const report = await prepareWorkspace(source, {
           providerFactory,
           excludeRelpaths: excluded,
+          safetyMode: resolveSafetyMode({ repo: loaded.config.safetyMode }),
           ...(loaded.config.budget?.reduction_mode
             ? { mode: loaded.config.budget.reduction_mode }
             : {}),
@@ -839,6 +893,170 @@ async function main(): Promise<void> {
           const mark = r.installed ? symbols.ok() : symbols.warn();
           console.log(`  ${mark} ${r.id.padEnd(8)} ${ui.dim(r.displayName)}`);
         }
+      }),
+    );
+
+  // ---- launch ----  personal-first: run an installed agent on a prepared run
+  const launch = program
+    .command("launch")
+    .description("Launch an installed agent (claude | codex) on a prepared run");
+  for (const spec of [
+    { id: "claude", display: "Claude Code" },
+    { id: "codex", display: "OpenAI Codex CLI" },
+  ] as const) {
+    launch
+      .command(spec.id)
+      .description(`Launch ${spec.display} on a prepared run`)
+      .option("--run <id>", "prepared run id (default: the latest completed run)")
+      .option("--dry-run", "prepare + print the Ready summary but do not launch", false)
+      .action(
+        action(async (cmd) => {
+          const { g } = getContext(cmd);
+          const opts = cmd.opts();
+          return await performLaunch({
+            agentId: spec.id,
+            ...(opts.run ? { runRef: String(opts.run) } : {}),
+            forwardedArgs: forwarded,
+            spawn: !opts.dryRun,
+            json: g.json,
+            verbose: g.verbose,
+          });
+        }),
+      );
+  }
+
+  // ---- patch ----  v0.3.6 Safe Patch Review
+  const patchCommand = program
+    .command("patch")
+    .description("Review first. Apply selected agent changes safely.");
+  patchCommand
+    .command("status")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchStatus({ ...(opts.run ? { runRef: String(opts.run) } : {}), json: g.json });
+    }));
+  patchCommand
+    .command("diff")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .option("--file <relpath>", "show one repository-relative file")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchDiff({
+        ...(opts.run ? { runRef: String(opts.run) } : {}),
+        ...(opts.file ? { files: [String(opts.file)] } : {}),
+        json: g.json,
+      });
+    }));
+  patchCommand
+    .command("validate")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchValidate({ ...(opts.run ? { runRef: String(opts.run) } : {}), json: g.json });
+    }));
+  patchCommand
+    .command("apply")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .option("--file <relpath...>", "apply only selected repository-relative files")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchApply({
+        ...(opts.run ? { runRef: String(opts.run) } : {}),
+        ...(Array.isArray(opts.file) ? { files: opts.file.map(String) } : {}),
+        json: g.json,
+        confirmApply: (count) => confirm(`Apply ${count} reviewed change(s) to the Original Workspace?`, false),
+      });
+    }));
+  patchCommand
+    .command("undo <patch-id>")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      return patchUndoCommand({ patchId: cmd.args[0]!, json: g.json });
+    }));
+  patchCommand
+    .command("history")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      return patchHistoryCommand({ json: g.json });
+    }));
+  patchCommand
+    .command("discard")
+    .option("--run <id>", "prepared run id (default: latest)")
+    .action(action(async (cmd) => {
+      const { g } = getContext(cmd);
+      const opts = cmd.opts();
+      return patchDiscard({ ...(opts.run ? { runRef: String(opts.run) } : {}), json: g.json });
+    }));
+
+  // ---- background ----  v0.3.5 Progressive Context control surface
+  const background = program
+    .command("background")
+    .description("Observe and steer deferred background preparation for a prepared run");
+  background
+    .command("status")
+    .description("Show background preparation status from the public status file")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundStatus({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          json: g.json,
+        });
+      }),
+    );
+  background
+    .command("start")
+    .description("Run deferred background preparation to completion (cancellable with Ctrl-C)")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundStart({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          json: g.json,
+        });
+      }),
+    );
+  background
+    .command("cancel")
+    .description("Cancel the whole run, or a single item with --item")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .option("--item <itemId>", "cancel only this item")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundCancel({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          ...(opts.item ? { itemId: String(opts.item) } : {}),
+          json: g.json,
+        });
+      }),
+    );
+  background
+    .command("retry")
+    .description("Re-queue terminal items (never completed ones)")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .option("--item <itemId>", "retry only this item")
+    .option("--failed-only", "restrict a bulk retry to failed / timed-out items", false)
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        return await performBackgroundRetry({
+          ...(opts.run ? { runRef: String(opts.run) } : {}),
+          ...(opts.item ? { itemId: String(opts.item) } : {}),
+          failedOnly: Boolean(opts.failedOnly),
+          json: g.json,
+        });
       }),
     );
 
