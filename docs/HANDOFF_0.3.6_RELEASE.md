@@ -49,84 +49,83 @@ VSIX はローカル成果物です。**Marketplace には上がっていませ�
 
 ---
 
-## 3. リリースできていない理由（5件）
+## 3. 公開状況（2026-08-02 時点）
 
-### 3.1 認証情報 — 最優先。これが無いと物理的に不可能
+| 対象 | 状態 |
+|---|---|
+| npm `@yuhi-ai-labs/yuhi@0.3.6` | **公開済み**（dist-tag `latest`。shasum `fc57bb7b58a7702b2e143bb751870858ae530f58`） |
+| VS Code Marketplace `yuhi-ai-labs.yuhi-vscode` | **0.3.6 公開済み**（メンテナ実施） |
+| main へのマージ | **完了**（PR #17 → `38d8349`） |
+| CI | **9/9 green**（Linux / macOS / Windows × Node 20, 22 + gitleaks + CodEQL） |
+| タグ `v0.3.6` | **未 push** — GH007 でブロック中。下記 4.1 参照 |
+| GitHub Release | **未作成** — ノートは `docs/RELEASE_NOTES_0.3.6.md` に用意済み |
+| Open VSX | 未公開（ovsx トークン未設定） |
+| SBOM / SHA256SUMS | 未生成 |
 
-2026-08-02 に再実行した結果:
-
-```
-npm whoami                              → 401 Unauthorized
-pnpm --filter @yuhi-ai-labs/yuhi publish → 404 / permission なし
-vsce publish --packagePath …            → TF400813 (PAT invalid)
-```
-
-必要なもの:
-
-- **npm トークン**（`@yuhi-ai-labs` scope への publish 権限）
-- **vsce PAT**（Azure DevOps。Marketplace の publisher に紐づくもの）
-- **ovsx トークン**（Open VSX。未設定）
-
-### 3.2 CI がこのコードに一度も通っていない
-
-最後の CI 実行は 2026-07-31 の `b33bcd2`（`pull_request` イベント）。
-`.github/workflows/ci.yml` の push トリガーは `main` のみなので、
-`a29d77b` / `135c0f2` / `5187f5a` は **CI 実行 0 件**。
-`docs/PUBLISH_CHECKLIST.md` は 3 OS × Node 20/22 のグリーンを必須にしている。
-現状の根拠は macOS 1 本のみ。→ **PR を立てるか `workflow_dispatch` で回す。**
-
-### 3.3 main 未マージ
-
-`feature/per-format-and-cleanup` は origin/main より **33 commits ahead**。
-main はまだ 0.3.2 世代（`5177b73`）。
-
-### 3.4 タグ未作成
-
-`v0.3.6` なし。
-
-### 3.5 補助成果物なし
-
-SBOM (`sbom.json`)、`SHA256SUMS.txt`、GitHub Release ドラフトが未作成。
-
----
+npm は `--provenance` なしで公開されている（ローカル実行では OIDC が使えないため）。
+provenance が必要なら次回以降 `release.yml` 経由の gated workflow で publish する。
 
 ## 4. 再開手順
 
-### Step 1 — CI を通す
+### 4.1 GH007 の解除（最初にこれ）
+
+2026-08-02 の作業中に GitHub の
+Settings → Emails → **Block command line pushes that expose my email** が有効になり、
+`ndrg7bmfjw@privaterelay.appleid.com` を含む push が全部拒否されるようになった
+（同じメールでこの日の午前中は 3 回 push できていたので、途中で設定が変わっている）。
+
+対処はどちらか:
+
+- 上記設定を OFF にする（最短。従来どおり push できる）
+- git の committer を GitHub の `@users.noreply.github.com` アドレスに変える。
+  **ただし noreply アドレスにハンドル名が入る場合は公開物に出ないよう注意**
+  （`docs/` の方針: Yuhi の公開物に実名・ハンドルを出さない）
+
+既に remote にあるコミットは privaterelay のままで問題ない。影響するのは新規 push だけ。
+
+### 4.2 タグ
+
+ローカルに**注釈付き**タグ `v0.3.6` が残っている。tagger オブジェクトがメールを持つため
+GH007 の対象になる。軽量タグに置き換えると tagger が無くなり、
+かつ指す先のコミットは既に remote にあるので送信オブジェクトが 0 になる。
 
 ```bash
-gh pr create --base main --head feature/per-format-and-cleanup \
-  --title "v0.3.6: Safe Patch Review + metadata boundary" --fill
-# CI / CodeQL / Secret Scan の 3 本がグリーンになることを確認
-gh pr checks --watch
+git tag -d v0.3.6                 # 注釈付きを消す（これを飛ばすと "already exists" で失敗する）
+git tag v0.3.6 38d8349            # 軽量タグ
+git push origin v0.3.6
 ```
 
-### Step 2 — マージとタグ
+### 4.3 未 push のコミット
+
+`docs/RELEASE_NOTES_0.3.6.md` と本書の更新がローカル main に積まれている。
+4.1 を済ませてから:
 
 ```bash
-gh pr merge --squash   # または --merge。履歴方針に合わせる
-git checkout main && git pull
-git tag v0.3.6 && git push origin v0.3.6
+git push origin main
 ```
 
-### Step 3 — publish（トークン投入後・不可逆）
+### 4.4 GitHub Release
+
+タグを push したあと:
 
 ```bash
-# npm。ローカルからは --provenance は使えない（OIDC が必要）。
-# provenance を付けるなら release.yml 経由の gated workflow で実行する。
-npm login                       # または NPM_TOKEN を設定
-pnpm --filter @yuhi-ai-labs/yuhi publish --access public
+gh release create v0.3.6 --title "Yuhi v0.3.6" \
+  --notes-file docs/RELEASE_NOTES_0.3.6.md \
+  apps/vscode/yuhi-vscode-0.3.6.vsix
+```
 
-# VS Code Marketplace
-export VSCE_PAT=<新しい PAT>
-cd apps/vscode && npx vsce publish --packagePath yuhi-vscode-0.3.6.vsix
+### 4.5 残りの任意作業
 
+```bash
 # Open VSX
 npx ovsx publish apps/vscode/yuhi-vscode-0.3.6.vsix -p <ovsx token>
+
+# SBOM と checksum
+npx @cyclonedx/cyclonedx-npm --output-file sbom.json
+shasum -a 256 apps/vscode/yuhi-vscode-0.3.6.vsix apps/cli/*.tgz > SHA256SUMS.txt
 ```
 
-publish 前に VSIX の sha256 が上記と一致することを確認すること
-（changelog を編集したら再パッケージ→ハッシュが変わる）。
+npm トークンは `apps/cli/.env` の `npm_token3`（gitignore 済み・未追跡・有効を確認済み）。
 
 ### Step 4 — 公開後の確認
 
