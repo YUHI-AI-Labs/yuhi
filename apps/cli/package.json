@@ -2,7 +2,7 @@
   "name": "@yuhi-ai-labs/yuhi",
   "version": "0.3.6",
   "type": "module",
-  "description": "See exactly what your AI agent can see — then run it on a locally-prepared copy of your repo. Local-first, no telemetry.",
+  "description": "See exactly what your AI agent can see \u2014 then run it on a locally-prepared copy of your repo. Local-first, no telemetry.",
   "keywords": [
     "ai",
     "claude-code",
@@ -65,6 +65,11 @@
     "@yuhi/config": "workspace:*",
     "@yuhi/core": "workspace:*",
     "@yuhi/local": "workspace:*",
-    "@yuhi/agents": "workspace:*"
+    "@yuhi/agents": "workspace:*",
+    "@yuhi/context-gateway": "workspace:*",
+    "@yuhi/context-mcp": "workspace:*",
+    "@yuhi/context-runtime": "workspace:*",
+    "@yuhi/context-store": "workspace:*",
+    "@yuhi/context-compression": "workspace:*"
   }
 }

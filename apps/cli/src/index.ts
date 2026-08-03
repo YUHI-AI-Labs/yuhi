@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
+import { join as pathJoin } from "node:path";
 import { cliVersion } from "./version.js";
 import {
   YuhiError,
@@ -909,10 +910,30 @@ async function main(): Promise<void> {
       .description(`Launch ${spec.display} on a prepared run`)
       .option("--run <id>", "prepared run id (default: the latest completed run)")
       .option("--dry-run", "prepare + print the Ready summary but do not launch", false)
+      .option(
+        "--dynamic-context",
+        "route the agent through the local Yuhi gateway so tool results are compressed live (claude only)",
+        false,
+      )
       .action(
         action(async (cmd) => {
           const { g } = getContext(cmd);
           const opts = cmd.opts();
+          if (opts.dynamicContext) {
+            if (spec.id !== "claude") {
+              console.error("--dynamic-context currently supports claude only.\n\nSafe error category: unsupported-agent");
+              return 3;
+            }
+            const { launchClaudeWithDynamicContext } = await import("./dynamic-context/launch-dynamic.js");
+            const result = await launchClaudeWithDynamicContext({
+              ...(opts.run ? { runRef: String(opts.run) } : {}),
+              forwardedArgs: forwarded,
+              spawn: !opts.dryRun,
+              json: g.json,
+              cliEntry: process.argv[1] ?? "",
+            });
+            return result.exitCode;
+          }
           return await performLaunch({
             agentId: spec.id,
             ...(opts.run ? { runRef: String(opts.run) } : {}),
@@ -924,6 +945,79 @@ async function main(): Promise<void> {
         }),
       );
   }
+
+  // ---- dynamic ----  v0.4.0 Repository Virtualization Runtime
+  const dynamicCommand = program
+    .command("dynamic")
+    .description("Dynamic context runtime: health checks and measured statistics");
+
+  dynamicCommand
+    .command("doctor")
+    .description("Check everything the dynamic context runtime needs")
+    .option("--offline", "skip the upstream reachability probe", false)
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        const { runDynamicDoctor, formatDoctorReport, doctorExitCode } = await import(
+          "./dynamic-context/doctor.js"
+        );
+        const checks = await runDynamicDoctor({ offline: Boolean(opts.offline) });
+        if (g.json) printJson({ command: "dynamic doctor", checks });
+        else console.log(formatDoctorReport(checks));
+        return doctorExitCode(checks);
+      }),
+    );
+
+  dynamicCommand
+    .command("stats")
+    .description("Show measured dynamic-context statistics for prepared runs")
+    .option("--run <id>", "prepared run id (default: the latest completed run)")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        const { resolveRunForLaunch } = await import("./launch.js");
+        const { readPersistedStats, formatSnapshot } = await import("./dynamic-context/stats.js");
+        const resolution = await resolveRunForLaunch(opts.run ? String(opts.run) : undefined);
+        if (!resolution.ok) {
+          console.error(`No prepared run found (${resolution.category}).`);
+          return 3;
+        }
+        const root = pathJoin(resolution.run.workspace, ".yuhi", "context");
+        const snapshots = await readPersistedStats(root).catch(() => []);
+        if (g.json) return void printJson({ command: "dynamic stats", sessions: snapshots });
+        if (snapshots.length === 0) {
+          console.log("No dynamic-context activity recorded for this run yet.");
+          console.log("Start one with: yuhi launch claude --dynamic-context");
+          return 0;
+        }
+        for (const snapshot of snapshots) console.log(formatSnapshot(snapshot).join("\n"));
+        console.log("");
+        console.log("Dynamic tool-output reduction is an estimate of withheld tool output —");
+        console.log("never a provider token measurement, API saving, or billing figure.");
+        return 0;
+      }),
+    );
+
+  // ---- mcp ----  retrieval server started by Claude Code, not by the user
+  program
+    .command("mcp")
+    .description("Model Context Protocol servers")
+    .command("serve")
+    .description("Serve Yuhi retrieval tools over stdio (started by the agent)")
+    .action(
+      action(async () => {
+        const { configFromEnv, runStdioServer } = await import("@yuhi/context-mcp");
+        const config = configFromEnv(process.env);
+        if (!config) {
+          console.error("YUHI_CONTEXT_ROOT and YUHI_SESSION_ID must be set. This server is started by Yuhi.");
+          return 3;
+        }
+        await runStdioServer({ ...config, version: cliVersion() });
+        return 0;
+      }),
+    );
 
   // ---- patch ----  v0.3.6 Safe Patch Review
   const patchCommand = program
