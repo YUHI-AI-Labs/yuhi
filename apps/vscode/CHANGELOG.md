@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.3.7]
+
+- Removes identifiers taken from a real export that had been used as illustrative
+  examples in this changelog. They shipped inside the extension package, so anyone
+  who downloaded it received them. The examples are now described rather than quoted.
+- No functional change to the extension.
+
 ## [0.3.6]
 
 Theme: **Safe Patch Review** — *Review first. Apply safely.*
@@ -23,9 +30,9 @@ Theme: **Safe Patch Review** — *Review first. Apply safely.*
   pushed, or published.
 - Adds CLI `yuhi patch status|diff|validate|apply|undo|history|discard` using the same Core
   review and Apply contracts as VS Code.
-- Adds an agent-visible **metadata boundary**. A real workspace names its data after the
-  person in it (`9999990001 評定-0722.xlsx`), so withholding a file's bytes while publishing
-  its name disclosed the identifier anyway. A file whose original is not delivered now
+- Adds an agent-visible **metadata boundary**. A real workspace often names its data after
+  the person in it, so withholding a file's bytes while publishing its name disclosed the
+  identifier anyway. A file whose original is not delivered now
   appears on every agent-readable surface — manifest, background status, session, mode
   summary, handoff, document index — only as a stable `documentId` and a kind-only label
   (`doc-<hex>.pdf`); generated context artifacts are named by identity; and long non-date
@@ -277,8 +284,8 @@ and per-file overrides are in progress for a following release.
   de-identified — review before sharing" instead.
 - XLSX: a parseable workbook is delivered with identifier columns pseudonymized rather
   than falling back to the raw original on a partial match.
-- Pseudonymizes identifiers that appear in filenames (e.g. `…-A000000.csv`); the
-  mapping lives only in the manifest.
+- Pseudonymizes identifiers that appear in filenames; the mapping lives only in the
+  manifest.
 
 ### Reliability
 
