@@ -61,6 +61,21 @@ jobs:
           vsce package --no-dependencies --out ./dist-artifacts/ \
             --cwd apps/vscode || echo "VSIX packaging step is best-effort; adjust for your setup."
 
+      # SBOM covers the whole workspace (pnpm-lock.yaml), not just the packaged
+      # artifacts — that's what a consumer needs to assess dependency risk.
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: ./dist-artifacts/yuhi-${{ github.ref_name }}.cdx.json
+
+      # Checksums cover only what's actually shipped (CLI tarball, VSIX, SBOM),
+      # so a consumer can verify the exact bytes they downloaded.
+      - name: Generate SHA256SUMS
+        working-directory: ./dist-artifacts
+        run: shasum -a 256 * > SHA256SUMS
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
