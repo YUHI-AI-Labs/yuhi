@@ -8,6 +8,7 @@
  */
 
 import { ContextStore, asSessionId } from "@yuhi/context-store";
+import { tallyRetrievals } from "@yuhi/context-runtime";
 import type { GatewayStats, MetricsSnapshot } from "@yuhi/context-gateway";
 
 export function formatStatsReport(stats: GatewayStats): string {
@@ -53,13 +54,20 @@ export function formatSnapshot(s: MetricsSnapshot): string[] {
   ];
 }
 
-/** Read persisted per-session snapshots from a context store root. */
+/**
+ * Read persisted per-session snapshots from a context store root, with the retrieval
+ * count taken from the LEDGER — the gateway cannot observe retrievals, which happen in
+ * the MCP server's own process.
+ */
 export async function readPersistedStats(storeRoot: string): Promise<MetricsSnapshot[]> {
   const store = await ContextStore.open({ root: storeRoot });
   const out: MetricsSnapshot[] = [];
   for (const session of await store.listSessions()) {
-    const snapshot = await store.readState<MetricsSnapshot>(asSessionId(session), "gateway-stats");
-    if (snapshot) out.push(snapshot);
+    const sessionId = asSessionId(session);
+    const snapshot = await store.readState<MetricsSnapshot>(sessionId, "gateway-stats");
+    if (!snapshot) continue;
+    const tally = await tallyRetrievals(store, sessionId);
+    out.push({ ...snapshot, retrievals: tally.delivered });
   }
   return out;
 }

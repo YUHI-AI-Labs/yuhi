@@ -150,3 +150,36 @@ export class EvidenceLedger {
     };
   }
 }
+
+export interface RetrievalTally {
+  readonly delivered: number;
+  readonly withheld: number;
+  readonly tokensDelivered: number;
+  readonly locators: readonly string[];
+}
+
+/**
+ * Count retrievals for a session from the ledger.
+ *
+ * The MCP retrieval server runs in its own process (the agent starts it), so an
+ * in-process counter in the gateway would always report zero. The ledger is the shared
+ * source of truth, which is exactly why retrievals are recorded there.
+ */
+export async function tallyRetrievals(store: ContextStore, session: SessionId): Promise<RetrievalTally> {
+  const rows = (await store.readEvidence(session)) as LedgerRow[];
+  let delivered = 0;
+  let withheld = 0;
+  let tokensDelivered = 0;
+  const locators: string[] = [];
+  for (const row of rows) {
+    if (row.type !== "retrieval") continue;
+    if (row.outcome === "delivered") {
+      delivered++;
+      tokensDelivered += row.tokensDelivered;
+      locators.push(row.locator);
+    } else {
+      withheld++;
+    }
+  }
+  return { delivered, withheld, tokensDelivered, locators };
+}

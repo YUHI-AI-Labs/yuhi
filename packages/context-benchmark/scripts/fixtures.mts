@@ -27,7 +27,7 @@ export const TASK_PROMPTS: Record<TaskId, string> = {
   "large-log":
     "Read server.log. Report the error message that appears in it and the timestamp of the first occurrence. Nothing else.",
   "grep-exploration":
-    "Search the repository for the identifier computeTotal. Report how many files contain it and list the three files with the most occurrences. Nothing else.",
+    "Run `grep -rn computeTotal src/` and, from that output, list the three files with the most occurrences, each with its count. Nothing else.",
   "retrieval-required":
     "Read data.json. Report the exact value of the `checked_at` field of the record whose id is 618, and its `region`. Report only those two values.",
   "multi-file-bug":
@@ -151,7 +151,8 @@ export const TASK_ORACLE: Record<TaskId, (answer: string) => boolean> = {
   "test-failure": (a) =>
     /loyalty discount/i.test(a) && /negative quantity/i.test(a) && /total\.ts:42/.test(a) && /total\.ts:17/.test(a),
   "large-log": (a) => /upstream timeout/i.test(a) && /2026-08-04T0\d:\d\d:\d\dZ/.test(a),
-  "grep-exploration": (a) => /\b40\b/.test(a) && /module-0/.test(a) && /module-1/.test(a),
+  // module-0/1/2 have 12/11/10 occurrences by construction; every other module has 2.
+  "grep-exploration": (a) => /module-0\b/.test(a) && /module-1\b/.test(a) && /module-2\b/.test(a),
   // Record id 618 → index 617: checked_at 2026-08-06T07:17:00Z, region eu-west-1.
   // (Verified against the generator, not assumed — the first draft had the wrong date.)
   "retrieval-required": (a) => /2026-08-06T07:17:00Z/.test(a) && /eu-west-1/.test(a),

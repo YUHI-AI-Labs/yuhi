@@ -19,6 +19,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { startGateway } from "../../context-gateway/src/index.js";
+import { tallyRetrievals } from "../../context-runtime/src/index.js";
+import { ContextStore, asSessionId } from "../../context-store/src/index.js";
 import { createFixture, TASK_ORACLE, TASK_PROMPTS, type TaskId } from "./fixtures.mts";
 
 type Condition = "baseline" | "static-yuhi" | "dynamic-yuhi";
@@ -49,6 +51,7 @@ interface RunRecord {
   fallbacks?: number;
   withheld?: number;
   retrievals?: number;
+  retrievalsWithheld?: number;
   liveZoneViolations?: number;
   medianCompressionLatencyMs?: number;
   peakRssBytes?: number;
@@ -151,6 +154,12 @@ async function runOne(
   model: string,
   run: number,
   timeoutMs: number,
+  /**
+   * Register the MCP retrieval server. Off isolates a real effect we measured: the tool
+   * definitions themselves enter the cached system prompt on every request, so the
+   * retrieval capability has a token cost even in a session that never retrieves.
+   */
+  withMcp = true,
 ): Promise<RunRecord> {
   const workspace = await mkdtemp(join(tmpdir(), `yuhi-bench-${task}-`));
   await createFixture(workspace, task);
@@ -158,23 +167,28 @@ async function runOne(
 
   let outcome: ClaudeOutcome;
   let gatewayStats: Record<string, number> | undefined;
+  let retrievalTally = { delivered: 0, withheld: 0 };
 
   if (condition === "dynamic-yuhi") {
     const contextRoot = join(workspace, ".yuhi", "context");
     await mkdir(contextRoot, { recursive: true });
     const sessionId = `bench-${task}-${run}`;
     const gateway = await startGateway({ storeRoot: contextRoot, sessionOverride: sessionId });
-    const mcpConfig = await writeMcpConfig(workspace, contextRoot, sessionId);
+    const mcpConfig = withMcp ? await writeMcpConfig(workspace, contextRoot, sessionId) : undefined;
     try {
       outcome = await runClaude({
         workspace,
         prompt,
         model,
         env: { ANTHROPIC_BASE_URL: gateway.url },
-        mcpConfig,
+        ...(mcpConfig ? { mcpConfig } : {}),
         timeoutMs,
       });
       gatewayStats = gateway.stats().sessions[0] as unknown as Record<string, number>;
+      // Retrievals happen in the MCP server's process; the ledger is the only witness.
+      const store = await ContextStore.open({ root: contextRoot });
+      const tally = await tallyRetrievals(store, asSessionId(sessionId));
+      retrievalTally = { delivered: tally.delivered, withheld: tally.withheld };
     } finally {
       await gateway.close();
     }
@@ -213,7 +227,8 @@ async function runOne(
           blocksReused: gatewayStats["toolResultBlocksReused"] ?? 0,
           fallbacks: gatewayStats["fallbacks"] ?? 0,
           withheld: gatewayStats["withheld"] ?? 0,
-          retrievals: outcome.mcpToolCalls,
+          retrievals: retrievalTally.delivered,
+          retrievalsWithheld: retrievalTally.withheld,
           liveZoneViolations: gatewayStats["liveZoneViolations"] ?? 0,
           medianCompressionLatencyMs: gatewayStats["medianCompressionLatencyMs"] ?? 0,
           peakRssBytes: gatewayStats["peakRssBytes"] ?? 0,
@@ -282,7 +297,8 @@ function report(records: readonly RunRecord[]): string {
         ["provider cost USD", (r) => r.costUsd ?? 0],
         ["wall clock ms", (r) => r.durationMs],
         ["dynamic tool-output reduction", (r) => r.dynamicReduction ?? 0],
-        ["retrieval tool calls", (r) => r.retrievals ?? 0],
+        ["retrievals delivered (ledger)", (r) => r.retrievals ?? 0],
+        ["retrievals refused (ledger)", (r) => r.retrievalsWithheld ?? 0],
         ["fallbacks", (r) => r.fallbacks ?? 0],
         ["withheld", (r) => r.withheld ?? 0],
         ["live-zone violations", (r) => r.liveZoneViolations ?? 0],
@@ -320,6 +336,7 @@ const models = arg("models", "claude-haiku-4-5-20251001").split(",");
 const runs = Number(arg("runs", "3"));
 const timeoutMs = Number(arg("timeout", "240000"));
 const out = arg("out", "");
+const withMcp = process.argv.indexOf("--no-mcp") === -1;
 
 const records: RunRecord[] = [];
 // Interleave conditions per run index so drift in service latency hits both equally.
@@ -327,7 +344,7 @@ for (let run = 1; run <= runs; run++) {
   for (const task of tasks) {
     for (const model of models) {
       for (const condition of conditions) {
-        const record = await runOne(task, condition, model, run, timeoutMs);
+        const record = await runOne(task, condition, model, run, timeoutMs, withMcp);
         records.push(record);
         console.error(
           `[${task}/${condition}/${model}/run${run}] success=${record.taskSuccess} turns=${record.turns} cost=${record.costUsd ?? "?"} inputSide=${record.inputSideTotal} dynRed=${record.dynamicReduction ?? "-"}`,
