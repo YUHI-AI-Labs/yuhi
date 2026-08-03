@@ -96,6 +96,21 @@ importers:
       '@yuhi/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@yuhi/context-compression':
+        specifier: workspace:*
+        version: link:../../packages/context-compression
+      '@yuhi/context-gateway':
+        specifier: workspace:*
+        version: link:../../packages/context-gateway
+      '@yuhi/context-mcp':
+        specifier: workspace:*
+        version: link:../../packages/context-mcp
+      '@yuhi/context-runtime':
+        specifier: workspace:*
+        version: link:../../packages/context-runtime
+      '@yuhi/context-store':
+        specifier: workspace:*
+        version: link:../../packages/context-store
       '@yuhi/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -183,6 +198,33 @@ importers:
 
   packages/context-compression:
     dependencies:
+      '@yuhi/context-store':
+        specifier: workspace:*
+        version: link:../context-store
+      '@yuhi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/context-gateway:
+    dependencies:
+      '@yuhi/context-compression':
+        specifier: workspace:*
+        version: link:../context-compression
+      '@yuhi/context-runtime':
+        specifier: workspace:*
+        version: link:../context-runtime
+      '@yuhi/context-store':
+        specifier: workspace:*
+        version: link:../context-store
+      '@yuhi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/context-mcp:
+    dependencies:
+      '@yuhi/context-runtime':
+        specifier: workspace:*
+        version: link:../context-runtime
       '@yuhi/context-store':
         specifier: workspace:*
         version: link:../context-store
