@@ -1,0 +1,30 @@
+{
+  "captured_at_note": "timestamps injected at run time by the runner",
+  "machine_record_note": "anonymized to configuration class: exact OS build removed, RAM stated as configured capacity, unused local model inventory removed. Timing-relevant facts (CPU class, core count, runtime versions) are unchanged.",
+  "os": {
+    "platform": "darwin",
+    "product_major": "15",
+    "arch": "arm64"
+  },
+  "cpu": {
+    "model": "Apple M4 Pro",
+    "cores": 12
+  },
+  "ram_gb": 48,
+  "node": "v26.5.0",
+  "pnpm": "10.11.0",
+  "yuhi": "0.3.1",
+  "yuhi_pkg_version": "0.3.1",
+  "ollama": "ollama version is 0.32.5",
+  "ollama_default_model": "qwen3:1.7b",
+  "ollama_models_used": [
+    "qwen3:1.7b"
+  ],
+  "vhs": "vhs version 0.11.0",
+  "concurrency": "sequential (1 repo at a time; Ollama single local instance)",
+  "per_run_timeout_seconds": 150,
+  "runs_per_repo": "cold + 2 warm (if cold succeeds); on cold timeout/fail: 1 attempt recorded, warm skipped (exception, noted)",
+  "command": "yuhi --json init (once) ; yuhi --json prepare (timed, x3)",
+  "yuhi_config": "default yuhi.yaml from `yuhi init` (unchanged per repo)",
+  "behavior_change": "none — v0.3.1 dist used as published; timing from --json localModelElapsedMs + wall clock only"
+}
