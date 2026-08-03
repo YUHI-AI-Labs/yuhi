@@ -1,0 +1,18 @@
+{
+  "note": "Curated 12-repo pilot for the Yuhi v0.3.1 OSS benchmark. Mix of categories, deliberately including repositories where reduction is expected to be ~0%. All measured from an actual fresh `git clone --depth 1` at HEAD with the DEFAULT `yuhi init` config — no junk added, no per-repo config tuning. Commit hash is resolved at clone time by the runner.",
+  "config_policy": "default yuhi.yaml from `yuhi init`, identical for every repo",
+  "repositories": [
+    { "name": "expressjs/express", "url": "https://github.com/expressjs/express.git", "category": "A-clean-source", "reason": "Popular, clean JS library — a fresh clone is source+tests+docs only. Expected reduction ~0% (baseline that Yuhi correctly finds little to remove)." },
+    { "name": "sindresorhus/ky", "url": "https://github.com/sindresorhus/ky.git", "category": "A-clean-source", "reason": "Small, modern TypeScript HTTP library. Clean single-package repo; expected low reduction." },
+    { "name": "pallets/click", "url": "https://github.com/pallets/click.git", "category": "A-clean-source", "reason": "Clean Python CLI library with docs. Expected low reduction; tests presence of Python handling." },
+    { "name": "tiangolo/typer", "url": "https://github.com/tiangolo/typer.git", "category": "A-clean-source", "reason": "Python library, docs-heavy (MkDocs). Some markdown/image docs — tests document handling." },
+    { "name": "d3/d3", "url": "https://github.com/d3/d3.git", "category": "B-build-artifacts", "reason": "Commits a built dist/ bundle. Expected some reduction if build output is routed out." },
+    { "name": "moment/moment", "url": "https://github.com/moment/moment.git", "category": "B-build-artifacts", "reason": "Ships many locale files + committed min/build output; larger tree. Tests build/large-file handling (may be slow)." },
+    { "name": "chartjs/Chart.js", "url": "https://github.com/chartjs/Chart.js.git", "category": "B-build-artifacts", "reason": "Charting library that historically commits dist/ + docs. Mixed source/build." },
+    { "name": "datasciencedojo/datasets", "url": "https://github.com/datasciencedojo/datasets.git", "category": "C-data", "reason": "Repository of CSV datasets — mostly data, little source. Strong candidate for real reduction (data kept local / de-identified)." },
+    { "name": "plotly/datasets", "url": "https://github.com/plotly/datasets.git", "category": "C-data", "reason": "CSV/JSON sample datasets. Data-heavy; expected higher reduction (may be large — timeout is a valid result)." },
+    { "name": "rougier/numpy-100", "url": "https://github.com/rougier/numpy-100.git", "category": "C-notebooks", "reason": "Jupyter notebooks (with outputs) + Python. Tests notebook-output handling." },
+    { "name": "openai/openai-cookbook", "url": "https://github.com/openai/openai-cookbook.git", "category": "C-notebooks", "reason": "Large notebook/data repo with embedded outputs and images. Likely slow / may time out — recorded honestly." },
+    { "name": "YUHI-AI-Labs/yuhi", "url": "https://github.com/YUHI-AI-Labs/yuhi.git", "category": "D-yuhi", "reason": "Dogfood: measure Yuhi on its own fresh clone (monorepo with docs, examples/demo, tests). No junk added." }
+  ]
+}
