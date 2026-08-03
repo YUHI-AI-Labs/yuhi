@@ -180,7 +180,6 @@ apps/      cli · vscode
 
 ## プロジェクトの方向性
 
-- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — 完了 / 進行中 / 次 / 将来。
 - [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) — Yuhi が守るもの、守 **らない** もの。
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — コードベースの構成。
 
