@@ -9,6 +9,9 @@
  */
 
 import { jsonCompressor } from "./json.js";
+import { jsonTolerantCompressor } from "./json-tolerant.js";
+import { searchResultsCompressor } from "./search-results.js";
+import { testOutputCompressor } from "./test-output.js";
 import { textCompressor } from "./text.js";
 import {
   runWithLimit,
@@ -19,7 +22,18 @@ import {
   type Compressor,
 } from "./contract.js";
 
-export const BUILTIN_COMPRESSORS: readonly Compressor[] = [jsonCompressor, textCompressor];
+/**
+ * Order is the routing policy (ADR-0005, derived from observed traffic):
+ * strict JSON → tolerant JSON scan → search results → test/shell output → text window.
+ * Most specific first; the generic byte/line window is always last and always available.
+ */
+export const BUILTIN_COMPRESSORS: readonly Compressor[] = [
+  jsonCompressor,
+  jsonTolerantCompressor,
+  searchResultsCompressor,
+  testOutputCompressor,
+  textCompressor,
+];
 
 export interface CompressionAttempt {
   readonly compressorId: string;

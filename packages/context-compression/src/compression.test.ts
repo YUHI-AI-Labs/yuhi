@@ -107,10 +107,21 @@ describe("text compressor", () => {
 });
 
 describe("fallback registry", () => {
-  it("falls through to the next compressor when one fails its own verify", async () => {
+  it("routes a repetitive log to the line-selection compressor, not the blunt window", async () => {
     const content = Array.from({ length: 400 }, (_, i) => `line ${i}`).join("\n");
-    // Not JSON, so the json compressor declines; the text window handles it.
+    // Since slice 3A the log/shell family is handled by the line-selection compressor,
+    // which removes the repeated shape instead of cutting a contiguous middle.
     const outcome = await compressWithFallback(input(content, "log"), ctx);
+    expect(outcome.status).toBe("compressed");
+    if (outcome.status === "compressed") {
+      expect(outcome.result.compressorId).toBe("test-output-failures-and-anchors");
+    }
+  });
+
+  it("still falls back to the text window for content no specific compressor claims", async () => {
+    // Prose: not JSON, not search hits, and the log family declines a `text` kind.
+    const content = Array.from({ length: 400 }, (_, i) => `Paragraph ${i}: ${"word ".repeat(8)}`).join("\n");
+    const outcome = await compressWithFallback(input(content, "markdown"), ctx);
     expect(outcome.status).toBe("compressed");
     if (outcome.status === "compressed") expect(outcome.result.compressorId).toBe("text-window");
   });
