@@ -109,6 +109,31 @@ function largeJson(rows = 2000): string {
   return JSON.stringify({ configPath: ABSOLUTE_PATH, users });
 }
 
+function testRunOutput(passing = 600): string {
+  const lines: string[] = ["$ vitest run", "", " RUN  v2.1.9 /repo"];
+  for (let i = 0; i < passing; i++) {
+    lines.push(` ✓ src/mod-${i % 40}.test.ts > case ${i} ${1 + (i % 9)}ms`);
+    if (i % 60 === 0) lines.push("npm warn deprecated inflight@1.0.6: unmaintained");
+  }
+  lines.push(
+    "   ✗ applies the loyalty discount",
+    "     AssertionError: expected 1170 to be 1080",
+    "      at src/checkout/total.ts:42:11",
+    " Test Files  1 failed | 40 passed (41)",
+    `      Tests  1 failed | ${passing} passed (${passing + 1})`,
+    "exit code 1",
+  );
+  return lines.join("\n");
+}
+
+function grepOutput(files = 40, hits = 10): string {
+  const lines: string[] = [];
+  for (let f = 0; f < files; f++) {
+    for (let h = 0; h < hits; h++) lines.push(`src/module-${f}/handler.ts:${100 + h}:  computeTotal(order)`);
+  }
+  return lines.join("\n");
+}
+
 /** A realistic Claude Code turn: user text, tool_use, tool_result. */
 function messagesRequest(results: { id: string; text: string }[], stream = false): Record<string, unknown> {
   return {
@@ -312,6 +337,77 @@ describe("live-zone interception", () => {
     expect(delivered).toContain("log line 0");
     expect(delivered).not.toContain("log line 250");
     expect(handle.stats().sessions[0]?.fallbacks).toBe(1);
+  });
+});
+
+describe("slice 3 compressors through the gateway", () => {
+  /** Same shape, but the agent called Bash with a test command. */
+  function bashRequest(id: string, text: string, command: string): Record<string, unknown> {
+    return {
+      model: "claude-sonnet-5",
+      max_tokens: 4096,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Run the tests." }] },
+        { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] },
+      ],
+    };
+  }
+
+  it("routes real test output to the failures-and-anchors compressor and keeps the anchors", async () => {
+    const upstream = await fakeUpstream();
+    const handle = await gateway(upstream);
+
+    await post(handle, bashRequest("toolu_t", testRunOutput(), "pnpm test"));
+    const delivered = toolResultContent(upstream.bodies[0] ?? "");
+
+    expect(delivered).toContain("test-output-failures-and-anchors");
+    expect(delivered).toContain("exit code 1");
+    expect(delivered).toContain("AssertionError: expected 1170 to be 1080");
+    expect(delivered).toContain("src/checkout/total.ts:42:11");
+    expect(delivered).toContain("Tests  1 failed | 600 passed (601)");
+    expect(delivered).not.toContain("case 300");
+    expect(delivered).toMatch(/retrieve L\d+-L\d+/);
+
+    const snapshot = handle.stats().sessions[0];
+    // §3A acceptance: at least half the delivered tool-output tokens removed.
+    expect(snapshot ? 1 - snapshot.deliveredEstimatedTokens / snapshot.rawEstimatedTokens : 0).toBeGreaterThan(0.5);
+  });
+
+  it("routes grep output to the grouped search compressor and preserves the match count", async () => {
+    const upstream = await fakeUpstream();
+    const handle = await gateway(upstream);
+
+    await post(handle, {
+      model: "claude-sonnet-5",
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Find computeTotal." }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_g", name: "Grep", input: { pattern: "computeTotal" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_g", content: grepOutput() }] },
+      ],
+    });
+    const delivered = toolResultContent(upstream.bodies[0] ?? "");
+
+    expect(delivered).toContain("[search] 400 matches in 40 files");
+    expect(delivered).toContain("src/module-0/handler.ts: 10 matches");
+    const snapshot = handle.stats().sessions[0];
+    // §3B acceptance: at least 40% removed.
+    expect(snapshot ? 1 - snapshot.deliveredEstimatedTokens / snapshot.rawEstimatedTokens : 0).toBeGreaterThan(0.4);
+  });
+
+  it("routes a truncated JSON fragment to the tolerant scanner instead of giving up", async () => {
+    const upstream = await fakeUpstream();
+    const handle = await gateway(upstream);
+    const truncated = `{"records":[${Array.from({ length: 300 }, (_, i) => `{"id":${i},"status":"${i === 219 ? "failed" : "ok"}","payload":"${"x".repeat(60)}"}`).join(",")}`;
+
+    await post(handle, bashRequest("toolu_j", truncated, "head -c 40000 data.json"));
+    const delivered = toolResultContent(upstream.bodies[0] ?? "");
+
+    expect(delivered).toContain("json-tolerant-scan");
+    expect(delivered).toContain("TRUNCATED");
+    expect(delivered).toContain('"status": "failed"');
+    expect(delivered).toMatch(/retrieve B\d+-B\d+/);
   });
 });
 
