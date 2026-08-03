@@ -165,3 +165,59 @@ Additive clarifications, recorded here and carried into `V0_4_0_ARCHITECTURE.md`
 * [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) · [headroom-ai on PyPI](https://pypi.org/project/headroom-ai/) · [Headroom as a context compression layer](https://silenceper.com/en/article/2026-06-14-headroom-ai-agent-context-compression/)
 * [Building a better repository map with tree sitter (aider)](https://aider.chat/2023/10/22/repomap.html) · [Aider repository mapping system](https://deepwiki.com/Aider-AI/aider/4.1-repository-mapping-system)
 * [OpenHands context condensation](https://www.openhands.dev/blog/openhands-context-condensensation-for-more-efficient-ai-agents) · [Condenser docs](https://docs.openhands.dev/sdk/arch/condenser) · [AgentCondensationAction PR #7311](https://github.com/OpenHands/OpenHands/pull/7311)
+
+---
+
+## 6. Headroom feature coverage (updated 2026-08-03, after slice 2)
+
+Required by v0.4.0 directive §19. **No Headroom code was copied**; where a design
+principle was adopted (live-zone compression, prefix/cache stability) it was re-derived
+from the public description and implemented independently — see
+`docs/design/V0_4_0_DYNAMIC_RUNTIME.md` §2 for our construction and the Sources list below
+for what we read. Headroom is Apache-2.0 upstream; we take no code and therefore carry no
+attribution obligation beyond this citation.
+
+| Capability | Yuhi state | Where / why |
+|---|---|---|
+| Agent wrapper (one command) | **Done** | `yuhi launch claude --dynamic-context` wraps `performLaunch`, so Safe Apply is untouched. |
+| Local proxy | **Done** | `@yuhi/context-gateway`, loopback, Anthropic Messages API compatible. Network proxy form factor still **Rejected** (credential surface). |
+| Live-zone compression | **Done** | `(tool_use_id, raw hash)` → exact delivered bytes; only new blocks compressed. |
+| Prefix / cache stability | **Done** | Byte-identical re-delivery, persisted across restart, structural live-zone diff with violation counter. Measured: 0 violations, cache-creation −79%. |
+| Content routing | **Done** | Classified from the agent's own `tool_use` (file extension, command) before sniffing bytes. |
+| JSON compression | **Done** | `json-outline`: schema, stats, samples, interesting rows, retrievable omissions. |
+| Long single-line / partial JSON | **Partial** | Byte window (ADR-0005). A tolerant prefix parser is the next compressor. |
+| Code compression | **Partial** | The 0.3.3 structure compressor exists for the repository but is not yet wired into the dynamic Read path. |
+| Text compression | **Done** | Line window and byte window, both reversible. |
+| Shell-output rewriting | **Partial** | Classified and scanned; a failures-and-anchors compressor is slice 3. |
+| Log / test compression | **Planned** | Slice 3; classification and anchors specified, compressors not written. |
+| HTML / XML / CSV / TSV | **Planned** | Deliberately deprioritised — absent from observed traffic (ADR-0005). |
+| Reversible retrieval | **Done** — and stronger | Bounded, ledger-authorized, safety-rescanned, deterministic. Headroom exposes no equivalent authorization model. |
+| MCP | **Done** | Six retrieval/explain/stats tools, all through the runtime. |
+| Shared context between agents | **Rejected for 0.4.0** | Cross-agent sharing widens the authorization model; revisit with a real session token. |
+| Conversation condensation | **Planned (v0.5)** | Needs a local model plus an exact-output rescan of generated text. |
+| Output-token shaping | **Rejected** | Steering the model's *output* changes the answer; Yuhi's contract is to change what it *sees*. |
+| Metrics / dashboard | **Done (CLI)** | `yuhi dynamic stats`, `/stats`, `yuhi_context_stats`. Cloud dashboard is out of scope (§21). |
+| Timeout / fallback | **Done** | Per-compressor timeout, cancellation, and the availability/security split. |
+| Session cleanup | **Done** | Gateway close flushes stats; store `gc()` is reachability-based and never drops cited evidence. |
+| Multi-agent support | **Planned (v0.5)** | Codex/Gemini/Qwen need their own request contracts; only Claude is wired. |
+| Image compression via ML router | **Rejected** | Non-deterministic in the delivery path (§3). |
+| Headline "up to 95%" claims | **Rejected** | We publish measured medians per named workload, and publish regressions. |
+
+### Yuhi-specific coverage (directive §20) — every dynamic path
+
+| Guarantee | Enforced where |
+|---|---|
+| Secret scan before compression | `ContextRuntime.deliver` step 1; no gateway path skips it |
+| PII policy | same scan (`@yuhi/scanner` detectors, one definition) |
+| Metadata boundary | `scanMetadata` + `PrivateMetadata`/`PublicMetadata` scope discriminants |
+| Exact-output rescan | on the precise delivered bytes, after compression, before the wire |
+| Private/public state typing | `RawRef` is the only reference to original bytes |
+| Known-risk withholding | security failure ⇒ `withheld`, notice carries public metadata only |
+| Policy-aware retrieval | exposed-locator containment + size bounds + rescan + evidence |
+| Evidence ledger | delivery, retrieval and delivered-block rows; `yuhi_explain_context` |
+| Static Prepared Repository | unchanged; the gateway stores context *inside* the prepared run |
+| Safe Patch Review / Safe Apply / rollback / Undo | untouched — `--dynamic-context` delegates to `performLaunch` |
+
+A dynamic path that bypassed any row above would make v0.4.0 incomplete. The MCP tools are
+the likeliest bypass and are therefore routed through `ContextRuntime`, with tests that
+assert refusal for unexposed locators, foreign objects and over-large ranges.
