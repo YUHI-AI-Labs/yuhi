@@ -13,7 +13,14 @@ import type { ContentKind, ContextStore, ObjectId, SessionId } from "@yuhi/conte
 import type { ContextEventId, ToolName } from "./event.js";
 import type { PublicFinding } from "./safety.js";
 
-export type DeliveryPath = "delivered" | "delivered-original" | "withheld";
+export type DeliveryPath = "delivered" | "delivered-original" | "delivered-fallback" | "withheld";
+
+/**
+ * Availability failures (compressor error/timeout/absent) may degrade to a scanned
+ * representation; SECURITY failures never may. Keeping the classes distinct is why
+ * §7 forbids handling both with one fail-open path.
+ */
+export type FailureClass = "availability" | "security";
 
 export interface EvidenceRecord {
   readonly type: "delivery";
@@ -38,6 +45,11 @@ export interface EvidenceRecord {
   readonly metadataLabels: readonly string[];
   readonly deliveryPath: DeliveryPath;
   readonly withheldReason?: string;
+  readonly failureClass?: FailureClass;
+  /** Which degraded representation was delivered, when the path was a fallback. */
+  readonly fallback?: "safe-window" | "scanned-original";
+  /** Correlates a delivery with the agent's `tool_use_id` (gateway live zone). */
+  readonly toolUseId?: string;
   readonly tokensBefore: number;
   readonly tokensAfter: number;
   /** True when these bytes were replayed from an earlier identical delivery. */
@@ -64,7 +76,27 @@ export interface RetrievalRecord {
   readonly tokensDelivered: number;
 }
 
-export type LedgerRow = EvidenceRecord | RetrievalRecord;
+/**
+ * A tool_result block already delivered to the provider. Persisted so a gateway
+ * restart reproduces the SAME compact bytes for the same block: the provider prefix
+ * (and therefore its cache) must not change because Yuhi was restarted.
+ */
+export interface DeliveredBlockRecord {
+  readonly type: "delivered-block";
+  readonly sessionId: SessionId;
+  readonly timestamp: string;
+  readonly toolUseId: string;
+  /** sha256 of the RAW tool_result text, so a changed block is treated as new. */
+  readonly rawHash: string;
+  readonly rawObjectId: ObjectId;
+  /** The compact bytes, stored as an object (content-addressed, gc-rooted). */
+  readonly compactObjectId: ObjectId;
+  readonly strategy: string;
+  readonly tokensBefore: number;
+  readonly tokensAfter: number;
+}
+
+export type LedgerRow = EvidenceRecord | RetrievalRecord | DeliveredBlockRecord;
 
 export function toLedgerOmissions(omissions: readonly Omission[]): LedgerOmission[] {
   return omissions.map((o) => ({

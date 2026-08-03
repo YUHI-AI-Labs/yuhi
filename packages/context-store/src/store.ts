@@ -245,6 +245,33 @@ export class ContextStore {
     return { removed, retained };
   }
 
+  /**
+   * Small per-session state (prefix state, gateway stats). Separate from objects on
+   * purpose: this is Yuhi's own bookkeeping, never agent-visible content, and it must
+   * survive a gateway restart so delivered bytes can be reproduced byte-identically.
+   */
+  async writeState(session: SessionId, name: string, value: unknown): Promise<void> {
+    if (!/^[a-z0-9-]{1,64}$/.test(name)) {
+      throw new ContextStoreError("invalid-path", "State name must be 1-64 chars of [a-z0-9-]");
+    }
+    const path = join(this.root, "sessions", session, "state", `${name}.json`);
+    await mkdir(dirname(path), { recursive: true, mode: DIR_MODE });
+    await writeFile(path, JSON.stringify(value), { mode: FILE_MODE });
+  }
+
+  async readState<T>(session: SessionId, name: string): Promise<T | undefined> {
+    try {
+      const raw = await readFile(join(this.root, "sessions", session, "state", `${name}.json`), "utf8");
+      return JSON.parse(raw) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async listSessions(): Promise<SessionId[]> {
+    return (await this.listDir(join(this.root, "sessions"))) as SessionId[];
+  }
+
   /** Append an evidence row. Kept here so the ledger shares the store's gc roots. */
   async appendEvidence(session: SessionId, row: unknown): Promise<void> {
     await this.appendJsonl(join(this.root, "evidence", `${session}.jsonl`), row);

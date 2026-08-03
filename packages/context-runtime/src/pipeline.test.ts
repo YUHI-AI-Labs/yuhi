@@ -51,6 +51,20 @@ const META = privateMetadata({
   hostname: "test-macbook.local",
 });
 
+/** A compressor that always fails — used to exercise the availability class. */
+function exploding() {
+  return {
+    id: "exploding",
+    version: "1",
+    supports: () => true,
+    estimateTokens: (t: string) => t.length,
+    compress: async () => {
+      throw new Error("boom");
+    },
+    verify: () => ({ ok: true }) as const,
+  };
+}
+
 async function deliverPayload(rt: ContextRuntime, content = payload()): Promise<Delivery> {
   return rt.deliver({
     sessionId: SESSION,
@@ -118,7 +132,7 @@ describe("Yuhi Runtime — large JSON slice", () => {
     }
   });
 
-  it("reverses an omission through retrieve, and counts it in the ledger", async () => {
+  it("bounds retrieval: refuses an over-large range and suggests a narrower one", async () => {
     const rt = await runtime();
     const delivery = await deliverPayload(rt);
     if (delivery.status !== "delivered") throw new Error("expected delivery");
@@ -126,18 +140,45 @@ describe("Yuhi Runtime — large JSON slice", () => {
     const slice = delivery.retrievable.find((o) => o.kind === "array-elements");
     expect(slice?.locator).toBe("$.users[2:1998]");
 
-    const retrieval = await rt.retrieve({
+    // An exposed locator is not permission to pull an unbounded range (§10).
+    const tooLarge = await rt.retrieve({
       sessionId: SESSION,
       eventId: delivery.eventId,
       locator: slice?.locator ?? "",
+    });
+    expect(tooLarge).toMatchObject({ status: "withheld", reason: "range-too-large" });
+    if (tooLarge.status !== "withheld") return;
+    expect(tooLarge.suggestion).toBe("$.users[2:102]");
+  });
+
+  it("reverses an omission through a narrower sub-range, and counts it in the ledger", async () => {
+    const rt = await runtime();
+    const delivery = await deliverPayload(rt);
+    if (delivery.status !== "delivered") throw new Error("expected delivery");
+
+    // Narrower than the exposed slice: strictly less data, so it stays authorized.
+    const retrieval = await rt.retrieveByObject({
+      sessionId: SESSION,
+      objectId: delivery.publicMetadata.objectId,
+      locator: "$.users[500:520]",
+      reason: "inspect the failing records",
     });
     expect(retrieval.status).toBe("delivered");
     if (retrieval.status !== "delivered") return;
     expect(retrieval.text).toContain("user-500");
     expect(retrieval.tokens).toBeGreaterThan(0);
 
+    // Deterministic: the same range returns the same bytes.
+    const again = await rt.retrieveByObject({
+      sessionId: SESSION,
+      objectId: delivery.publicMetadata.objectId,
+      locator: "$.users[500:520]",
+    });
+    if (again.status !== "delivered") throw new Error("expected delivery");
+    expect(again.text).toBe(retrieval.text);
+
     const explanation = await rt.explain(SESSION, delivery.eventId);
-    expect(explanation?.retrievalCount).toBe(1);
+    expect(explanation?.retrievalCount).toBeGreaterThanOrEqual(1);
   });
 
   it("refuses a locator the event never withheld", async () => {
@@ -210,23 +251,52 @@ describe("Yuhi Runtime — large JSON slice", () => {
     expect(explanation?.record.deliveryPath).toBe("delivered-original");
   });
 
-  it("withholds — never falls back to raw — when compression errors", async () => {
-    const exploding = {
-      id: "exploding",
-      version: "1",
-      supports: () => true,
-      estimateTokens: (t: string) => t.length,
-      compress: async () => {
-        throw new Error("boom");
-      },
-      verify: () => ({ ok: true }) as const,
-    };
-    const rt = await runtime({ compressors: [exploding] });
+  it("degrades to a deterministic safe window when compression is UNAVAILABLE", async () => {
+    // §7: an availability failure is not a security failure. These bytes already passed
+    // secret/PII/metadata scanning, so blocking the agent entirely would be the wrong
+    // trade — `file blocked ≠ launch blocked`.
+    const rt = await runtime({ compressors: [exploding()] });
+    const lines = Array.from({ length: 400 }, (_, i) => `row ${i}`).join("\n");
+    const delivery = await rt.deliver({
+      sessionId: SESSION,
+      tool: "bash",
+      kind: "shell-output",
+      content: lines,
+      privateMetadata: privateMetadata(),
+    });
+
+    if (delivery.status !== "delivered") throw new Error("expected a degraded delivery");
+    expect(delivery.fallback).toBe("safe-window");
+    expect(delivery.text).toContain("row 0");
+    expect(delivery.text).not.toContain("row 200");
+    expect(delivery.tokensAfter).toBeLessThan(delivery.tokensBefore);
+
+    const explanation = await rt.explain(SESSION, delivery.eventId);
+    expect(explanation?.record.deliveryPath).toBe("delivered-fallback");
+    expect(explanation?.record.failureClass).toBe("availability");
+
+    // The gap the fallback created is itself retrievable — nothing is destroyed.
+    const gap = delivery.retrievable[0]?.locator ?? "";
+    expect(gap).toMatch(/^L\d+-L\d+$/);
+    const back = await rt.retrieveByObject({
+      sessionId: SESSION,
+      objectId: delivery.publicMetadata.objectId,
+      locator: "L61-L160",
+    });
+    expect(back.status).toBe("delivered");
+  });
+
+  it("withholds — never falls back to raw — when the policy forbids degrading", async () => {
+    const rt = await runtime({
+      compressors: [exploding()],
+      fallbackPolicy: { onAvailabilityFailure: "withhold", safeWindowLines: 120 },
+    });
     const delivery = await deliverPayload(rt);
 
     expect(delivery.status).toBe("withheld");
     if (delivery.status !== "withheld") return;
     expect(delivery.reason).toBe("all-compressors-failed");
+    expect(delivery.failureClass).toBe("availability");
     // Public metadata is still available: the agent learns something exists.
     expect(delivery.publicMetadata.kind).toBe("json");
 
@@ -257,7 +327,12 @@ describe("Yuhi Runtime — large JSON slice", () => {
     };
     const rt = await runtime({ compressors: [leaking] });
     const delivery = await deliverPayload(rt);
-    expect(delivery).toMatchObject({ status: "withheld", reason: "private-metadata-in-output" });
+    // A SECURITY failure: no policy may degrade this into a delivery.
+    expect(delivery).toMatchObject({
+      status: "withheld",
+      reason: "private-metadata-in-output",
+      failureClass: "security",
+    });
   });
 
   it("gives each event a deterministic id and a monotonic sequence", async () => {
