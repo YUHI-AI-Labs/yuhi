@@ -57,6 +57,9 @@ const FRAMEWORK_NOISE = /^\s*(RUN|DEV|WAIT|WATCH)\s+v?\d|^\s*(Determining test s
 export const testOutputCompressor: Compressor = {
   id: TEST_OUTPUT_COMPRESSOR_ID,
   version: TEST_OUTPUT_COMPRESSOR_VERSION,
+  // Everything load-bearing is preserved by contract and asserted by verify(), so a
+  // retrieve template would cost a turn without adding information.
+  hintPolicy: "answer-complete",
 
   supports(kind, sample: Sample): boolean {
     if (kind !== "test-output" && kind !== "shell-output" && kind !== "log") return false;

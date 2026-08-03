@@ -915,6 +915,11 @@ async function main(): Promise<void> {
         "route the agent through the local Yuhi gateway so tool results are compressed live (claude only)",
         false,
       )
+      .option(
+        "--with-retrieval",
+        "also register Yuhi's MCP retrieval tools (measured to cost extra agent turns)",
+        false,
+      )
       .action(
         action(async (cmd) => {
           const { g } = getContext(cmd);
@@ -931,6 +936,7 @@ async function main(): Promise<void> {
               spawn: !opts.dryRun,
               json: g.json,
               cliEntry: process.argv[1] ?? "",
+              withRetrieval: Boolean(opts.withRetrieval),
             });
             return result.exitCode;
           }

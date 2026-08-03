@@ -24,6 +24,7 @@ import {
   type CompressContext,
   type CompressionOutcome,
   type Compressor,
+  type HintPolicy,
   type Omission,
 } from "@yuhi/context-compression";
 import {
@@ -115,6 +116,8 @@ export type Delivery =
       readonly removed: readonly EvidenceRecord["removed"][number][];
       readonly secretRedactions: number;
       readonly metadataRedactions: number;
+      /** Whether to advertise retrieval for this delivery (compressor's declaration). */
+      readonly hintPolicy: HintPolicy;
     }
   | {
       readonly status: "withheld";
@@ -273,6 +276,7 @@ export class ContextRuntime {
     let tokensBefore = this.ctx.estimateTokens(req.content);
     let tokensAfter = tokensBefore;
     let fallback: "safe-window" | "scanned-original" | undefined;
+    let hintPolicy: HintPolicy = "offer-retrieval";
 
     if (outcome.status === "compressed") {
       candidate = outcome.result.text;
@@ -282,6 +286,7 @@ export class ContextRuntime {
       removed = outcome.result.removed;
       tokensBefore = outcome.result.tokensBefore;
       tokensAfter = outcome.result.tokensAfter;
+      hintPolicy = outcome.result.hintPolicy ?? "offer-retrieval";
     } else if (outcome.attempts.length > 0 && outcome.attempts.every((a) => a.ok || a.reason === "no-reduction")) {
       // Incompressible content: deliver the scanned original, honestly labelled.
       candidate = safeContent;
@@ -395,6 +400,7 @@ export class ContextRuntime {
       removed: [...removed],
       secretRedactions: scan.redactions,
       metadataRedactions: metadata.redactions,
+      hintPolicy,
       ...(fallback ? { fallback } : {}),
     };
   }

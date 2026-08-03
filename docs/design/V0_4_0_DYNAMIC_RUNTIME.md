@@ -160,3 +160,131 @@ npx tsx packages/context-benchmark/scripts/real-claude-run.mts \
    A tolerant prefix parser is the next highest-value compressor (ADR-0005 item 3).
 5. **No Windows verification** of the gateway path yet; CI covers Linux/macOS/Windows for
    the unit tests, but the real-Claude harness has only been run on macOS.
+
+---
+
+# Slice 3 — measured results, and the regression they exposed
+
+Compressors added: **3A** test/shell output (failures + anchors), **3B** grep/search
+(grouped, deduplicated, counts preserved), **3C** tolerant JSON (truncated / fragment /
+one-line / NDJSON). Registry order is the routing policy (ADR-0005).
+
+Real Claude Code, `claude -p --output-format json`, model `claude-haiku-4-5-20251001`,
+fixed fixtures and prompts, n=3 per cell, provider usage and cost from Claude Code itself.
+
+| task | condition | success | turns | input-side tokens (median) | provider cost (median) | dynamic tool-output reduction |
+|---|---|---|---|---|---|---|
+| test-failure | baseline | 3/3 | 2,2,2 | 36,174 | $0.00425 | — |
+| test-failure | dynamic **+ MCP** | 3/3 | 4,4,4 | 65,600 | $0.00559 **(+31%)** | 83–87% |
+| test-failure | dynamic **no MCP** | 3/3 | 2,2,2 | **30,702 (−15%)** | **$0.00342 (−20%)** | 87.9% |
+| grep-exploration | baseline | 3/3 | 3,3,2 | 53,420 | $0.00348 | — |
+| grep-exploration | dynamic | 2/3 | 3,2,3 | 55,681 | $0.00414 (+19%) | 0%, 38%, 0% |
+| retrieval-required | baseline | 3/3 | 6,6,6 | 128,229 | $0.00771 | — |
+| retrieval-required | dynamic + MCP | **3/3** | 7,11,8 | 139,929 | $0.00783 (≈parity) | 90–93% |
+
+Security across every dynamic run: secret exposure 0 · PII exposure 0 · metadata exposure 0
+· live-zone violations 0 · gateway crashes 0 · withheld-for-safety 0 · broken anchors 0
+(anchor preservation is a compressor postcondition, enforced by `verify()`).
+
+## 1. The regression, and its cause
+
+On test-failure, dynamic Yuhi cut tool-output tokens by ~86% and still cost **31% more
+than baseline**. The `--no-mcp` isolation run — same compression, same fixture, same
+prompt, only the retrieval tools unregistered — cost **20% LESS** than baseline with
+identical 2-turn behaviour and 3/3 success.
+
+**Registering the MCP retrieval tools, not compression, caused the regression.** Two
+mechanisms: their definitions enter the cached system prompt on every request, and their
+presence induced the agent to spend two extra turns on a task where nothing was missing.
+
+Two changes follow, both driven by this measurement:
+
+1. **Retrieval is opt-in.** `--dynamic-context` no longer registers the MCP server;
+   `--with-retrieval` does, and the launch banner says so. Compression never depended on
+   MCP, so the default path is now the cheap one.
+2. **`hintPolicy` on the compressor contract.** A compressor that preserves everything
+   load-bearing by contract (`test-output`, `search-results`) declares `answer-complete`,
+   and the gateway then omits the `yuhi_retrieve(...)` template. Compressors that withhold
+   arbitrary content (`json-outline`, byte window, tolerant scan) keep `offer-retrieval`.
+   The omitted ranges stay in the ledger and remain retrievable either way — what changes
+   is whether the agent is *invited* to spend a turn.
+
+## 2. Reversibility is now proven on real traffic
+
+The retrieval-required task (the answer lives in a record the compact view omits) with
+retrieval enabled: **3/3 correct**, and the ledger records **1, 4 and 1 delivered
+retrievals** with **0 refused** across the three runs. The full chain ran end to end in
+real Claude Code:
+
+```
+compact tool_result → agent identifies missing evidence → MCP yuhi_get_json_path /
+yuhi_retrieve → exposed-locator + bounds check → safety rescan → bounded range delivered →
+correct answer (2026-08-06T07:17:00Z, eu-west-1) → retrieval recorded in the ledger
+```
+
+Cost is at parity with baseline and turns rise (7–11 vs 6): retrieval buys correctness on
+tasks that need it and costs round trips on tasks that do not. That is the trade the
+opt-in flag now exposes to the user instead of hiding.
+
+A measurement bug was fixed on the way: the gateway's `retrievals` counter was zero **by
+construction**, because the MCP server runs in its own process. The count now comes from
+the ledger (`tallyRetrievals`), which is the only witness both processes share.
+
+## 3. Where slice 3 did NOT meet its gate
+
+**3B search results — not met.** The compressor is correct in isolation (440 hits → header
+plus grouped samples, ≥40% reduction, counts preserved, unit-tested) but fired in only 1
+of 3 real runs. Claude Code's own `Grep` tool returns file *names* by default, and when the
+agent shells out it often adds `-c`, `sort` or `uniq`, so a large content-mode result
+rarely reaches the gateway. Task success was 2/3 vs baseline 3/3 and cost was 19% higher.
+Verdict: keep the compressor, do not claim the win, and treat "make the agent's search
+output large enough to be worth compressing" as the wrong goal — the honest conclusion is
+that search is a *low-value* dynamic target on this agent, the opposite of the directive's
+assumption.
+
+**3A test output — met, once MCP is off.** ≥50% delivered-token reduction (86–88%
+measured), anchors preserved, 3/3 success, and a real cost win.
+
+**3C tolerant JSON — met in unit tests and in the gateway routing test; not yet isolated in
+a real session,** because the tasks that exercise it (`head -c` of a big JSON) were not part
+of this matrix.
+
+## 4. Release gate status after slice 3
+
+| Gate | Status |
+|---|---|
+| Real Claude Code gateway | **PASS** |
+| JSON dynamic compression | **PASS** |
+| test/shell dynamic compression | **PASS** (86–88%, cost −20%, MCP off) |
+| log dynamic compression | **NOT MEASURED** (compressor exists; no real run) |
+| grep dynamic compression | **FAIL** (fires in 1/3 real runs; low-value target) |
+| Real retrieval usage | **PASS** (3/3, ledger-confirmed 1/4/1) |
+| Haiku-class | **PASS** |
+| Sonnet-class | **NOT RUN** |
+| Baseline / Static / Dynamic comparison | **PARTIAL** — static-yuhi condition not run |
+| n≥3 per condition | **PASS** for the three tasks measured |
+| Task success within −2pt of baseline | **PARTIAL** — pass on test-failure and retrieval, fail on grep (2/3 vs 3/3) |
+| Provider input tokens −20% median | **PARTIAL** — −15% on test-failure (MCP off); worse on grep and retrieval |
+| Dynamic tool-output −40% median | **PASS** on test-failure/retrieval; fail on grep |
+| No provider cost regression | **PASS only with retrieval off**; FAIL on grep |
+| Prefix bytes changed outside live zone = 0 | **PASS** |
+| Broken anchors = 0 | **PASS** |
+| Secret / PII / metadata exposure = 0 | **PASS** |
+| Safe Apply regression = 0 | **PASS** (untouched — `--dynamic-context` delegates to `performLaunch`) |
+| Gateway crash = 0 | **PASS** |
+| Linux or Windows verified | **NOT DONE** (unit suite is cross-platform in CI; the real-Claude harness has only run on macOS) |
+
+**Recommendation: still not a release candidate.** The remaining blockers are now specific
+and cheap to close: run the matrix on a Sonnet-class model, add the static-yuhi condition,
+measure the log task, run the harness once on Linux, and either raise 3B's real-traffic
+value or drop the claim. The token/cost story is only defensible with retrieval off, which
+is why that is now the default.
+
+Reproduce any row:
+
+```bash
+npx tsx packages/context-benchmark/scripts/matrix.mts \
+  --tasks test-failure,grep-exploration,retrieval-required \
+  --conditions baseline,dynamic-yuhi --models claude-haiku-4-5-20251001 \
+  --runs 3 --out /tmp/matrix          # add --no-mcp for the retrieval-off variant
+```

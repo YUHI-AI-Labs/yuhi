@@ -156,6 +156,23 @@ describe("launch orchestration", () => {
     expect(lines.join("\n")).toContain("Dynamic tool-output reduction: 85.0%");
   });
 
+  it("leaves the MCP retrieval tools off by default and says so", async () => {
+    const lines: string[] = [];
+    await launchClaudeWithDynamicContext({
+      upstream: { mode: "anthropic-api", baseUrl: "https://api.anthropic.com", supportsDynamicContext: true },
+      resolveWorkspace: async () => "/prepared/workspace",
+      startGatewayImpl: async () => fakeGateway().handle,
+      fetchProbe: async () => ({ ok: true }),
+      performLaunchImpl: async () => 0,
+      cliEntry: "/usr/local/bin/yuhi",
+      out: (l) => lines.push(l),
+      err: (l) => lines.push(l),
+    });
+    // Measured: registering the tools cost turns and money on tasks that never needed them.
+    expect(lines.join("\n")).toContain("Retrieval tools: off");
+    expect(lines.join("\n")).toContain("--with-retrieval");
+  });
+
   it("refuses to launch — clearly — when the provider cannot be proxied", async () => {
     const errors: string[] = [];
     const result = await launchClaudeWithDynamicContext({

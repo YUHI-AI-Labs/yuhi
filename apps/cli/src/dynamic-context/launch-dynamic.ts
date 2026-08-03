@@ -29,6 +29,14 @@ export interface DynamicLaunchOptions {
   readonly spawn?: boolean;
   /** Absolute path to the CLI entry the MCP server should be started from. */
   readonly cliEntry?: string;
+  /**
+   * Register the MCP retrieval tools. OFF by default, from measurement: on the
+   * test-failure task, registering them took the run from 2 turns to 4 and from 20%
+   * cheaper than baseline to 31% dearer, while compression itself was unchanged. Turn it
+   * on for work where the agent genuinely needs withheld detail — the retrieval-required
+   * benchmark succeeds 3/3 with it and records real retrievals in the ledger.
+   */
+  readonly withRetrieval?: boolean;
   readonly env?: NodeJS.ProcessEnv;
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
@@ -101,9 +109,10 @@ export async function launchClaudeWithDynamicContext(
     return { exitCode: 3, sessionId };
   }
 
-  const mcpConfigPath = opts.cliEntry
-    ? await writeMcpConfig({ workspace, contextRoot, sessionId, cliEntry: opts.cliEntry }).catch(() => undefined)
-    : undefined;
+  const mcpConfigPath =
+    opts.withRetrieval === true && opts.cliEntry
+      ? await writeMcpConfig({ workspace, contextRoot, sessionId, cliEntry: opts.cliEntry }).catch(() => undefined)
+      : undefined;
 
   const extraEnv = dynamicContextEnv({
     gatewayUrl: ready.handle.url,
@@ -116,6 +125,7 @@ export async function launchClaudeWithDynamicContext(
     out(`Yuhi dynamic context: ON — gateway ${ready.handle.url} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);
+    else out("Retrieval tools: off (add --with-retrieval; it costs agent turns — see docs/design/V0_4_0_DYNAMIC_RUNTIME.md §5)");
   }
 
   const runner = createDynamicRunner(extraEnv, opts.runCommandImpl ?? ((command) => runCommand(command)));

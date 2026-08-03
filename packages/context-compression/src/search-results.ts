@@ -47,6 +47,9 @@ interface Hit {
 export const searchResultsCompressor: Compressor = {
   id: SEARCH_COMPRESSOR_ID,
   version: SEARCH_COMPRESSOR_VERSION,
+  // Everything load-bearing is preserved by contract and asserted by verify(), so a
+  // retrieve template would cost a turn without adding information.
+  hintPolicy: "answer-complete",
 
   supports(kind, sample: Sample): boolean {
     if (kind !== "text" && kind !== "source" && kind !== "shell-output") return false;

@@ -78,13 +78,33 @@ export interface CompressResult {
   readonly removed: readonly RemovedSummary[];
   readonly tokensBefore: number;
   readonly tokensAfter: number;
+  /** Copied from the compressor so the runtime can decide whether to advertise retrieval. */
+  readonly hintPolicy?: HintPolicy;
 }
 
 export type VerifyOutcome = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
+/**
+ * Whether the agent should be invited to retrieve what was omitted.
+ *
+ * `offer-retrieval` — arbitrary content was withheld and the answer may depend on it
+ *   (JSON bodies, byte windows, fragments). Print the retrieve template.
+ * `answer-complete` — the compressor preserves everything load-bearing by contract
+ *   (test failures + anchors; search counts + file list). The omitted lines are still
+ *   recorded in the ledger and reachable via `yuhi_explain_context`, but advertising a
+ *   call template invites the agent to spend a turn it does not need.
+ *
+ * This distinction came out of measurement: on the test-failure task the compact result
+ * cut tool-output tokens by ~86% and still cost MORE than baseline, because the agent
+ * took extra turns around the hint.
+ */
+export type HintPolicy = "offer-retrieval" | "answer-complete";
+
 export interface Compressor {
   readonly id: string;
   readonly version: string;
+  /** Defaults to `offer-retrieval` when absent — the conservative choice. */
+  readonly hintPolicy?: HintPolicy;
   supports(kind: ContentKind, sample: Sample): boolean;
   compress(input: CompressInput, ctx: CompressContext): Promise<CompressResult>;
   estimateTokens(text: string): number;

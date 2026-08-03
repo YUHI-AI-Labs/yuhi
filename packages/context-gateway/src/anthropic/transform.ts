@@ -137,7 +137,8 @@ export async function transformRequest(
 
     const rendered = renderCompactToolResult(delivery, {
       estimateTokens: (t) => deps.runtime.estimateTokens(t),
-      withRetrieveHint: delivery.retrievable.length > 0 && hinted < hintLimit,
+      withRetrieveHint:
+        delivery.hintPolicy === "offer-retrieval" && delivery.retrievable.length > 0 && hinted < hintLimit,
     });
     const compactTokens = delivery.tokensAfter + rendered.markerTokens;
 
@@ -150,7 +151,7 @@ export async function transformRequest(
       finalText = rendered.text;
       strategy = delivery.strategy;
       markerTokens = rendered.markerTokens;
-      if (delivery.retrievable.length > 0) hinted++;
+      if (delivery.hintPolicy === "offer-retrieval" && delivery.retrievable.length > 0) hinted++;
       metrics.block(delivery.fallback ? "fallback" : "compressed");
       transformed++;
     } else {

@@ -68,7 +68,12 @@ export async function compressWithFallback(
         continue;
       }
       attempts.push({ compressorId: compressor.id, ok: true });
-      return { status: "compressed", result, attempts };
+      return {
+        status: "compressed",
+        // The compressor declares the policy; the result carries it to the delivery layer.
+        result: { ...result, hintPolicy: result.hintPolicy ?? compressor.hintPolicy ?? "offer-retrieval" },
+        attempts,
+      };
     } catch (err) {
       // Reason strings are compressor-authored, never content-derived: an error
       // message must not become a disclosure channel.
