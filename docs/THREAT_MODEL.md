@@ -28,8 +28,7 @@ copy. It is **defense-in-depth against accidental exposure**, not a sandbox.
 - Secrets/credentials (`.env`, keys, tokens, cloud creds).
 - Sensitive documents (customer data, private specs, internal docs).
 - **Identifying metadata — the filenames and paths of withheld files.** A real workspace
-  names its data after the person in it (`9999990001 評定-0722.xlsx`, `名簿-9999990001/`),
-  so a name is an asset in its own right, not just a pointer to one.
+  names its data after the person in it, so a name is an asset in its own right, not just a pointer to one.
 - The integrity of the original repository (must never be modified).
 - Audit log integrity (metadata-only).
 
