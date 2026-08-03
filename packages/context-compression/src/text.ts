@@ -23,6 +23,16 @@ const TAIL_LINES = 40;
 /** Below this, a window view costs more than it saves. */
 const MIN_LINES = HEAD_LINES + TAIL_LINES + 20;
 
+/**
+ * Real Claude Code traffic taught us this case: a JSON file is ONE line, so a Read or
+ * Grep of it arrives as a single 20 KB line. A line-based window can remove nothing
+ * from one line, so long single-line content is windowed by BYTES instead, with a
+ * `B<start>-B<end>` locator the store resolves through `getRange`.
+ */
+const MIN_CHARS_FOR_BYTE_WINDOW = 6_000;
+const HEAD_CHARS = 2_400;
+const TAIL_CHARS = 800;
+
 export const textCompressor: Compressor = {
   id: TEXT_COMPRESSOR_ID,
   version: TEXT_COMPRESSOR_VERSION,
@@ -39,6 +49,10 @@ export const textCompressor: Compressor = {
     throwIfAborted(ctx);
     const lines = input.content.split("\n");
     const tokensBefore = ctx.estimateTokens(input.content);
+
+    if (lines.length < MIN_LINES && Buffer.byteLength(input.content, "utf8") >= MIN_CHARS_FOR_BYTE_WINDOW) {
+      return byteWindow(input, ctx, tokensBefore);
+    }
 
     if (lines.length < MIN_LINES) {
       // Honest no-op: `verify()` rejects it and the runtime delivers the scanned
@@ -87,7 +101,7 @@ export const textCompressor: Compressor = {
   verify(input: CompressInput, result: CompressResult): VerifyOutcome {
     if (result.tokensAfter >= result.tokensBefore) return { ok: false, reason: "no-reduction" };
     for (const omission of result.omissions) {
-      if (!/^L\d+-L\d+$/.test(omission.locator)) return { ok: false, reason: "unretrievable-omission" };
+      if (!/^(L\d+-L\d+|B\d+-B\d+)$/.test(omission.locator)) return { ok: false, reason: "unretrievable-omission" };
       if (omission.objectId !== input.objectId) return { ok: false, reason: "foreign-omission" };
     }
     for (const anchor of result.anchors) {
@@ -96,3 +110,36 @@ export const textCompressor: Compressor = {
     return { ok: true };
   },
 };
+
+/**
+ * Byte-window view of long single-line content. Boundaries are byte offsets into the
+ * ORIGINAL bytes, so the retrieval lands exactly where the marker says it does.
+ */
+function byteWindow(input: CompressInput, ctx: CompressContext, tokensBefore: number): CompressResult {
+  const bytes = Buffer.from(input.content, "utf8");
+  const from = HEAD_CHARS;
+  const to = bytes.byteLength - TAIL_CHARS;
+  const omittedBytes = to - from;
+  const locator = `B${from}-B${to}`;
+  const marker = `… ${omittedBytes} bytes withheld → retrieve ${locator} …`;
+  const text = `${bytes.subarray(0, HEAD_CHARS).toString("utf8")}\n${marker}\n${bytes.subarray(bytes.byteLength - TAIL_CHARS).toString("utf8")}`;
+
+  return {
+    compressorId: TEXT_COMPRESSOR_ID,
+    compressorVersion: TEXT_COMPRESSOR_VERSION,
+    text,
+    anchors: [marker],
+    omissions: [
+      {
+        objectId: input.objectId,
+        locator,
+        kind: "text-bytes",
+        tokensOmitted: ctx.estimateTokens(bytes.subarray(from, to).toString("utf8")),
+        items: omittedBytes,
+      },
+    ],
+    removed: [{ kind: "text-bytes", count: omittedBytes }],
+    tokensBefore,
+    tokensAfter: ctx.estimateTokens(text),
+  };
+}
