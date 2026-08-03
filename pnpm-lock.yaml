@@ -175,6 +175,42 @@ importers:
         specifier: ^3.24.1
         version: 3.25.2(zod@3.25.76)
 
+  packages/context-benchmark:
+    dependencies:
+      '@yuhi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/context-compression:
+    dependencies:
+      '@yuhi/context-store':
+        specifier: workspace:*
+        version: link:../context-store
+      '@yuhi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/context-runtime:
+    dependencies:
+      '@yuhi/context-compression':
+        specifier: workspace:*
+        version: link:../context-compression
+      '@yuhi/context-store':
+        specifier: workspace:*
+        version: link:../context-store
+      '@yuhi/scanner':
+        specifier: workspace:*
+        version: link:../scanner
+      '@yuhi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/context-store:
+    dependencies:
+      '@yuhi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/core:
     dependencies:
       '@yuhi/agents':

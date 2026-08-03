@@ -1,0 +1,21 @@
+{
+  "name": "@yuhi/context-runtime",
+  "version": "0.4.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@yuhi/context-compression": "workspace:*",
+    "@yuhi/context-store": "workspace:*",
+    "@yuhi/scanner": "workspace:*",
+    "@yuhi/shared": "workspace:*"
+  }
+}
