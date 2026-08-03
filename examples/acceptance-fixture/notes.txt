@@ -1,3 +1,0 @@
-Meeting notes: ship the roster importer. Owner: engineering. Deadline discussed.
-Repeated boilerplate line.
-Repeated boilerplate line.

@@ -12,7 +12,6 @@ export default [
       "**/*.d.ts",
       "**/coverage/**",
       "examples/**",
-      "benchmarks/**",
       ".yuhi/**",
     ],
   },
