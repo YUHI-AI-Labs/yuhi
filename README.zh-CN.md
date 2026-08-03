@@ -180,7 +180,6 @@ apps/      cli · vscode
 
 ## 项目方向
 
-- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — 已完成 / 进行中 / 下一步 / 未来。
 - [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) — Yuhi 防护什么，以及 **不** 防护什么。
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — 代码库如何组织。
 

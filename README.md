@@ -258,7 +258,6 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and `docs/adr/`.
 
 ## Project direction
 
-- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — done / in progress / next / future.
 - [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) — what Yuhi does and does **not** protect against.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the codebase is structured.
 
