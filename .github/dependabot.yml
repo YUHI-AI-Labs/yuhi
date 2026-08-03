@@ -37,6 +37,13 @@ updates:
       time: "07:00"
       timezone: "Etc/UTC"
     open-pull-requests-limit: 5
+    ignore:
+      # Same rule the npm ecosystem already had: a major bump of an action can
+      # change runner behaviour or drop inputs, so it gets reviewed on purpose
+      # rather than arriving as six drive-by PRs. Revisit deliberately —
+      # github/codeql-action in particular stops being supported on old majors.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "github-actions"
