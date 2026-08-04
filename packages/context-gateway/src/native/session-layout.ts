@@ -64,7 +64,10 @@ export function sessionLayout(sessionId: string, root = nativeSessionsRoot()): S
     vscodeDir,
     userDataDir: join(vscodeDir, "user-data"),
     extensionsDir: join(vscodeDir, "extensions"),
-    profileSettings: join(vscodeDir, "profile-settings.json"),
+    // The file VS Code actually reads for this isolated user-data-dir. It MUST be the same
+    // path the launcher writes and cleanup clears; when these diverged, shutdown left a dead
+    // ANTHROPIC_BASE_URL behind in the isolated settings.
+    profileSettings: join(vscodeDir, "user-data", "User", "settings.json"),
     privateDir,
     bootstrapTokenFile: join(privateDir, "bootstrap-token"),
     sourceBindingDir: join(privateDir, "source-binding"),
@@ -81,6 +84,7 @@ export async function createSessionTree(layout: SessionLayout): Promise<void> {
   await mkdir(layout.root, { recursive: true });
   await mkdir(layout.vscodeDir, { recursive: true });
   await mkdir(layout.userDataDir, { recursive: true });
+  await mkdir(join(layout.userDataDir, "User"), { recursive: true });
   await mkdir(layout.extensionsDir, { recursive: true });
   await mkdir(layout.privateDir, { recursive: true, mode: 0o700 });
   for (const dir of [

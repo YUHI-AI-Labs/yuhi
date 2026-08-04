@@ -448,13 +448,15 @@ export async function startNativeClaudeGuiSession(
   return session;
 }
 
-/** The profile settings file VS Code actually reads for the named profile. */
+/**
+ * The settings file VS Code reads for this isolated user-data-dir.
+ *
+ * Deliberately the same value cleanup uses — one source of truth. A named profile's settings
+ * live under `User/profiles/<generated-id>/`, whose id is unknowable before first launch, and
+ * Yuhi does not use named profiles anyway (see `vscode-launcher.isolationArgs`).
+ */
 function profileSettingsPath(layout: SessionLayout): string {
-  // VS Code writes named-profile settings under `User/profiles/<generated-id>/settings.json`,
-  // and that id is not knowable before first launch. Writing the DEFAULT profile settings for
-  // this isolated user-data-dir is both knowable and correct: the directory is Yuhi's own, so
-  // there is no other profile in it to affect.
-  return `${layout.userDataDir}/User/settings.json`;
+  return layout.profileSettings;
 }
 
 export { profileSettingsPath };

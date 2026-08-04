@@ -391,6 +391,22 @@ describe("launch arguments and platform gating", () => {
   });
 });
 
+describe("shutdown leaves nothing behind", () => {
+  it("clears the SAME settings file the launcher writes", async () => {
+    const dir = await scratch();
+    const layout = sessionLayout("s6", dir);
+    await createSessionTree(layout);
+    // Regression: these two paths once diverged, so close() cleared a file nobody wrote and
+    // a dead ANTHROPIC_BASE_URL survived in the isolated settings.
+    expect(layout.profileSettings).toBe(join(layout.userDataDir, "User", "settings.json"));
+
+    await applyManagedSettings({ settingsFile: layout.profileSettings, managed: ENV });
+    await cleanupSession(layout, {});
+    const after = JSON.parse(await readFile(layout.profileSettings, "utf8")) as Record<string, unknown>;
+    expect(after[CLAUDE_ENV_SETTING_KEY]).toBeUndefined();
+  });
+});
+
 describe("session tree", () => {
   it("creates private state owner-only", async () => {
     const dir = await scratch();
