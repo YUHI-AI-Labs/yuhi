@@ -524,8 +524,41 @@ export interface StudentAliasContext {
   /** Value-keyed stable tokens for columns tokenized per column (see
    *  `columnScopedAlias`). Keyed `columnIndex\u0000type:value`. */
   columnTokens: Map<string, string>;
-  /** Next ordinal per `columnIndex\u0000type` token namespace. */
+  /** Next ordinal per token namespace. */
   columnTokenCounts: Map<string, number>;
+  /**
+   * Token already issued for (entity, bucket). Without this, one entity got
+   * `SID-001` from a headed file and `ACCOUNT-001` from a headerless one, because
+   * the token PREFIX followed whichever type that file happened to infer.
+   */
+  entityBucketTokens: Map<string, string>;
+}
+
+/**
+ * Run-scoped pseudonym registry (#11).
+ *
+ * ONE instance per prepare run, shared by CSV, TSV, TXT and XLSX. There are no
+ * file-local counters: a file-local counter is exactly what made the same value
+ * receive a different token in each file.
+ *
+ * Invariant: same run + same normalized value + same bucket -> same pseudonym,
+ * independent of format, file path, row order and column order.
+ */
+export interface RunPseudonymRegistry {
+  getOrCreate(entityType: DirectIdentifierType, normalizedValue: string): string;
+  /** The underlying alias context, for the row-level entity resolution. */
+  readonly context: StudentAliasContext;
+}
+
+export function createRunPseudonymRegistry(
+  context: StudentAliasContext = createStudentAliasContext(),
+): RunPseudonymRegistry {
+  return {
+    context,
+    getOrCreate(entityType, normalizedValue) {
+      return columnScopedAlias(context, entityType, 0, "A", normalizedValue);
+    },
+  };
 }
 
 export function createStudentAliasContext(): StudentAliasContext {
@@ -536,6 +569,7 @@ export function createStudentAliasContext(): StudentAliasContext {
     attributeTokens: new Map(),
     columnTokens: new Map(),
     columnTokenCounts: new Map(),
+    entityBucketTokens: new Map(),
   };
 }
 
@@ -566,12 +600,63 @@ function generalizeAddress(value: string): string {
 }
 
 /** One entity may hold one value per identifier COLUMN, not per type. */
+/**
+ * One entity holds one value per identifier TYPE.
+ *
+ * Keying by `type#columnIndex` made the slot depend on column POSITION, so the same
+ * person read from two files with different column orders looked like a conflict.
+ * Keying by BUCKET is the opposite error: a row legitimately carrying both a
+ * 学籍番号 and a 学生証番号 would then occupy one slot and conflict with itself.
+ * The type is the right granularity.
+ */
 function entitySlot(item: { type: DirectIdentifierType; index: number }): string {
-  return `${item.type}#${item.index}`;
+  return item.type;
+}
+
+/**
+ * Entity-resolution bucket for an identifier type.
+ *
+ * A headerless table cannot know that a code column is a 学籍番号 rather than a
+ * 会員番号 — header-independent inference can only conclude `account-id`. Keying
+ * entity resolution on the inferred TYPE therefore put the same person in two
+ * different namespaces depending on whether the file had a header row, and the
+ * headed/headerless join rate was 0%. Buckets make resolution type-agnostic within
+ * a family while keeping the type for token NAMING.
+ *
+ * Documented trade-off: two different identifier kinds that share a literal value
+ * resolve to one entity. That is unavoidable if a headerless file is to join a
+ * headed one at all, and equal strings being treated as equal is the weaker
+ * assumption than silently failing to join.
+ */
+export type IdentifierBucket = "id" | "name" | "name-reading" | "email" | "phone" | "address";
+
+export function identifierBucket(type: DirectIdentifierType): IdentifierBucket {
+  switch (type) {
+    case "student-id":
+    case "student-card":
+    case "employee-id":
+    case "account-id":
+    case "institutional-id":
+      return "id";
+    case "name":
+      return "name";
+    case "name-reading":
+      return "name-reading";
+    case "email":
+      return "email";
+    case "phone":
+      return "phone";
+    case "address":
+      return "address";
+  }
+}
+
+export function normalizeIdentifierValue(value: string): string {
+  return value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function identifierKey(type: DirectIdentifierType, value: string): string {
-  return `${type}:${value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ")}`;
+  return `${identifierBucket(type)}:${normalizeIdentifierValue(value)}`;
 }
 
 const COLUMN_TOKEN_PREFIX: Record<DirectIdentifierType, string> = {
@@ -600,18 +685,75 @@ const COLUMN_TOKEN_PREFIX: Record<DirectIdentifierType, string> = {
 function columnScopedAlias(
   context: StudentAliasContext,
   type: DirectIdentifierType,
-  columnIndex: number,
-  columnLetter: string,
+  _columnIndex: number,
+  _columnLetter: string,
   value: string,
 ): string {
-  const namespace = `${columnIndex}\u0000${type}`;
-  const key = `${namespace}:${identifierKey(type, value)}`;
+  // Keyed by (bucket, value) — NOT by column index. Column-index keying made the
+  // token depend on where the column happened to sit, so the same value in the same
+  // run got different tokens in two files with different column orders. Equal
+  // values now always share a token and different values never collide, which is
+  // what "no false cross-column equality" actually requires.
+  const namespace = identifierBucket(type);
+  const key = `${namespace}:${normalizeIdentifierValue(value)}`;
   const existing = context.columnTokens.get(key);
   if (existing) return existing;
   const next = (context.columnTokenCounts.get(namespace) ?? 0) + 1;
   context.columnTokenCounts.set(namespace, next);
-  const token = `${COLUMN_TOKEN_PREFIX[type]}-${columnLetter}-${String(next).padStart(3, "0")}`;
+  const token = `${COLUMN_TOKEN_PREFIX[type]}-${String(next).padStart(3, "0")}`;
   context.columnTokens.set(key, token);
+  return token;
+}
+
+/**
+ * Token for the ID family (学籍番号 / 学生証番号 / 会員番号 / …), keyed by VALUE.
+ *
+ * This is the one bucket whose TYPE depends on whether the file had a header: a
+ * headed table matches `学籍番号` -> `student-id`, while a headerless table can only
+ * infer `account-id`. Entity-keyed naming therefore produced `SID-001` in one file
+ * and `ACCOUNT-001` in another for the same person, and the headed/headerless join
+ * rate was 0%. Keying the token by (bucket, value) makes it identical in every
+ * format, file, row order and column order; the ordinal counter is per TYPE so a
+ * row carrying both an id and a card still reads `SID-001,CARD-001`.
+ *
+ * A CONFLICTING row is deliberately excluded from the shared value registry and
+ * gets an isolated token, so a data conflict cannot silently link two people.
+ */
+function strongValueAlias(
+  context: StudentAliasContext,
+  type: DirectIdentifierType,
+  value: string,
+  conflicted: boolean,
+): string {
+  const bucket = identifierBucket(type);
+  const valueKey = `${bucket}:${normalizeIdentifierValue(value)}`;
+  if (!conflicted) {
+    const existing = context.columnTokens.get(valueKey);
+    if (existing) return existing;
+  }
+  const namespace = `token\u0000${type}`;
+  const next = (context.columnTokenCounts.get(namespace) ?? 0) + 1;
+  context.columnTokenCounts.set(namespace, next);
+  const token = `${COLUMN_TOKEN_PREFIX[type]}-${String(next).padStart(3, "0")}`;
+  if (!conflicted) context.columnTokens.set(valueKey, token);
+  return token;
+}
+
+/**
+ * Entity-keyed token, stable per (entity, bucket) for the whole run so the prefix
+ * cannot change with the type a given file inferred.
+ */
+function entityAlias(
+  context: StudentAliasContext,
+  type: DirectIdentifierType,
+  entity: number,
+  role: "student" | "employee" | "person",
+): string {
+  const key = `${entity}\u0000${identifierBucket(type)}`;
+  const existing = context.entityBucketTokens.get(key);
+  if (existing) return existing;
+  const token = aliasFor(type, entity, role);
+  if (token) context.entityBucketTokens.set(key, token);
   return token;
 }
 
@@ -834,14 +976,18 @@ export function pseudonymizeStudentRecords(
     }
     // Pseudonymize EVERY identifier in the row (best effort) with the chosen entity.
     for (const item of identifiers) {
-      row[item.index] = columnScoped.has(item.type)
-        ? columnScopedAlias(
-            context, item.type, item.index, columnLetters.get(item.index) ?? "A", item.value)
-        : item.type === "phone"
+      const bucket = identifierBucket(item.type);
+      row[item.index] =
+        bucket === "phone"
           ? phoneToken(context, item.value)
-          : item.type === "address"
+          : bucket === "address"
             ? generalizeAddress(item.value)
-            : aliasFor(item.type, entity, role);
+            : // The ID family is value-keyed so it joins across formats; a type that
+              // spans several columns is value-keyed too, so three unrelated code
+              // columns never collapse onto one token.
+              bucket === "id" || columnScoped.has(item.type)
+              ? strongValueAlias(context, item.type, item.value, conflicted)
+              : entityAlias(context, item.type, entity, role);
       valuesReplaced += 1;
     }
     for (const [offset, index] of classification.directIdentifierIndexes.entries()) {

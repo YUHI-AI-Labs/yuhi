@@ -267,6 +267,9 @@ function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext 
     columnTokenCounts: new Map(context.columnTokenCounts),
     nextEntity: context.nextEntity,
     attributeTokens: new Map(context.attributeTokens),
+    // Must be carried: dropping it would re-mint a fresh token prefix per file and
+    // silently break cross-file linkage (#11).
+    entityBucketTokens: new Map(context.entityBucketTokens),
   };
 }
 
