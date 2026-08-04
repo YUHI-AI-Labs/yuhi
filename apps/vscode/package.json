@@ -1,8 +1,8 @@
 {
   "name": "yuhi-vscode",
-  "displayName": "Yuhi — AI-Ready Repositories",
+  "displayName": "Yuhi \u2014 AI-Ready Repositories",
   "description": "Scan, sanitize, convert, and reduce your repository before opening it with an AI coding agent. Local-first, no telemetry.",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -134,6 +134,14 @@
       {
         "command": "yuhi.launchAgent",
         "title": "Yuhi: Launch Agent (Claude Code / Codex)"
+      },
+      {
+        "command": "yuhi.launchClaudeDynamic",
+        "title": "Yuhi: Start Claude Code with Dynamic Context"
+      },
+      {
+        "command": "yuhi.showDynamicStats",
+        "title": "Yuhi: Show Dynamic Context Stats"
       }
     ],
     "menus": {
@@ -303,6 +311,29 @@
           "default": [],
           "scope": "resource",
           "description": "File extensions explicitly kept out of the Prepared Workspace."
+        },
+        "yuhi.dynamicContext.retrievalMode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "conditional",
+            "required"
+          ],
+          "default": "disabled",
+          "description": "Retrieval capability shown to the agent during a dynamic context session. Measured: registering the retrieval tools adds ~507 tokens to every request and costs extra agent turns, so the default is disabled. Originals stay privately stored and retrievable in every mode."
+        },
+        "yuhi.dynamicContext.deliveryMode": {
+          "type": "string",
+          "enum": [
+            "developer",
+            "strict"
+          ],
+          "default": "developer",
+          "enumDescriptions": [
+            "Developer Mode: project configuration, including .env, may be read by Claude Code. Raw values are never written to Yuhi logs, evidence or UI.",
+            "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content \u2014 it is not a guarantee that every secret or identifier is removed."
+          ],
+          "description": "How detected secrets are handled during a dynamic context session."
         }
       }
     }
@@ -320,7 +351,9 @@
     "@yuhi/local": "workspace:*",
     "@yuhi/shared": "workspace:*",
     "@yuhi/config": "workspace:*",
-    "yaml": "^2.6.1"
+    "yaml": "^2.6.1",
+    "@yuhi/context-gateway": "workspace:*",
+    "@yuhi/context-runtime": "workspace:*"
   },
   "optionalDependencies": {
     "typescript": "^5.7.2"

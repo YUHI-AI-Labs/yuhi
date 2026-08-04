@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While Yuhi is in `0.x`, minor releases may include breaking changes; these will
 be called out explicitly.
 
+## [0.4.0]
+
+Dynamic Context Runtime — *Claude Code runs through Yuhi.*
+
+**Added**
+
+- Local Anthropic-compatible gateway (`yuhi launch claude --dynamic-context`, and
+  "Yuhi: Start Claude Code with Dynamic Context" in VS Code). New tool results are stored
+  privately, scanned, compressed, re-scanned, recorded and forwarded; `/healthz`, `/readyz`
+  and `/stats` are local-only and every other path is forwarded verbatim.
+- Live-zone compression with prefix stability: an unchanged block is re-emitted
+  byte-identically so the provider's cached prefix stays valid, persisted so a gateway
+  restart reproduces the same bytes, and proven by structural diffing that nothing outside a
+  `tool_result` was rewritten.
+- Compressors: JSON outline · tolerant scan (truncated / one-line / fragment / NDJSON) ·
+  test and shell output · grouped search results · configuration (`KEY=VALUE`) · line and
+  byte windows.
+- Reversible bounded retrieval over MCP, authorized by the evidence ledger, size-bounded,
+  safety-rescanned. **Off by default** — registering the tools measured +31% cost against
+  −20% with them off, at identical compression.
+- Evidence ledger for deliveries, retrievals and egress detections; `yuhi dynamic doctor`,
+  `yuhi dynamic stats`, and a Dynamic Context panel section kept apart from static metrics.
+- Benchmark harness that runs real Claude Code across conditions/models/tasks and reports
+  medians **with** spread, using provider-reported usage and cost.
+
+**Changed**
+
+- **Developer Mode is the default for dynamic context.** Project configuration, including
+  `.env`, is delivered to the agent; raw secret values are excluded from Yuhi logs, evidence,
+  statistics and UI; private keys and similar material are masked in every mode; direct
+  re-exposure is detected and audited. This reverses the 0.3.x "credentials never raw in any
+  mode" default **for tool output only** — `yuhi prepare`, its Safety Modes, Safe Patch
+  Review and Safe Apply are unchanged. `STRICT_MODE_POLICY` restores the old behaviour.
+  See `docs/design/V0_4_0_DEVELOPER_MODE.md` and `CLAUDE.md` conflict #4.
+- Benchmark `secretExposure` now means raw values reaching **Yuhi's own surfaces**;
+  `agentVisibleSecrets` records the deliberate half separately.
+- A `Read` of a log or prose file is no longer compressed — it is the agent scanning, and
+  restructuring it measured +75% cost.
+
+**Fixed**
+
+- A workspace prepared by the CLI was reported as "preparation incomplete" by the VS Code
+  extension, which refused to launch. `preparationResult` is written only by the extension's
+  own prepare flow; the reconcile now also accepts core's `status` + `launchAllowed`. This
+  repairs workspaces already on disk.
+- Evidence is flushed before a response ends, so "the answer arrived" implies "the audit row
+  exists" (this also removed a flaky egress test).
+- Provider usage is counted once per response instead of once per chunk.
+
+**Known limitations**
+
+No real-Claude task has been run on Linux (unit suite and doctor pass there); Windows is
+deferred to v0.4.1. Search/grep and large-log compression are opportunistic. Egress detection
+matches literal values only. Cost benefit is model-dependent (−20% haiku, parity Sonnet).
+
 ## [0.3.6]
 
 Safe Patch Review — *Review first. Apply safely.*

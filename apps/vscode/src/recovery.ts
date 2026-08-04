@@ -113,10 +113,18 @@ export async function validatePreparedWorkspace(input: {
     typeof session.runId !== "string" ||
     session.runId !== manifest.runId
   ) return recovery("session-invalid");
-  if (
-    session.preparationResult !== "complete" &&
-    session.preparationResult !== "complete-with-warnings"
-  ) return recovery("preparation-incomplete");
+  // `preparationResult` is written by the EXTENSION's prepare flow. A workspace prepared by
+  // the CLI (`yuhi prepare`) has never carried it, so requiring it declared every
+  // CLI-prepared workspace "incomplete" and blocked the launch. Core records the same fact
+  // in its own vocabulary, so accept either. (Found by opening a CLI-prepared workspace in
+  // the extension: manifest launchAllowed=true, no error files, and still blocked.)
+  const extensionComplete =
+    session.preparationResult === "complete" || session.preparationResult === "complete-with-warnings";
+  const coreComplete =
+    session.preparationResult === undefined &&
+    session.launchAllowed === true &&
+    (session.status === "Success" || session.status === "Partial");
+  if (!extensionComplete && !coreComplete) return recovery("preparation-incomplete");
 
   const files = manifest.files as Record<string, unknown>[];
   if (files.some((file) => file.status === "error" && file.omitted !== true)) {

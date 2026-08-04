@@ -40,6 +40,8 @@ export interface PrepareSettings {
   sandboxPreset: "standard" | "guarded" | "locked-down";
 }
 
+import type { DynamicPanelView } from "./dynamic-context.js";
+
 export type ActivityPanelData =
   | { phase: "no-workspace" }
   | { phase: "not-prepared"; settings?: PrepareSettings }
@@ -73,6 +75,11 @@ export type ActivityPanelData =
        * the picker (Claude Code / Codex + Context ID) replaces the single launch button.
        */
       picker?: AgentPickerData;
+      /**
+       * v0.4.0 Dynamic Context — this SESSION's measurements, kept in their own section so
+       * they are never read as the static repository reduction above.
+       */
+      dynamic?: DynamicPanelView;
       /**
        * v0.3.5 Progressive Context — the honest background-processing surface, derived
        * ONLY from the public status file. Present once there is background work.
@@ -395,6 +402,24 @@ function prepareControls(s: PrepareSettings): string {
 }
 
 /** Render the panel body for a given state. Pure — no VS Code, no DOM globals. */
+/**
+ * v0.4.0 Dynamic Context section. Deliberately its own block with its own footnote: the
+ * static repository reduction above is a `prepare` estimate, and these are session
+ * measurements of tool output. Merging them would be the exact misreading §17 forbids.
+ */
+export function renderDynamicContext(view: DynamicPanelView): string {
+  const rows = view.rows
+    .map((r) => `<div class="kv"><span>${esc(r.label)}</span><b>${esc(r.value)}</b></div>`)
+    .join("");
+  return (
+    `<div class="panel dyn" role="region" aria-label="Dynamic Context">` +
+    `<div class="hdr"><b>Dynamic Context</b> <span class="badge ${view.status === "active" ? "mode" : "idle"}">${esc(view.status)}</span></div>` +
+    rows +
+    `<div class="note">${esc(view.footnote)}</div>` +
+    `</div>`
+  );
+}
+
 function renderBody(data: ActivityPanelData): { badge: string; badgeClass: string; body: string } {
   switch (data.phase) {
     case "no-workspace":
@@ -486,6 +511,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
       const launch = data.picker ? renderAgentPicker(data.picker) : openBtn;
       // v0.3.5 — the honest Progressive Context surface (public-status only).
       const progressive = data.progressive ? renderProgressiveContext(data.progressive) : "";
+      const dynamic = data.dynamic ? renderDynamicContext(data.dynamic) : "";
       const changes = data.agentChangesDetected
         ? `<div class="gen"><b>AI changes detected</b><br>Review first. Nothing is applied automatically.</div>` +
           button("reviewChanges", "Review changes", { primary: true })
@@ -497,6 +523,7 @@ function renderBody(data: ActivityPanelData): { badge: string; badgeClass: strin
           `<div class="modehdr" role="heading" aria-level="2">◆ YUHI MODE</div>` +
           renderValueForwardReady(data.yuhiModeSummary) +
           renderRepositoryOptimization(data.yuhiModeSummary) +
+          dynamic +
           renderYuhiModeSummary(data.yuhiModeSummary) +
           reductionHero +
           budgetCard +

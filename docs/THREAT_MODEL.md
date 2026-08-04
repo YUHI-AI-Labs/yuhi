@@ -109,6 +109,28 @@ only the names are gone.
   (`agents.<id>.env_passthrough: [ANTHROPIC_API_KEY]`) or `--env KEY`.
 - Yuhi never logs environment values.
 
+## Developer Mode (v0.4.0, dynamic context only)
+
+The dynamic runtime added in v0.4.0 defaults to **Developer Mode**, which changes T2's answer
+for tool output — and only for tool output. `yuhi prepare` and its Safety Modes are unchanged.
+
+| | Static preparation (0.3.x, unchanged) | Dynamic context, Developer Mode | Dynamic context, Strict Mode |
+|---|---|---|---|
+| `.env` / config values reaching the agent | masked or kept local per Safety Mode | **delivered** | masked |
+| Private keys, certificates, recovery keys, seed phrases | blocked | **masked, always** | masked |
+| Raw value in logs / evidence / stats / UI | never | **never** | never |
+| Provider credentials (`ANTHROPIC_API_KEY`, OAuth) | passed to the child process only | passed to the child process only | same |
+| A delivered secret appearing in a response, patch, commit or outbound request | n/a | **detected, warned, audited** | same |
+
+What this trades: an attacker who compromises the agent or the provider transcript can read
+configuration the developer chose to expose. What it keeps: Yuhi itself never becomes the
+place a credential leaks from — no value is written to disk outside the private store, and
+none reaches any surface a user might share (evidence, stats, panel, handoff, error text).
+
+Blocking, redaction-before-delivery, approvals and organisation policy are Enterprise Strict
+Mode, deliberately not in v0.4.0. The seam exists today: `DeliveryPolicy` is a value the
+runtime consumes, and the scanner has no knowledge of modes at all.
+
 ## Assumptions
 
 - The user's machine and account are not already compromised.

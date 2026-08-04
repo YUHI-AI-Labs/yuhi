@@ -523,7 +523,21 @@
   </section>
 
   <!-- HONESTY -->
-  <section id="honest">
+  <section id="dynamic" class="sec">
+  <h2 data-i18n="dyn_h">Dynamic Context (v0.4.0)</h2>
+  <p data-i18n="dyn_p"></p>
+  <p class="muted" data-i18n="dyn_m"></p>
+  <h3 data-i18n="dyn_dh">Developer Mode</h3>
+  <ul>
+    <li data-i18n="dyn_d1"></li>
+    <li data-i18n="dyn_d2"></li>
+    <li data-i18n="dyn_d3"></li>
+    <li data-i18n="dyn_d4"></li>
+    <li data-i18n="dyn_d5"></li>
+    <li data-i18n="dyn_d6"></li>
+  </ul>
+</section>
+<section id="honest">
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow" data-i18n="honest_ey">誇張せず、できない約束はしない</p>
@@ -615,6 +629,7 @@
       hero_sub:"Yuhi prepares your workspace before AI agents start working — it understands your project locally, builds the right context, and helps Claude Code work more effectively.", vsc_ey:"In your editor", vsc_h2:"Prepare and launch — inside VS Code.", vsc_sub:"Run Yuhi from the extension, review the prepared context, then start Claude Code.", vsc_cap:"The extension is Available — Beta on the VS Code Marketplace.",
       hero_tag:"Prepare your workspace. Let AI agents work better.",
       hero_start:"Get started", hero_github:"View on GitHub →", copy:"copy",
+      dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code runs through a local Yuhi gateway. Each new tool result is stored privately, scanned, compressed and re-scanned before it reaches the provider — and everything withheld stays retrievable.", dyn_m:"Measured on a real edit-and-verify loop (Claude Code, haiku, n=3, provider-reported): correct patches 3/3, input-side tokens −22%, provider cost −13%, delivered tool output −70%. Results vary by task, model, cache behaviour, and retrieval configuration.", dyn_dh:"Developer Mode", dyn_d1:"Claude Code may use project configuration, including .env.", dyn_d2:"Raw secret values are excluded from Yuhi logs, evidence, statistics, and UI.", dyn_d3:"Private keys, certificates, recovery keys and seed phrases are masked in every mode.", dyn_d4:"Direct re-exposure is detected and audited where possible.", dyn_d5:"Egress detection is a tripwire, not a complete prevention control.", dyn_d6:"Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is not a guarantee that every secret or identifier is removed.",
       flow_n1k:"Your repository", flow_n1v:"files, secrets, data", flow_midv:"prepared locally", flow_n3k:"Your agent", flow_n3v:"a clean context",
       demo_ey:"30-second demo",
       demo_h2:"See exactly what the agent will — and won't — receive.",
@@ -665,6 +680,7 @@
       avail:"Available now — Beta", foot_neutral:"vendor-neutral", foot_demo:"Demo", foot_routes:"Routes", foot_start:"Get started"
     },
     ja: {
+      dyn_h:"動的コンテキスト (v0.4.0)", dyn_p:"Claude Code をローカル Yuhi ゲートウェイ経由で実行します。新しい tool result は毎回、非公開に保存 → スキャン → 圧縮 → 再スキャンを経てからプロバイダへ送られ、省略した部分は取得可能なまま残ります。", dyn_m:"実測（実 Claude Code・haiku・n=3・プロバイダ報告値）: パッチ正答 3/3、入力側トークン −22%、プロバイダ実費 −13%、配信 tool output −70%。結果はタスク・モデル・キャッシュ挙動・retrieval 設定により変わります。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code は .env を含むプロジェクト設定を利用できます。", dyn_d2:"生のシークレット値は Yuhi のログ・evidence・統計・UI には書かれません。", dyn_d3:"秘密鍵・証明書・リカバリキー・シードフレーズはどのモードでもマスクされます。", dyn_d4:"直接的な再露出は可能な範囲で検知・監査します。", dyn_d5:"Egress 検知はトリップワイヤであり、完全な防止機構ではありません。", dyn_d6:"Strict Mode は、検出されたシークレットとサポート対象の識別子を配信前にマスクします。検出範囲はファイル形式と内容に依存します。 すべてのシークレット・識別子が除去される保証ではありません。",
       _title:"Yuhi — Claudeに、全部を渡さない。",
       _desc:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。",
       nav_install:"インストール", nav_docs:"ドキュメント", nav_roadmap:"ロードマップ",

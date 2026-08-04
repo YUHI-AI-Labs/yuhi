@@ -1,4 +1,16 @@
 import * as vscode from "vscode";
+import type { RetrievalMode } from "@yuhi/context-gateway";
+import {
+  DYNAMIC_COMMAND_ID,
+  DYNAMIC_SCOPE_NOTICE,
+  DYNAMIC_TERMINAL_NAME,
+  handleStartupFailure as handleDynamicStartupFailure,
+  panelView as dynamicPanelView,
+  preflight as dynamicPreflight,
+  startDynamicSession,
+  type DynamicContextHost,
+  type DynamicSessionHandle,
+} from "./dynamic-context.js";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -95,7 +107,7 @@ import {
   type LaunchHost,
   type VisibleLaunchFailureKind,
 } from "./launch.js";
-import { createDefaultRegistry } from "@yuhi/agents";
+import { createDefaultRegistry, DEFAULT_DETECT_TIMEOUT_MS } from "@yuhi/agents";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import {
@@ -206,6 +218,192 @@ function shQuoteToken(token: string): string {
  * argv handling). The terminal inherits the user's shell environment; the adapter's
  * allow-listed `env` is not force-applied to an interactive terminal.
  */
+// --- v0.4.0 Dynamic Context -------------------------------------------------------
+/** One session per window. A second start replaces the first rather than racing it. */
+let dynamicSession: DynamicSessionHandle | undefined;
+let dynamicStatusBar: vscode.StatusBarItem | undefined;
+
+/**
+ * Window branding while a dynamic session runs.
+ *
+ * The blue Prepared-Workspace branding only applies when the WINDOW is the Prepared
+ * Workspace. The dynamic command deliberately runs from your own folder, so without this
+ * there was no visible signal at all and the honest answer to "is it on?" was "open a
+ * terminal and echo an environment variable". Applied on start, restored on close — the
+ * previous value is kept so a user's own customisations survive.
+ */
+let brandingBeforeDynamic: Record<string, string> | undefined;
+
+async function applyDynamicBranding(): Promise<void> {
+  const workbench = vscode.workspace.getConfiguration("workbench");
+  brandingBeforeDynamic = workbench.get<Record<string, string>>("colorCustomizations", {});
+  await workbench.update(
+    "colorCustomizations",
+    { ...brandingBeforeDynamic, ...PREPARED_WORKBENCH_COLORS },
+    vscode.ConfigurationTarget.Workspace,
+  );
+}
+
+async function restoreDynamicBranding(): Promise<void> {
+  if (brandingBeforeDynamic === undefined) return;
+  const previous = brandingBeforeDynamic;
+  brandingBeforeDynamic = undefined;
+  await vscode.workspace
+    .getConfiguration("workbench")
+    .update("colorCustomizations", previous, vscode.ConfigurationTarget.Workspace);
+}
+
+function dynamicHost(): DynamicContextHost {
+  return {
+    createTerminal: ({ name, cwd, env }) => {
+      const term = vscode.window.createTerminal({ name, cwd, env });
+      return { sendText: (t, nl) => term.sendText(t, nl), show: () => term.show(), dispose: () => term.dispose() };
+    },
+    log: (line) => yuhiOutput?.appendLine(line),
+    setStatus: (text, tooltip) => {
+      if (!dynamicStatusBar) {
+        dynamicStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+        dynamicStatusBar.command = "yuhi.showDynamicStats";
+        dynamicStatusBar.name = "Yuhi Dynamic Context";
+      }
+      dynamicStatusBar.text = text;
+      dynamicStatusBar.tooltip = tooltip;
+      dynamicStatusBar.show();
+    },
+    clearStatus: () => dynamicStatusBar?.hide(),
+    showMessage: (m) => void vscode.window.showInformationMessage(m),
+    showWarning: (m) => void vscode.window.showWarningMessage(m),
+    choose: async (message, choices) => vscode.window.showWarningMessage(message, ...choices),
+    onStatsChanged: (view) => {
+      // The panel keeps this in its own section; static metrics are untouched.
+      activityProvider?.setDynamic(view);
+    },
+  };
+}
+
+/**
+ * Resolve the Prepared Workspace to run the dynamic session in.
+ *
+ * The point of this indirection is that the user picks a FOLDER, not a prepared-run path.
+ * Three cases, in order of preference:
+ *   1. this window IS a Prepared Workspace → use it;
+ *   2. this window prepared one earlier in the session → reuse it;
+ *   3. otherwise prepare the open folder now, then use the result.
+ *
+ * The terminal's cwd is independent of the window's folder, so a source-folder window can
+ * host the session without opening a second window or asking which agent again.
+ */
+async function resolveDynamicPreparedRoot(): Promise<string | undefined> {
+  if (reviewingOpenedPreparedWorkspace) return firstWorkspaceRoot();
+  if (lastReport?.outDir) return lastReport.outDir;
+
+  const source = firstWorkspaceRoot();
+  if (!source) return undefined;
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Yuhi", cancellable: false },
+    async (progress) => {
+      progress.report({ message: "Preparing this folder, then starting Claude Code with dynamic context" });
+      await commandPrepare(undefined, false);
+    },
+  );
+  return lastReport?.outDir;
+}
+
+async function commandLaunchClaudeDynamic(): Promise<void> {
+  const preparedRoot = await resolveDynamicPreparedRoot();
+  const insidePrepared = reviewingOpenedPreparedWorkspace || preparedRoot !== undefined;
+  // The sandbox policy lives in the Prepared Workspace; write and verify it for the root we
+  // are about to launch into, rather than trusting a flag set for a different window.
+  let sandboxVerified = preparedSandboxVerified;
+  if (preparedRoot && !sandboxVerified) {
+    try {
+      await writeAndVerifyClaudeSandboxPolicy(preparedRoot, preparedRoot);
+      sandboxVerified = true;
+    } catch {
+      sandboxVerified = (await claudeSandboxPolicyDiagnostic(preparedRoot)).valid;
+    }
+  }
+
+  const check = dynamicPreflight({
+    preparedRoot,
+    insidePreparedWorkspace: insidePrepared,
+    sandboxVerified,
+    claudeAvailable: await claudeCliAvailable(),
+  });
+  if (!check.ok) {
+    void vscode.window.showWarningMessage(`Yuhi: ${check.message}`);
+    return;
+  }
+
+  if (dynamicSession) {
+    void vscode.window.showInformationMessage(
+      "Yuhi: a dynamic context session is already running in this window. Close its terminal to end it.",
+    );
+    return;
+  }
+
+  const host = dynamicHost();
+  const mode = dynamicRetrievalModeSetting();
+  try {
+    dynamicSession = await startDynamicSession(host, {
+      preparedWorkspace: check.preparedRoot,
+      claudeCommand: "claude",
+      retrievalMode: mode,
+      deliveryMode: dynamicDeliveryModeSetting(),
+    });
+  } catch (err) {
+    // NEVER downgrade silently: the user asked for dynamic context.
+    const reason = err instanceof Error ? err.message : "unknown";
+    const choice = await handleDynamicStartupFailure(host, reason);
+    if (choice === "Retry") return commandLaunchClaudeDynamic();
+    if (choice === "Open Doctor Output") yuhiOutput?.show(true);
+    if (choice === "Start normal Claude Code") await commandOpenClaudeHere();
+    return;
+  }
+
+  // Make it visible that Yuhi is in the path, not just discoverable via an env var.
+  await applyDynamicBranding().catch(() => {});
+  void vscode.window.showInformationMessage(`Yuhi: ${DYNAMIC_SCOPE_NOTICE}`);
+  yuhiOutput?.appendLine(`[dynamic] ${DYNAMIC_SCOPE_NOTICE}`);
+}
+
+/** Closing the dedicated terminal ends the session: gateway down, evidence flushed. */
+function watchDynamicTerminalClose(): vscode.Disposable {
+  return vscode.window.onDidCloseTerminal((term) => {
+    if (term.name !== DYNAMIC_TERMINAL_NAME || !dynamicSession) return;
+    const session = dynamicSession;
+    dynamicSession = undefined;
+    void session.close().then(async () => {
+      await restoreDynamicBranding().catch(() => {});
+      void vscode.window.showInformationMessage("Yuhi: dynamic context session complete. Gateway stopped.");
+    });
+  });
+}
+
+/**
+ * `strict` restores the 0.3.x behaviour: detected secrets are masked before the agent sees
+ * them. The right choice when the folder holds documents rather than code.
+ */
+function dynamicDeliveryModeSetting(): "developer" | "strict" {
+  const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.deliveryMode");
+  return configured === "strict" ? "strict" : "developer";
+}
+
+function dynamicRetrievalModeSetting(): RetrievalMode {
+  const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.retrievalMode");
+  return configured === "conditional" || configured === "required" ? configured : "disabled";
+}
+
+async function claudeCliAvailable(): Promise<boolean> {
+  try {
+    const registry = createDefaultRegistry();
+    const adapter = await registry.get("claude");
+    return (await adapter.detect({ timeoutMs: DEFAULT_DETECT_TIMEOUT_MS })).available;
+  } catch {
+    return false;
+  }
+}
+
 function agentTerminalRunner(displayName: string): (command: AgentCommand) => Promise<AgentRunOutcome> {
   return async (command) => {
     const term = vscode.window.createTerminal({ name: `Yuhi · ${displayName}`, cwd: command.cwd });
@@ -1431,7 +1629,16 @@ async function commandRefreshContext(): Promise<void> {
   await progressiveController?.refresh();
 }
 
-async function commandPrepare(target?: vscode.Uri): Promise<void> {
+async function commandPrepare(
+  target?: vscode.Uri,
+  /**
+   * false = this prepare is a STEP inside another flow. The summary is still shown, but as a
+   * fire-and-forget notification instead of a four-button prompt that blocks the caller.
+   * The dynamic launch used to await that prompt, so the session silently waited for a click
+   * the user had no reason to expect.
+   */
+  promptNext = true,
+): Promise<void> {
   if (currentIsPreparedWorkspace || reviewingOpenedPreparedWorkspace) {
     const root = firstWorkspaceRoot();
     if (root) await showPreparedWorkspaceRecovery(root);
@@ -1486,6 +1693,11 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
       (errs > 0 ? ` · ${errs} failed` : "") + (blocked > 0 ? ` · ${blocked} kept back by safety check` : "");
     const summary = `Yuhi: ${outcome} · Estimated Claude input avoided ~${avoided} tokens (${pct}%) · source files modified: 0${warn}.`;
     const NEXT = ["Review Prepared Context", "Open Prepared Workspace", "Copy Prepared Path", "Run Again"];
+    if (!promptNext) {
+      if (outcome === "Partial") void vscode.window.showWarningMessage(summary);
+      else void vscode.window.showInformationMessage(summary);
+      return;
+    }
     const choice =
       outcome === "Partial"
         ? await vscode.window.showWarningMessage(summary, ...NEXT)
@@ -3282,6 +3494,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndStartClaude, () =>
       runVisibleCommand(() => commandPrepareAndStartClaude(context)),
     ),
+    vscode.commands.registerCommand(DYNAMIC_COMMAND_ID, () =>
+      runVisibleCommand(commandLaunchClaudeDynamic),
+    ),
+    vscode.commands.registerCommand("yuhi.showDynamicStats", () => {
+      yuhiOutput?.show(true);
+      const view = dynamicPanelView(
+        dynamicSession?.state() ?? "complete",
+        dynamicSession?.latestStats(),
+      );
+      for (const row of view.rows) yuhiOutput?.appendLine(`  ${row.label}: ${row.value}`);
+      yuhiOutput?.appendLine(`  ${view.footnote}`);
+    }),
+    watchDynamicTerminalClose(),
     vscode.commands.registerCommand("yuhi.launchAgent", (agentId?: unknown) =>
       commandLaunchAgent(typeof agentId === "string" ? agentId : "").catch(reportLaunchFailure),
     ),
@@ -3333,4 +3558,11 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   // Stop the fire-and-forget background worker + its poll timer on shutdown.
   stopProgressiveContext();
+  // A dynamic session outliving the window would leave a listening gateway behind.
+  const session = dynamicSession;
+  dynamicSession = undefined;
+  void session?.close();
+  void restoreDynamicBranding();
+  dynamicStatusBar?.dispose();
+  dynamicStatusBar = undefined;
 }
