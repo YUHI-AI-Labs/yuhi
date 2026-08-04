@@ -404,6 +404,6 @@
     "@types/vscode": "^1.85.0",
     "@types/node": "^20.17.9",
     "@vscode/vsce": "^3.2.1",
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.28.1"
   }
 }
