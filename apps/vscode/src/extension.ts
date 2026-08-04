@@ -1,4 +1,9 @@
 import * as vscode from "vscode";
+import {
+  activateIsolatedWindow,
+  isIsolatedNativeWindow,
+  registerNativeCommands,
+} from "./native/commands.js";
 import type { RetrievalMode } from "@yuhi/context-gateway";
 import {
   DYNAMIC_COMMAND_ID,
@@ -3533,6 +3538,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("yuhi.reviewAgentChanges", () =>
       runVisibleCommand(commandReviewAgentChanges),
     ),
+    ...registerNativeCommands(context, {
+      output: yuhiOutput ?? vscode.window.createOutputChannel("Yuhi"),
+      resolvePrepared: async () => {
+        const source = firstWorkspaceRoot();
+        const prepared = await resolveDynamicPreparedRoot();
+        return source && prepared ? { source, prepared } : undefined;
+      },
+      deliveryMode: () => dynamicDeliveryModeSetting(),
+      retrievalMode: () => dynamicRetrievalModeSetting(),
+    }),
     vscode.commands.registerCommand("yuhi.showRecovery", () =>
       runVisibleCommand(async () => {
         const root = firstWorkspaceRoot();
@@ -3541,6 +3556,12 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
     ),
   );
+
+  // An isolated Yuhi Native GUI window has a different job from a normal one: attach to the
+  // session that opened it and bring up the official Claude panel.
+  if (isIsolatedNativeWindow()) {
+    void activateIsolatedWindow(context, yuhiOutput ?? vscode.window.createOutputChannel("Yuhi"));
+  }
 
   const root = firstWorkspaceRoot();
   if (root) {

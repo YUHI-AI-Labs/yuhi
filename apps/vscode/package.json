@@ -142,6 +142,30 @@
       {
         "command": "yuhi.showDynamicStats",
         "title": "Yuhi: Show Dynamic Context Stats"
+      },
+      {
+        "command": "yuhi.openClaudeDynamicWorkspace",
+        "title": "Yuhi: Open Claude Code Dynamic Workspace"
+      },
+      {
+        "command": "yuhi.showNativeDynamicSessions",
+        "title": "Yuhi: Show Native Dynamic Sessions"
+      },
+      {
+        "command": "yuhi.focusNativeDynamicWorkspace",
+        "title": "Yuhi: Focus Native Dynamic Workspace"
+      },
+      {
+        "command": "yuhi.stopNativeDynamicSession",
+        "title": "Yuhi: Stop Native Dynamic Session"
+      },
+      {
+        "command": "yuhi.recoverNativeDynamicSessions",
+        "title": "Yuhi: Recover Native Dynamic Sessions"
+      },
+      {
+        "command": "yuhi.showNativeDynamicDiagnostics",
+        "title": "Yuhi: Show Native Dynamic Diagnostics"
       }
     ],
     "menus": {
@@ -334,6 +358,12 @@
             "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content \u2014 it is not a guarantee that every secret or identifier is removed."
           ],
           "description": "How detected secrets are handled during a dynamic context session."
+        },
+        "yuhi.nativeSession": {
+          "type": "object",
+          "default": null,
+          "scope": "machine",
+          "description": "Set by Yuhi inside its own isolated Native GUI profile. Do not set this by hand; it identifies the session this window belongs to and carries no credential."
         }
       }
     }
