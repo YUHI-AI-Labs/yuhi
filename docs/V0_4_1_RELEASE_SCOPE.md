@@ -71,6 +71,11 @@ Prohibited:
 * Any claim that Native GUI Mode adds a security control. It adds a *surface*; the controls
   are v0.4.0's and are unchanged.
 * Presenting static repository reduction as session, token, or cost reduction.
+* Any **absolute** "estimated tokens" figure presented as a token count. `estimateTokens` is a
+  fixed `chars / 4`; measured against a real tokenizer on dense JSON it understates by ~2.1x.
+  Reduction *percentages* are unaffected (the same estimator applies to both sides, and the
+  byte and token ratios matched exactly at 91.1% on the measured object), so percentages may be
+  quoted and absolute token counts may not.
 
 ## 4. Known limitations
 
@@ -93,7 +98,12 @@ Prohibited:
    the isolated window may be required if CLI auth is not already present in `~/.claude`.
 7. **Egress guard is a tripwire, not a control** (unchanged from v0.4.0): literal matching
    only, no blocking.
-8. **Prepared-workspace reuse** relies on the existing v0.4.0 resolution; Native GUI Mode adds
+8. **Token figures are estimates from a `chars / 4` heuristic**, ~2.1x low on dense JSON.
+   Percentages are sound; absolute counts are not. A real tokenizer is v0.4.2 work.
+9. **A huge single-line file read in overlapping slices costs more than compression saves** —
+   the agent is scanning, and scanning is not a compression target
+   (`V0_4_0_DYNAMIC_RUNTIME.md` §4.4). Unchanged in v0.4.1.
+10. **Prepared-workspace reuse** relies on the existing v0.4.0 resolution; Native GUI Mode adds
    no new validation of its own.
 
 ## 5. Release gate

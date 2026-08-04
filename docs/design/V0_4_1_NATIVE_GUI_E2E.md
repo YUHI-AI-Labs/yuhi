@@ -111,7 +111,7 @@ the Yuhi retrieval tools rather than shelling out.
 |---|---|
 | Gateway requests | 21 |
 | `toolResultBlocksObserved` / compressed / reused | 84 / 3 / 70 |
-| Raw → delivered estimated tokens | 24,592 → 3,464 |
+| Raw → delivered estimated tokens | 24,592 → 3,464 (see §8 — absolute values are understated ~2.1x on dense JSON; the ratio is not) |
 | **Dynamic tool-output reduction** | **85.9%** |
 | **Bounded retrievals delivered (from the ledger)** | **1** — `{"type":"retrieval","locator":"B25700-B26200","outcome":"delivered"}` |
 | Retrievals refused | 0 |
@@ -179,12 +179,53 @@ dead session as merely stale.
 | User's real `settings.json` | unmodified (mtime 2026-07-31, four days before the run) |
 | User's normal extensions directory | untouched; the isolated dir holds exactly two extensions |
 
+## 7b. Compression verified at the byte level, and one estimator caveat
+
+The agent in the isolated window reported that dynamic compression was "not confirmed",
+because the delivered token figure did not match what it believed had entered its context.
+Checked against the object store, the compression **was** applied to the bytes the provider
+received:
+
+```
+raw object          39,875 bytes
+DELIVERED object     3,538 bytes     strategy text-window@1, deliveredHash ≠ originalHash
+withheld            36,675 bytes     anchor: "… 36675 bytes withheld → retrieve B2400-B39075 …"
+rec-00843 present in the delivered bytes?   NO   ← which is why retrieval was needed
+```
+
+The agent's impression of having received `rec-00000`–`rec-00517` in full is consistent with a
+**head-and-tail window being mistaken for continuity**: both ends were visible and the 36,675
+bytes between them were not. The record the task actually needed was absent from the delivery
+and cost 125 tokens to retrieve.
+
+**The estimator caveat is real and is the agent's correct finding.** `estimateTokens` is a
+fixed `chars / 4` (`packages/shared/src/tokens.ts`, documented as "FALLBACK ONLY"):
+
+| | bytes | tokens | bytes/token |
+|---|---|---|---|
+| Yuhi estimate | 39,875 | 9,969 | 4.00 |
+| Real tokenizer (harness) | 92,389 | 49,237 | 1.88 |
+
+On dense JSON, absolute token figures are **understated by ~2.1x**. Reduction *ratios* are
+unaffected, because the same estimator applies to both sides — measured on this object, the
+byte reduction (91.1%) and the token reduction (91.1%) are identical. So the percentages in
+§2–§4 stand; any absolute "estimated tokens" figure should be read as content-dependent and
+low. Wiring a real tokenizer is v0.4.2 work.
+
+**Net cost on this particular task was negative.** The agent paged the file with three
+overlapping truncated `Read`s, which cost more than the compression saved. That is the same
+structural finding as `V0_4_0_DYNAMIC_RUNTIME.md` §4.4 — a `Read` of a huge single-line file is
+the agent scanning, and scanning is not a compression target. v0.4.1 did not change it.
+
 ## 7. What is NOT verified
 
 * **Linux and Windows GUI.** Implemented and unit-tested; no real GUI run. Windows falls back
   with an explicit message; remote environments fail closed by detection.
 * **Fresh-profile authentication.** Every run reused existing `~/.claude` CLI auth, so the
   official extension's sign-in flow was never exercised.
+* **The measurement session was ended by the maintainer**, not by a fault: the MCP server is a
+  child Claude Code starts per session, so cleaning up the session removed it. Any follow-up
+  measurement needs a fresh session.
 * **Long sessions.** Each run was a handful of prompts. Reconnect after a genuine
   extension-host crash (as opposed to a killed window) is untested.
 * **Byte-identical repeat retrieval** was proven in v0.4.0 against the same code path but was

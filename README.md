@@ -150,6 +150,9 @@ policy-checked on the way past.
   needs a sign-in, you sign in through the official extension's own UI. Existing Claude Code
   authentication is supported; **first-time sign-in in an isolated Yuhi environment has not
   yet been validated.**
+- Token figures shown in the panel are estimates from a `chars / 4` heuristic and run low on
+  dense structured data (measured ~2.1x low on a JSON fixture). **Reduction percentages are
+  unaffected**; absolute token counts should not be read as measurements.
 - Strict Mode is available here too. It **masks detected secrets and supported identifiers;
   coverage depends on file format and content** — it is not a guarantee that every secret or
   identifier is removed.
