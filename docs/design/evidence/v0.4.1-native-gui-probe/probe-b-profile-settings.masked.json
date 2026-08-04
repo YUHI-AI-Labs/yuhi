@@ -1,0 +1,21 @@
+{
+    "claudeCode.preferredLocation": "sidebar",
+    "claudeCode.environmentVariables": [
+        {
+            "name": "ANTHROPIC_BASE_URL",
+            "value": "http://127.0.0.1:<ephemeral>"
+        },
+        {
+            "name": "YUHI_DYNAMIC_CONTEXT",
+            "value": "1"
+        },
+        {
+            "name": "YUHI_SESSION_ID",
+            "value": "probe_native_gui"
+        },
+        {
+            "name": "YUHI_CONTEXT_ROOT",
+            "value": "/tmp/yuhi-native-gui-probe/workspace/.yuhi/context"
+        }
+    ]
+}

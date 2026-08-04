@@ -1,11 +1,11 @@
 # v0.4.1 Native Claude GUI — Feasibility Gate (Phase 0)
 
 Branch: `feature/v0.4.1-native-claude-gui`, cut from the published `main` at `70d4eba` (v0.4.0).
-Status: **Phase 0.1 complete. Phase 0.2/0.3 NOT run — the gate is UNPROVEN.**
+Status: **Phase 0.1/0.2/0.3 complete — the gate is PASS on macOS. Both paths work.**
+Evidence: `evidence/v0.4.1-native-gui-probe/`. Results in §5 below; §1–§4 are the
+pre-probe record and are preserved as written, including the preference §1 got wrong.
 
-This document exists so the next session does not rediscover any of it. Nothing here may be
-treated as a PASS: no traffic has been observed through a gateway from the official
-extension yet.
+This document exists so the next session does not rediscover any of it.
 
 ---
 
@@ -91,9 +91,15 @@ still a PASS for the gate, but the design must record that the gateway endpoint 
 into a profile settings file inside the session directory — and that file must be cleaned up
 on session close, and must never contain a credential.
 
+> **Superseded by §5.** Both paths passed, and the preference above is reversed: the
+> integration path is (2), the documented setting. (1) is the fallback. Injecting an endpoint
+> into an entire VS Code process environment reaches every child of that window, not just
+> `claude`; the setting reaches exactly the intended process through a first-party contract.
+> Do not act on the paragraph above.
+
 ---
 
-## 2. Phase 0.2 — probe procedure (NOT RUN)
+## 2. Phase 0.2 — probe procedure (RUN — see §5 for what actually happened)
 
 ```
 /tmp/yuhi-native-gui-probe/
@@ -154,3 +160,63 @@ only on an explicit product decision).
 - Do not bundle or redistribute the Claude Code extension.
 - Windows may stay unsupported in v0.4.1 if stated plainly; Linux GUI E2E is a release
   blocker and must not be marked PASS without a real run.
+
+---
+
+## 5. Phase 0.2 / 0.3 — RESULTS (2026-08-04): PASS on macOS
+
+Full record and artifacts: `evidence/v0.4.1-native-gui-probe/`.
+
+Both probes used the shipped `startDynamicClaudeSession()`. No second proxy was written; the
+only addition was an observing `fetchImpl` (a documented `GatewayOptions` injectable) that
+records `path`, `model`, `stream`, `status`, `ts` — never headers, never prompt text.
+
+| | Probe A (inherited env) | Probe B (`claudeCode.environmentVariables`) |
+|---|---|---|
+| `/v1/messages` reached the gateway | yes (4) | yes (1) |
+| model / stream | not captured (harness defect) | `claude-opus-5` / `true` |
+| HTTP status | 200 | 200 |
+| upstream completed | yes (`upstreamErrors: 0`) | yes (`upstreamErrors: 0`) |
+| GUI showed `YUHI_NATIVE_GUI_PROBE_OK` | yes | yes |
+| normal window affected | no | no |
+| credential on disk | no | no |
+
+**The discriminating observation.** In Probe B the VS Code process environment was explicitly
+cleared (`env -u`), the extension host had no `ANTHROPIC_BASE_URL`, and the child `claude`
+process had it anyway. The setting is therefore proven to be the injecting mechanism, not
+assumed to be.
+
+### Consequences for the implementation
+
+1. **Primary path: `claudeCode.environmentVariables`** in the isolated profile's *user*
+   settings. It is `"scope": "machine"`, so a workspace-level settings file cannot carry it —
+   Yuhi cannot ship this per-workspace. The file lives under the session's `--user-data-dir`,
+   must be removed on session close, and must never contain a credential.
+2. **Fallback: process-environment inheritance.** Works, but reaches every child of the
+   window rather than `claude` alone. Keep it only for the case where the setting is
+   unavailable.
+3. **The gateway must keep forwarding unknown paths verbatim.** The extension health-checks
+   the base URL with `GET /api/hello` before any `/v1/messages`. A `/v1/messages`-only
+   gateway would break the extension at launch. This is now a load-bearing property, not an
+   incidental one.
+4. **The extension writes to the profile settings file itself** (`claudeCode.preferredLocation`
+   on panel open). Yuhi must merge rather than overwrite, and tolerate concurrent mutation.
+5. **A CLI-created profile contains no extensions.** `--extensions-dir` alone is not enough;
+   the extension needs a real `--install-extension` into the profile. Any launcher that
+   creates a probe/session profile must account for this.
+
+### What is NOT proven
+
+* **Linux and Windows.** macOS only. Linux GUI E2E remains a release blocker per §4 and must
+  not be marked PASS without a real run.
+* **Authentication under a fresh profile.** The isolated profile reused the CLI's existing
+  `~/.claude` auth, so no login flow was exercised. A user with no prior CLI auth is untested.
+* **Long-session behaviour.** One prompt per probe. Nothing about reconnect, crash recovery,
+  or heartbeat was tested, and none of it was in scope.
+* **Compression on real GUI traffic.** The probe prompt produced no `tool_result` blocks, so
+  `toolResultBlocksObserved` was 0 and the evidence ledger has no delivery row. The gate was
+  transport reachability, not compression — but this means no GUI-originated tool output has
+  been through the pipeline yet.
+
+**Stop here.** Broker, heartbeat, crash recovery and panel integration are not authorised by
+this result.
