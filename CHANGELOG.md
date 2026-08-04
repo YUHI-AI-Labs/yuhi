@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.5 — new Marketplace display name
+
+**The VS Code extension display name is now `Yuhi Code — See What Your AI Agent Sees`.**
+No behaviour changes.
+
+The removed listing reserved its display name as well as its id, so 0.4.4's display name
+was rejected on upload for the same reason its predecessor's id was. This release changes
+the display name so the extension can be published.
+
+`v0.4.4` was tagged but **never published** to npm, the Marketplace or a GitHub Release.
+It is superseded by 0.4.5; nothing consumed it.
+
+### Changed
+
+- Display name `Yuhi Code — See What Your AI Agent Sees` (was
+  `Yuhi — Dynamic Context for Claude Code`). It matches the project's own tagline and,
+  unlike a "secure" or "private" phrasing, claims a capability rather than a guarantee —
+  consistent with the standing rule against implying guaranteed safety.
+- CLI ships 0.4.5 to stay in lockstep with the extension.
+
+### Unchanged
+
+Extension id stays `yuhi-ai-labs.yuhi-code` (introduced in 0.4.4).
+`@yuhi-ai-labs/yuhi@0.4.3` on npm remains installable.
+
+## 0.4.5 — new Marketplace display name
+
+**The VS Code extension display name is now `Yuhi Code — See What Your AI Agent Sees`.**
+No behaviour changes.
+
+Both the extension name and the display name of the removed listing are permanently
+reserved by the Marketplace, so 0.4.4's display name was rejected on upload for the same
+reason its predecessor's id was. This release changes the display name so the extension
+can be published.
+
+`v0.4.4` was tagged but **never published** to npm, the Marketplace or a GitHub Release;
+it is superseded by 0.4.5. Nothing consumed it.
+
+### Changed
+
+- Display name `Yuhi Code — See What Your AI Agent Sees` (was
+  `Yuhi — Dynamic Context for Claude Code`). It matches the project's own tagline and,
+  unlike a "secure"/"private" phrasing, claims a capability rather than a guarantee —
+  consistent with the standing rule against implying guaranteed safety.
+- CLI ships 0.4.5 to stay in lockstep with the extension.
+
+### Unchanged
+
+Extension id stays `yuhi-ai-labs.yuhi-code` (introduced in 0.4.4).
+`@yuhi-ai-labs/yuhi@0.4.3` on npm remains installable.
+
 ## 0.4.4 — new VS Code Marketplace extension id
 
 **The VS Code extension id changed from `yuhi-ai-labs.yuhi-vscode` to
