@@ -55,6 +55,8 @@ export function diagnosticsRows(d: NativeSessionDiagnostics): readonly { label: 
       label: "Dynamic tool-output reduction",
       value: d.dynamicReduction === undefined ? notMeasured : `${(d.dynamicReduction * 100).toFixed(1)}%`,
     },
+    { label: "Retrievals delivered", value: String(d.retrievalsDelivered) },
+    { label: "Retrievals refused", value: String(d.retrievalsWithheld) },
     { label: "Upstream errors", value: String(d.upstreamErrors) },
     { label: "Cleanup status", value: d.cleanupStatus },
   ];

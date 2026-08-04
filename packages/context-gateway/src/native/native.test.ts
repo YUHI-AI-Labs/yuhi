@@ -311,6 +311,7 @@ describe("security boundary", () => {
           claudeExtensionVersion: "2.1.221", deliveryMode: "developer", retrievalMode: "disabled",
           lastHeartbeatAt: new Date().toISOString(), requests: 3, toolResultBlocksObserved: 2,
           toolResultBlocksCompressed: 1, dynamicReduction: 0.5, upstreamErrors: 0,
+          retrievalsDelivered: 1, retrievalsWithheld: 0,
           cleanupStatus: "not-started", notes: [],
         },
       ],

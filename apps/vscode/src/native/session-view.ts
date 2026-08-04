@@ -49,7 +49,8 @@ export function nativeSessionPanelView(
       { label: "Cache creation tokens", value: usageKnown ? n(usage.cacheCreationInputTokens) : NOT_MEASURED },
       { label: "Cache read tokens", value: usageKnown ? n(usage.cacheReadInputTokens) : NOT_MEASURED },
       { label: "Provider-reported cost", value: usage?.costUsd === undefined ? NOT_MEASURED : `${usage.costUsd} USD` },
-      { label: "Retrievals", value: n(snapshot?.retrievals) },
+      // From the ledger via diagnostics; the gateway's own counter cannot see the MCP process.
+      { label: "Retrievals", value: d === undefined ? NOT_MEASURED : String(d.retrievalsDelivered) },
       { label: "Fallbacks", value: n(snapshot?.fallbacks) },
       { label: "Security detections", value: n(snapshot?.withheld) },
       { label: "Egress detections", value: n(snapshot?.egressDetections) },

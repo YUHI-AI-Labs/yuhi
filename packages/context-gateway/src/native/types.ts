@@ -103,6 +103,16 @@ export interface NativeSessionDiagnostics {
   readonly toolResultBlocksCompressed: number;
   readonly dynamicReduction: number | undefined;
   readonly upstreamErrors: number;
+  /**
+   * Counted from the EVIDENCE LEDGER, not the gateway's in-process counter.
+   *
+   * The MCP retrieval server is a separate process the agent starts, so a gateway counter is
+   * zero by construction. Reporting that zero in the panel would tell a user retrieval never
+   * happened while the ledger recorded a delivered retrieval — v0.4.0 hit this exact bug in
+   * its benchmark and fixed it the same way.
+   */
+  readonly retrievalsDelivered: number;
+  readonly retrievalsWithheld: number;
   readonly cleanupStatus: "not-started" | "in-progress" | "complete" | "failed";
   /** Free-text notes safe for display. Never a path, credential, or prompt. */
   readonly notes: readonly string[];

@@ -100,8 +100,45 @@ de-identification pass over file contents, and claiming otherwise is exactly the
 
 ## 4. Retrieval
 
-Default is `disabled` and was `disabled` for §2 (`retrievals: 0`, MCP tools unregistered).
-Bounded retrieval under `required` — see §7 for status.
+**Default `disabled`** was in force for §2 and §3: no MCP server registered, no `.mcp.json`
+written, `retrievals: 0`.
+
+**Bounded retrieval under `required`, separate session.** Prompt: read a 92 KB single-line
+`telemetry.json` (1,200 records, one seeded error at index 843) and report that record, using
+the Yuhi retrieval tools rather than shelling out.
+
+| Metric | Result |
+|---|---|
+| Gateway requests | 21 |
+| `toolResultBlocksObserved` / compressed / reused | 84 / 3 / 70 |
+| Raw → delivered estimated tokens | 24,592 → 3,464 |
+| **Dynamic tool-output reduction** | **85.9%** |
+| **Bounded retrievals delivered (from the ledger)** | **1** — `{"type":"retrieval","locator":"B25700-B26200","outcome":"delivered"}` |
+| Retrievals refused | 0 |
+| Live-zone violations · upstream errors · fallbacks · withheld | 0 · 0 · 0 · 0 |
+| Task success | correct: `rec-00843` / `E_QUOTA_EXCEEDED` / 9412 ms / `ap-northeast-1` |
+
+The agent used `yuhi_search_object` and `yuhi_retrieve`, and reported its own coverage
+reasoning: three objects spanning bytes 0–39,075, 38,999–78,062 and 77,000–92,389 —
+contiguous with overlap — with `errorCode` matching exactly once. That is the reversibility
+chain working on GUI traffic: compact view → agent identifies missing evidence → bounded
+retrieval → correct answer → retrieval recorded in the ledger.
+
+### Two findings this run produced
+
+**Registration was missing entirely at first.** The initial attempt recorded `retrievals: 0`,
+which reads exactly like an agent that considered retrieval and declined — the behaviour
+v0.4.0 measured on Sonnet. It was not that. `retrievalMode: "required"` registered nothing,
+because registration is a config path the CLI passes on its own command line and the official
+extension owns that command line in Native GUI Mode. Fixed with a project-scoped `.mcp.json`
+plus a bundled stdio server; see `V0_4_1_NATIVE_GUI.md` §6b.
+
+**The gateway's `retrievals` counter is zero by construction.** It read 0 while the ledger
+recorded a delivered retrieval, because the MCP server is a separate process the agent starts.
+v0.4.0 hit this in its benchmark and fixed it by counting from the ledger; the same fix now
+applies to the panel and diagnostics, which report `retrievalsDelivered` from
+`tallyRetrievals`. Without it the UI would have told a user retrieval never happened while the
+evidence said otherwise.
 
 ## 5. Lifecycle, shutdown and recovery
 
@@ -150,3 +187,5 @@ dead session as merely stale.
   official extension's sign-in flow was never exercised.
 * **Long sessions.** Each run was a handful of prompts. Reconnect after a genuine
   extension-host crash (as opposed to a killed window) is untested.
+* **Byte-identical repeat retrieval** was proven in v0.4.0 against the same code path but was
+  not re-exercised from the GUI here; only one retrieval was issued.

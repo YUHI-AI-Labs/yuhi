@@ -447,6 +447,19 @@ export async function startNativeClaudeGuiSession(
     }
     const snapshot = stats?.sessions[0];
     const silent = heartbeat?.silentFor();
+    // Ledger, not the gateway counter — see NativeSessionDiagnostics.retrievalsDelivered.
+    let tally = { delivered: 0, withheld: 0 };
+    try {
+      const [{ ContextStore }, { tallyRetrievals }] = await Promise.all([
+        import("@yuhi/context-store"),
+        import("@yuhi/context-runtime"),
+      ]);
+      const store = await ContextStore.open({ root: gateway.contextRoot });
+      const counted = await tallyRetrievals(store, sessionId as Parameters<typeof tallyRetrievals>[1]);
+      tally = { delivered: counted.delivered, withheld: counted.withheld };
+    } catch {
+      // No ledger yet, or an unreadable one. Diagnostics must still render.
+    }
     return {
       sessionId,
       state: recorder.state(),
@@ -461,6 +474,8 @@ export async function startNativeClaudeGuiSession(
       toolResultBlocksCompressed: snapshot?.toolResultBlocksCompressed ?? 0,
       dynamicReduction: snapshot && snapshot.rawEstimatedTokens > 0 ? snapshot.dynamicReduction : undefined,
       upstreamErrors: snapshot?.upstreamErrors ?? 0,
+      retrievalsDelivered: tally.delivered,
+      retrievalsWithheld: tally.withheld,
       cleanupStatus,
       notes: silent !== undefined && silent > 10_000 ? [`window silent for ${Math.round(silent / 1000)}s`] : [],
     };
