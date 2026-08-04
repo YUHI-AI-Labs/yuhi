@@ -223,6 +223,36 @@ function shQuoteToken(token: string): string {
 let dynamicSession: DynamicSessionHandle | undefined;
 let dynamicStatusBar: vscode.StatusBarItem | undefined;
 
+/**
+ * Window branding while a dynamic session runs.
+ *
+ * The blue Prepared-Workspace branding only applies when the WINDOW is the Prepared
+ * Workspace. The dynamic command deliberately runs from your own folder, so without this
+ * there was no visible signal at all and the honest answer to "is it on?" was "open a
+ * terminal and echo an environment variable". Applied on start, restored on close — the
+ * previous value is kept so a user's own customisations survive.
+ */
+let brandingBeforeDynamic: Record<string, string> | undefined;
+
+async function applyDynamicBranding(): Promise<void> {
+  const workbench = vscode.workspace.getConfiguration("workbench");
+  brandingBeforeDynamic = workbench.get<Record<string, string>>("colorCustomizations", {});
+  await workbench.update(
+    "colorCustomizations",
+    { ...brandingBeforeDynamic, ...PREPARED_WORKBENCH_COLORS },
+    vscode.ConfigurationTarget.Workspace,
+  );
+}
+
+async function restoreDynamicBranding(): Promise<void> {
+  if (brandingBeforeDynamic === undefined) return;
+  const previous = brandingBeforeDynamic;
+  brandingBeforeDynamic = undefined;
+  await vscode.workspace
+    .getConfiguration("workbench")
+    .update("colorCustomizations", previous, vscode.ConfigurationTarget.Workspace);
+}
+
 function dynamicHost(): DynamicContextHost {
   return {
     createTerminal: ({ name, cwd, env }) => {
@@ -234,6 +264,7 @@ function dynamicHost(): DynamicContextHost {
       if (!dynamicStatusBar) {
         dynamicStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
         dynamicStatusBar.command = "yuhi.showDynamicStats";
+        dynamicStatusBar.name = "Yuhi Dynamic Context";
       }
       dynamicStatusBar.text = text;
       dynamicStatusBar.tooltip = tooltip;
@@ -323,6 +354,8 @@ async function commandLaunchClaudeDynamic(): Promise<void> {
     return;
   }
 
+  // Make it visible that Yuhi is in the path, not just discoverable via an env var.
+  await applyDynamicBranding().catch(() => {});
   void vscode.window.showInformationMessage(`Yuhi: ${DYNAMIC_SCOPE_NOTICE}`);
   yuhiOutput?.appendLine(`[dynamic] ${DYNAMIC_SCOPE_NOTICE}`);
 }
@@ -333,7 +366,8 @@ function watchDynamicTerminalClose(): vscode.Disposable {
     if (term.name !== DYNAMIC_TERMINAL_NAME || !dynamicSession) return;
     const session = dynamicSession;
     dynamicSession = undefined;
-    void session.close().then(() => {
+    void session.close().then(async () => {
+      await restoreDynamicBranding().catch(() => {});
       void vscode.window.showInformationMessage("Yuhi: dynamic context session complete. Gateway stopped.");
     });
   });
@@ -3498,6 +3532,7 @@ export function deactivate(): void {
   const session = dynamicSession;
   dynamicSession = undefined;
   void session?.close();
+  void restoreDynamicBranding();
   dynamicStatusBar?.dispose();
   dynamicStatusBar = undefined;
 }
