@@ -301,7 +301,10 @@ export async function startNativeClaudeGuiSession(
       // Control plane for the originating window. Same token guard as heartbeat.
       onStatus: async () => ({ ...(await diagnose()) }),
       onStop: async (reason) => {
-        await close(reason === "window-closed" ? "window-closed" : "user-request");
+        // Kick off the shutdown but answer first. Awaiting it here tears down this very
+        // server before the reply is written, so the caller sees a dropped connection and
+        // cannot distinguish "stopped" from "unreachable".
+        void close(reason === "window-closed" ? "window-closed" : "user-request");
       },
       onFocus: async () => {
         await focusIsolatedWindow(runner, { executable: candidate.executable, preparedWorkspace, ...isolation });
