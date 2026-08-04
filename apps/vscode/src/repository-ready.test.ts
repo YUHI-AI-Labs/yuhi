@@ -23,15 +23,26 @@ const report = (over: Partial<PreparationReport> = {}): PreparationReport => ({
 // Strings that must NEVER appear in any public-safe surface (paths / filenames /
 // secret types / identities). The report has no such fields; these guard against
 // a regression that ever plumbed one through.
+//
+// The identity entries are SYNTHETIC CANARIES on purpose. This file is part of a
+// public repository, and hardcoding a real surname, personal handle or employer
+// here published exactly the values the guard exists to keep out (docs/HANDOFF.md
+// §7). The assertion is no weaker for it: the card has no identity-bearing fields
+// at all, so what is verified is that no arbitrary identity-shaped input string
+// reaches the surface — and a canary proves that as well as a real value would,
+// while `renderRepositoryReadyCard` never sees either.
+//
+// A maintainer who wants to scan for their own real values can do so locally
+// without committing them: see `docs/adr/0006-public-fixture-identity-strings.md`.
 const FORBIDDEN = [
   "/Users/",
   "\\Users\\",
   ".env",
   "meeting-log.md",
   "student-records.xlsx",
-  "Nakamoto",
-  "nakamolinto",
-  "@elyza",
+  "REAL_SURNAME_CANARY",
+  "PERSONAL_HANDLE_CANARY",
+  "EMPLOYER_CANARY",
   "API_KEY",
   "password",
 ];
@@ -105,6 +116,32 @@ describe("Repository Ready copy/export (public-safe output)", () => {
       expect(out).toContain("94");
       for (const forbidden of FORBIDDEN) expect(out).not.toContain(forbidden);
     }
+  });
+
+  it("carries no free-form string field that could smuggle a path or identity", () => {
+    // The FORBIDDEN assertions above can only catch a value that is already present.
+    // This is the structural half of the guard, and it is what actually protects the
+    // surface: the report is numbers plus two closed enums, so there is nowhere for a
+    // path, filename or identity to live. Adding a `sourcePath: string`-style field
+    // fails here immediately, before any value has to leak to prove the point.
+    const ENUM_FIELDS = new Set(["safetyMode", "status"]);
+    const walk = (value: unknown, path: string): void => {
+      if (typeof value === "string") {
+        expect(
+          ENUM_FIELDS.has(path.split(".").pop() ?? ""),
+          `${path} is a free-form string on the public report; it must be a number or a closed enum`,
+        ).toBe(true);
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((item, i) => walk(item, `${path}[${i}]`));
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [key, child] of Object.entries(value)) walk(child, `${path}.${key}`);
+      }
+    };
+    walk(report(), "report");
   });
 
   it("offers exactly Markdown, JSON, and SVG export formats", () => {
