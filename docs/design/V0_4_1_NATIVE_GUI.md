@@ -156,6 +156,23 @@ editor, classify each session on disk as live, stale, finished or unreadable and
 shutdown that never completed. Recovery **never signals a process it does not own** — it
 releases Yuhi's own artefacts only, and leaves any VS Code the user may still be using alone.
 
+## 6b. Retrieval registration
+
+The CLI can hand Claude Code an MCP config path on its own command line. Native GUI Mode
+cannot: the official extension owns that command line, and Yuhi only controls the child's
+environment. Registration therefore uses the mechanism Claude Code discovers by itself — a
+**project-scoped `.mcp.json`** at the Prepared Workspace root — pointing at
+`dist/native-mcp.js`, a stdio server shipped in the VSIX.
+
+It is a merge. A Prepared Workspace can be a copy of a project that ships its own MCP
+servers, and replacing that file would take away tools the developer expects. Shutdown
+removes only Yuhi's entry, and deletes the file only if Yuhi created it.
+
+`disabled` — the measured default — registers nothing at all, which is the entire point of
+that default. This was found the hard way: the first retrieval E2E recorded `retrievals: 0`
+because nothing was ever offered, which is indistinguishable in the statistics from an agent
+that considered retrieval and declined.
+
 ## 7. Security
 
 Native GUI Mode defines **no** security logic of its own. Detection, delivery policy, key-
