@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import {
-  classifyStudentRecordHeaders,
+  classifyStudentRecordTable,
+  detectTableLayout,
   createStudentAliasContext,
   parseDelimitedTable,
   pseudonymizeStudentRecords,
@@ -38,7 +39,10 @@ function rowsForSheet(sheet: ExcelJS.Worksheet): {
       }
       rows.push(row);
     }
-    if (classifyStudentRecordHeaders(rows[0]!).directIdentifierColumns > 0) {
+    // Use the SAME classifier as the delimited path (#11): header-only
+    // classification gave XLSX a different entity-type verdict from CSV/TXT for the
+    // same table, and no header-independent inference at all.
+    if (classifyStudentRecordTable(rows).directIdentifierColumns > 0) {
       return { headerRow: rowNumber, rows };
     }
   }
@@ -74,7 +78,7 @@ export async function inspectXlsxRecords(input: Buffer): Promise<XlsxInspection>
   for (const sheet of workbook.worksheets) {
     const table = rowsForSheet(sheet);
     if (!table) continue;
-    const classification = classifyStudentRecordHeaders(table.rows[0]!);
+    const classification = classifyStudentRecordTable(table.rows);
     sensitiveSheets += 1;
     directIdentifierColumns += classification.directIdentifierColumns;
     associatedDataPresent ||= classification.performanceColumns > 0;
@@ -104,13 +108,14 @@ export async function pseudonymizeXlsxRecords(
   for (const sheet of workbook.worksheets) {
     const table = rowsForSheet(sheet);
     if (!table) continue;
-    const classification = classifyStudentRecordHeaders(table.rows[0]!);
+    const classification = classifyStudentRecordTable(table.rows);
     sensitiveSheets += 1;
     directIdentifierColumns += classification.directIdentifierColumns;
     analyticalColumnsPreserved +=
       table.rows[0]!.length - classification.directIdentifierColumns;
     associatedDataPresent ||= classification.performanceColumns > 0;
-    for (const row of table.rows.slice(1)) {
+    const layout = detectTableLayout(table.rows, ",");
+    for (const row of table.rows.slice(layout.dataStartRow)) {
       for (const index of classification.directIdentifierIndexes) {
         const value = (row[index] ?? "").trim();
         if (value) rawIdentifiers.add(value);
@@ -119,7 +124,7 @@ export async function pseudonymizeXlsxRecords(
     const serialized = serializeDelimitedTable({ delimiter: ",", rows: table.rows });
     const transformed = pseudonymizeStudentRecords(serialized, context);
     const outputRows = parseDelimitedTable(transformed.output).rows;
-    for (let rowIndex = 1; rowIndex < outputRows.length; rowIndex += 1) {
+    for (let rowIndex = layout.dataStartRow; rowIndex < outputRows.length; rowIndex += 1) {
       for (const columnIndex of classification.directIdentifierIndexes) {
         sheet
           .getRow(table.headerRow + rowIndex)

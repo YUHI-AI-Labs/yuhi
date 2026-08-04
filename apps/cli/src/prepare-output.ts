@@ -1,6 +1,8 @@
 import {
   buildSafePreparedRunSummary,
+  deliveryIntegrityWarnings,
   formatPreparationReport,
+  postTransformScanLabel,
   type SafePreparedRunSummary,
 } from "@yuhi/core";
 
@@ -26,7 +28,8 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
       `Unsupported or unverified files: ${result.unsupportedOrUnverifiedFiles}`,
       `Restricted unresolved files: ${result.restrictedUnresolvedFiles}`,
       `Files kept local: ${result.filesKeptLocal}`,
-      "Raw fallback used: No",
+      // Derived here too: the failure path had its own hardcoded "No" (#12).
+      `Raw fallback used: ${result.rawFallbackUsed ? "Yes" : "No"}`,
       "Launch allowed: No",
       "Agent launch blocked: Yes",
       "",
@@ -89,6 +92,15 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
         `Background processing: ${mode.background.processing}`,
         `Background completed: ${mode.background.completed}`,
         `Background companion unavailable: ${mode.background.companionUnavailable}`,
+        // #16: a document that reached a terminal state with no companion and whose
+        // original was never shared leaves the agent with NO context for it. Say so.
+        ...(mode.background.contextUnavailable > 0
+          ? [
+              `Documents with no available context: ${mode.background.contextUnavailable}`,
+              "  These documents were kept on this computer and no verified companion could be produced,",
+              "  so Claude Code has no context for them. Review or include them later.",
+            ]
+          : []),
         `Original workspace modified: ${mode.protection.originalWorkspaceModified ? "Yes" : "No"}`,
         `Safe Apply required: ${mode.protection.safeApplyRequired ? "Yes" : "No"}`,
         "",
@@ -118,8 +130,18 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     `Entities pseudonymized: ${result.entitiesPseudonymized}`,
     `Identifier columns transformed: ${result.identifierColumnsTransformed}`,
     `Analytical columns preserved: ${result.analyticalColumnsPreserved}`,
-    `Post-transformation scan: ${result.postTransformScanPassed ? "Passed" : "Not applicable"}`,
-    "Raw fallback used: No",
+    // #12: read the delivery facts; never hardcode and never re-derive them. A FAILED
+    // privacy scan must not render as "Not applicable", and a raw fallback that
+    // actually happened must not render as "No".
+    `Post-transformation scan: ${
+      result.deliveryIntegrity
+        ? postTransformScanLabel(result.deliveryIntegrity)
+        : result.postTransformScanPassed
+          ? "Passed"
+          : "Not run — nothing required transformation"
+    }`,
+    `Raw fallback used: ${result.rawFallbackUsed ? "Yes" : "No"}`,
+    ...(result.deliveryIntegrity ? deliveryIntegrityWarnings(result.deliveryIntegrity) : []),
     `Launch allowed: ${result.launchAllowed ? "Yes" : "No"}`,
     `Original source modified: ${result.originalSourceFilesModified === 0 ? "No" : "Yes"}`,
     `Yuhi local processing requests: ${result.localModelRequests}`,

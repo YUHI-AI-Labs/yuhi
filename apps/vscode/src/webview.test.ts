@@ -547,7 +547,7 @@ describe("renderSavingsHtml (product workflow)", () => {
           documentsPrepared: 4,
           secretsBlocked: 7,
           identifiersTransformed: 2165,
-          largeFilesExcluded: 0,
+          largeArtifactsReduced: 0,
           estimatedReductionPercent: 94,
           status: "ready",
           safetyMode: "balanced",
@@ -766,7 +766,7 @@ describe("What the AI Can See (read-only review)", () => {
     const fixture = data();
     fixture.preparationReport = {
       sourceFiles: 12, preparedArtifacts: 12, documentsPrepared: 0,
-      secretsBlocked: 2, identifiersTransformed: 0, largeFilesExcluded: 0,
+      secretsBlocked: 2, identifiersTransformed: 0, largeArtifactsReduced: 0,
       estimatedReductionPercent: 40, status: "ready", safetyMode: "balanced",
     };
     fixture.files = [
@@ -847,7 +847,7 @@ describe("Safety Mode selector (v0.3.2)", () => {
       selectedSafetyMode: "maximum-privacy",
       preparationReport: {
         sourceFiles: 3, preparedArtifacts: 3, documentsPrepared: 0,
-        secretsBlocked: 0, identifiersTransformed: 0, largeFilesExcluded: 0,
+        secretsBlocked: 0, identifiersTransformed: 0, largeArtifactsReduced: 0,
         estimatedReductionPercent: 10, status: "ready", safetyMode: "balanced",
       },
     };
@@ -957,7 +957,7 @@ describe("Context Compression section (v0.3.3)", () => {
       compression: compression(),
       preparationReport: {
         sourceFiles: 3, preparedArtifacts: 3, documentsPrepared: 0,
-        secretsBlocked: 0, identifiersTransformed: 0, largeFilesExcluded: 0,
+        secretsBlocked: 0, identifiersTransformed: 0, largeArtifactsReduced: 0,
         estimatedReductionPercent: 10, status: "ready", safetyMode: "balanced",
       },
     };

@@ -18,13 +18,17 @@
  * reason codes, and aggregate counts only — never an absolute path, environment
  * value, secret, or raw error string.
  */
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import {
+  buildPublicStatus,
   readPublicStatus,
   runBackgroundForRun,
   requestBackgroundCancel,
   retryBackgroundItem,
   retryBackgroundTerminal,
   type PublicBackgroundStatus,
+  type YuhiModeSummary,
   type BackgroundRunSummary,
 } from "@yuhi/core";
 import type { LocalModelProvider } from "@yuhi/shared";
@@ -70,21 +74,9 @@ export interface BackgroundCommonOptions extends BackgroundDeps {
 
 /** The public-safe empty status used when no background status file exists yet. */
 function emptyStatus(): PublicBackgroundStatus {
-  return {
-    schemaVersion: 1,
-    counts: {
-      total: 0,
-      pending: 0,
-      processing: 0,
-      completed: 0,
-      failed: 0,
-      keptLocal: 0,
-      companionUnavailable: 0,
-      cancelled: 0,
-    },
-    revision: 0,
-    items: [],
-  };
+  // Built through the shared projection so the file/job split and the activity flag
+  // can never drift from production (#15).
+  return buildPublicStatus([]);
 }
 
 /**
@@ -329,4 +321,28 @@ export async function performBackgroundRetry(
   }
   out(`Re-queued ${requeued} background ${requeued === 1 ? "item" : "items"}.`);
   return 0;
+}
+
+/**
+ * Re-read `.yuhi/yuhi-mode-summary.json` after a background pass (#16).
+ *
+ * The background runner refreshes that file when it finishes, but a prepare report
+ * captured BEFORE the pass still describes the pending state. Rendering from the
+ * stale report reported "Background status: running" and a plain "ready" for a
+ * document that had already terminated with no context. This reads the refreshed
+ * file so the CLI renders the same facts the handoff and the panel do — it never
+ * recomputes them.
+ */
+export async function readRefreshedYuhiModeSummary(
+  preparedDir: string,
+): Promise<YuhiModeSummary | undefined> {
+  try {
+    const raw = await fs.readFile(
+      path.join(path.resolve(preparedDir), ".yuhi", "yuhi-mode-summary.json"),
+      "utf8",
+    );
+    return JSON.parse(raw) as YuhiModeSummary;
+  } catch {
+    return undefined;
+  }
 }

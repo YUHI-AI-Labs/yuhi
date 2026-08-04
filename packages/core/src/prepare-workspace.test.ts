@@ -1057,6 +1057,12 @@ describe("prepareWorkspace", () => {
       return cells.join("|");
     };
 
+    // This fixture deliberately delivers ONE table in five representations, so it is
+    // also a duplicate-content family (#15/P1-B): the redundant copies are replaced
+    // by a short alias naming the canonical one. An alias carries no data at all —
+    // it must still be leak-free, but the analytical values live in the canonical
+    // representation, which is asserted separately below.
+    let canonicalsChecked = 0;
     for (const entry of report.files) {
       if (entry.omitted || !/\.(?:csv|txt|xlsx)$/i.test(entry.relpath)) continue;
       const abs = path.join(report.outDir, ...entry.relpath.split("/"));
@@ -1065,11 +1071,23 @@ describe("prepareWorkspace", () => {
       for (const secret of RAW) {
         expect(text, `${entry.relpath} leaked ${secret}`).not.toContain(secret);
       }
+      // A duplicate is only REWRITTEN when the alias is smaller than the content it
+      // replaces; otherwise it keeps its full body and is merely recorded as a family
+      // member. Only the rewritten ones carry an alias body.
+      if (entry.duplicateOfFamily && entry.contextRepresentation === "compressed") {
+        // An alias names its canonical representation and holds nothing else.
+        expect(text).toContain("Duplicate of dataset");
+        expect(text).toContain(entry.canonicalRelpath!);
+        continue;
+      }
       // Grades (analytical values) must survive the de-identification.
       expect(/[|,\t]A(\||$|\n)/.test(text) || text.includes("A") ).toBe(true);
       // The final gate must have verified this delivered artifact.
       expect(entry.finalRescanVerified).toBe(true);
+      canonicalsChecked += 1;
     }
+    // At least one full representation of the table is always delivered.
+    expect(canonicalsChecked).toBeGreaterThan(0);
     const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
     expect(manifest.finalRescan.identifierLeaks).toBe(0);
   });

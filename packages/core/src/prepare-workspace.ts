@@ -15,6 +15,8 @@ import {
   parseDelimitedTable,
   splitTablePreamble,
   tabularDirectIdentifierValues,
+  tabularVerificationValues,
+  tabularResidueCells,
   inspectXlsxRecords,
   pseudonymizeXlsxRecords,
   xlsxContainsAnyValue,
@@ -36,6 +38,16 @@ import {
 } from "@yuhi/shared";
 import { isArchivePath, zipEncryptionFromHeader } from "@yuhi/shared";
 import { computeContextId, type ContextIdSourceFile } from "./context-id.js";
+import {
+  buildDeliveryIntegritySummary,
+  type DeliveryIntegritySummary,
+} from "./delivery-integrity.js";
+import {
+  buildContentFamilies,
+  duplicateAliasText,
+  type ContentFamilyMetrics,
+  type FamilyCandidate,
+} from "./content-families.js";
 import { runDetectors, redactText } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
@@ -261,6 +273,9 @@ function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext 
     columnTokenCounts: new Map(context.columnTokenCounts),
     nextEntity: context.nextEntity,
     attributeTokens: new Map(context.attributeTokens),
+    // Must be carried: dropping it would re-mint a fresh token prefix per file and
+    // silently break cross-file linkage (#11).
+    entityBucketTokens: new Map(context.entityBucketTokens),
   };
 }
 
@@ -364,6 +379,25 @@ export interface PreparedFileEntry {
    * must never be reported as de-identified/verified. `undefined` = not applicable.
    */
   finalRescanVerified?: boolean;
+  /**
+   * TRUE when the UNTRANSFORMED original was delivered because a safe transformation
+   * could not be produced or verified. This is the fact behind "Raw fallback used";
+   * it must never be hardcoded or re-derived by a render layer.
+   */
+  rawFallback?: boolean;
+  /** Set when this artifact is a redundant copy of another delivered representation
+   *  and was replaced by a short alias pointing at the canonical one (#15/P1-B). */
+  duplicateOfFamily?: string;
+  canonicalRelpath?: string;
+  /** Public document id of the canonical representation, for alias traceability. */
+  canonicalDocumentId?: string;
+  /**
+   * Tri-state result of the post-transformation privacy scan for THIS file.
+   * `not-applicable` means the scan was never run (nothing was transformed);
+   * `failed` means residue was found. A failed scan must never be presented as
+   * "not applicable" — that reads as "this check does not apply here".
+   */
+  postTransformScan?: "passed" | "failed" | "not-applicable";
   /** Privacy-safe aggregate finding categories persisted in manifest schema v2. */
   findingCategoryCounts?: Record<string, number>;
   /** Privacy-safe aggregate finding severities persisted in manifest schema v2. */
@@ -643,6 +677,8 @@ export interface PrepareReport {
   publicSummary?: PublicPreparedContextSummary;
   /** Canonical user-facing Yuhi Mode projection shared by all product surfaces. */
   yuhiModeSummary?: YuhiModeSummary;
+  /** Duplicate-content families over the delivered artifacts (#15/P1-B). */
+  contentFamilies?: ContentFamilyMetrics;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
   tabularAcceptance?: {
     entitiesPseudonymized: number;
@@ -651,7 +687,14 @@ export interface PrepareReport {
     postTransformScanPassed: boolean;
     malformedTables: number;
     unverifiedTransformations: number;
-    rawFallbackUsed: false;
+    /**
+     * TRUE when at least one untransformed original was delivered as a fallback.
+     * Was typed as the literal `false`, so no surface could ever report a raw
+     * fallback that actually happened (#12).
+     */
+    rawFallbackUsed: boolean;
+    /** Per-surface delivery facts; the single source of truth for render layers. */
+    deliveryIntegrity?: DeliveryIntegritySummary;
     launchAllowed: boolean;
     claudeCodeStarted: false;
     unsupportedOrUnverifiedFiles?: number;
@@ -2372,6 +2415,10 @@ export async function prepareWorkspace(
           entry.outcome = "included-unverified";
           entry.limitation = "transformation-unavailable";
           entry.failureCategory = firstFail.leak ? "reidentification-risk" : "structural";
+          // The TRANSFORMED output was delivered here (best effort), so this is not a
+          // raw fallback — but the scan genuinely FAILED and must say so.
+          entry.rawFallback = false;
+          entry.postTransformScan = "failed";
           entry.error = `Transformed, but verification did not fully pass (first failure: ${firstFail.stage}). Delivered best-effort with a warning.`;
           unverifiedTransformations += 1;
           unsupportedOrUnverifiedFiles += 1;
@@ -2446,24 +2493,47 @@ export async function prepareWorkspace(
         // excluded. The ONLY thing kept local is an unresolved SECRET/credential,
         // which must never leave the machine.
         if (!blockingSecret) {
-          // Include the original verbatim, clearly marked unverified with the reason
-          // and the concrete failure category (so the UI can explain WHY it wasn't
-          // transformed: structural / conflicting-identifiers / reidentification-risk).
-          await writeMirrored(outDir, relpath, content);
+          // PREFER THE PARTIALLY DE-IDENTIFIED OUTPUT over the raw original.
+          //
+          // The pipeline can block on a single residual cell — e.g. one person's
+          // 氏名 value also appearing in an unclassified フリガナ column — while the
+          // rest of the table was fully pseudonymized. Shipping `content` there
+          // delivered EVERY raw identifier in the file because of that one cell, and
+          // `CLAUDE.md` is explicit: raw unsafe content must never be included as an
+          // implicit fallback. A strictly-better artifact always wins; the raw
+          // original is used only when the pipeline produced nothing better.
+          const changedValues = prep.audits
+            .filter(
+              (audit) =>
+                audit.processorId === "pseudonymize" ||
+                audit.processorId === "pseudonymize-student-records",
+            )
+            .reduce((total, audit) => total + audit.itemsChanged, 0);
+          const partiallyDeIdentified = prep.output !== content && changedValues > 0;
+          const delivered = partiallyDeIdentified ? prep.output : content;
+          await writeMirrored(outDir, relpath, delivered);
           provenance.push({ relpath, source: relpath, action: decision.action });
-          const tok = tokenEstimate(content);
-          beforeTokens += tok.tokens;
+          const tok = tokenEstimate(delivered);
+          beforeTokens += tokenEstimate(content).tokens;
           afterTokens += tok.tokens;
           approx = approx || tok.approx;
           entry.status = "ok";
           entry.action = "allow";
           entry.transmission = "approved";
           entry.omitted = false;
-          entry.transformed = false;
+          entry.transformed = partiallyDeIdentified;
           entry.outcome = "included-unverified";
           entry.limitation = "transformation-unavailable";
           entry.failureCategory = category;
-          entry.error = failureReason;
+          // Size accounting must describe the bytes actually delivered, not a buffer
+          // that was discarded.
+          entry.afterChars = delivered.length;
+          entry.rawFallback = !partiallyDeIdentified;
+          entry.postTransformScan = partiallyDeIdentified ? "failed" : "not-applicable";
+          entry.error = partiallyDeIdentified
+            ? `${failureReason} Delivered the partially de-identified output (${changedValues} ` +
+              "value(s) replaced) instead of the raw original; NOT fully verified."
+            : failureReason;
           unsupportedOrUnverifiedFiles += 1;
         } else {
           // Unresolved credential/secret: the one case we keep local (never sent).
@@ -2902,6 +2972,10 @@ export async function prepareWorkspace(
     const deliveredAbs = path.join(outDir, ...entry.relpath.split("/"));
     let sourceValues: string[] = [];
     let deliveredText = "";
+    // LAYER 1 — structured full-table rescan (header/body agnostic, never uses
+    // dataStartRow). Populated for delimited text below.
+    let structuredResidueCells = 0;
+    let structuredResidueValues: string[] = [];
     try {
       if (/\.xlsx$/i.test(entry.relpath)) {
         const srcBuf = await readFile(sourceAbs);
@@ -2913,8 +2987,14 @@ export async function prepareWorkspace(
         }
         deliveredText = await xlsxCellText(await readFile(deliveredAbs));
       } else {
-        sourceValues = tabularDirectIdentifierValues(await readFile(sourceAbs, "utf8"));
+        const sourceText = await readFile(sourceAbs, "utf8");
         deliveredText = await readFile(deliveredAbs, "utf8");
+        // Candidate values are collected across EVERY row — a header/body
+        // misdetection must not shrink the verification surface.
+        sourceValues = tabularVerificationValues(sourceText);
+        const structured = tabularResidueCells(sourceText, deliveredText);
+        structuredResidueCells = structured.residueCells;
+        structuredResidueValues = structured.residueValues;
       }
     } catch {
       // Could not reopen/parse the delivered artifact to verify it → cannot claim
@@ -2930,19 +3010,27 @@ export async function prepareWorkspace(
     // actual identifier COLUMN of the delivered table (never an analytical cell).
     const numericRe = /^[+-]?\d+(?:\.\d+)?$/;
     const candidates = sourceValues.filter((value) => value.length >= 2);
+    // LAYER 2 — independent scan of the delivered BYTES. Substring search, so it
+    // holds even when the delivered artifact no longer parses as a table.
     const surviving = candidates.filter((value) => !numericRe.test(value) && deliveredText.includes(value));
     const numericValues = candidates.filter((value) => numericRe.test(value));
     if (numericValues.length > 0 && !/\.xlsx$/i.test(entry.relpath)) {
       try {
         const table = parseTabularRegion(deliveredText);
         const idIdx = classifyStudentRecordTable(table.rows).directIdentifierIndexes;
+        // EVERY row, row 0 included: a numeric identifier left in a misdetected
+        // header row is exactly the residue this gate exists to catch.
         const idCells = new Set(
-          table.rows.slice(1).flatMap((row) => idIdx.map((i) => (row[i] ?? "").trim())),
+          table.rows.flatMap((row) => idIdx.map((i) => (row[i] ?? "").trim())),
         );
         for (const value of numericValues) if (idCells.has(value)) surviving.push(value);
       } catch {
         /* unparseable delivered table → rely on the non-numeric check above */
       }
+    }
+    // Fold LAYER 1 in: a structured residue counts even if the byte scan missed it.
+    for (const value of structuredResidueValues) {
+      if (!surviving.includes(value)) surviving.push(value);
     }
     const credentialFindings = runDetectors(deliveredText, {
       entropyThreshold: plan.context.config.scan.entropy_threshold,
@@ -2956,7 +3044,9 @@ export async function prepareWorkspace(
     progress(
       `Final rescan ${entry.relpath}: ${
         surviving.length ? `SURVIVING ${surviving.length} identifier(s)` : "clean"
-      }${credentialFindings.length ? " +credential" : ""}`,
+      } (structured=${structuredResidueCells} cell(s), byte-scan=${
+        candidates.filter((v) => deliveredText.includes(v)).length
+      } value(s))${credentialFindings.length ? " +credential" : ""}`,
     );
     if (credentialFindings.length > 0) {
       // A credential survived into the delivered file → keep local. Remove it from
@@ -2981,12 +3071,17 @@ export async function prepareWorkspace(
       entry.failureCategory = "reidentification-risk";
       entry.transformed = false;
       entry.finalRescanVerified = false;
+      // Residue was FOUND. Never "not applicable".
+      entry.postTransformScan = "failed";
       entry.error =
         `Final artifact still contains ${surviving.length} source identifier value(s); ` +
         "delivered with a warning — NOT de-identified.";
       finalIdentifierLeaks += 1;
     } else {
       entry.finalRescanVerified = true;
+      // A file delivered as its raw original was never transformed, so a clean byte
+      // scan does not make it "passed" — the scan simply had nothing to verify.
+      entry.postTransformScan = entry.rawFallback === true ? "not-applicable" : "passed";
     }
     } catch {
       // The final gate must never fail the whole run: if verifying one delivered
@@ -3257,6 +3352,100 @@ export async function prepareWorkspace(
     (file) => file.status === "ok" && !file.omitted && file.transformed,
   ).length;
   const localOnlyProjectFiles = files.filter((file) => file.omitted).length;
+  // ONE derivation of the delivery facts, shared by the manifest, the report, the
+  // CLI and the VS Code panel. No surface may recompute or hardcode these (#12).
+  const deliveryIntegrity = buildDeliveryIntegritySummary(files);
+  const rawFallbackUsed = deliveryIntegrity.rawFallbackFiles > 0;
+
+  // Duplicate-content families over the artifacts actually delivered (#15/P1-B).
+  // Yuhi's own transform normalizes BOM and line endings away, so distinct source
+  // files can become byte-identical deliveries; nothing used to record that.
+  const familyCandidates: FamilyCandidate[] = [];
+  for (const entry of files) {
+    if (entry.omitted) continue;
+    if (entry.relpath.startsWith(".yuhi/") || entry.relpath === "manifest.json") continue;
+    const abs = path.join(outDir, ...entry.relpath.split("/"));
+    try {
+      // NO stat-then-read: checking the path and then opening it by name leaves a
+      // window in which the file can change (CWE-367). The bytes we actually read
+      // are the single source of truth for both content and size, and a directory
+      // or unreadable entry simply throws into the catch below.
+      const buffer = await readFile(abs);
+      const isText = /\.(?:csv|tsv|txt)$/i.test(entry.relpath);
+      familyCandidates.push({
+        relpath: entry.relpath,
+        bytes: buffer.byteLength,
+        ...(isText
+          ? { text: buffer.toString("utf8") }
+          : { sha256: createHash("sha256").update(buffer).digest("hex") }),
+        ...(entry.documentId ? { documentId: entry.documentId } : {}),
+      });
+    } catch {
+      // A delivered artifact we cannot reopen simply does not participate.
+    }
+  }
+  const contentFamilies: ContentFamilyMetrics = buildContentFamilies(
+    familyCandidates,
+    files.reduce((total, f) => total + (f.omitted ? 0 : Math.max(0, f.beforeChars)), 0),
+  );
+
+  // Deliver ONE canonical representation per family and replace the redundant TEXT
+  // copies with a short alias that names it. The content stays available (at the
+  // canonical path), the agent is told which representation to analyse, and the same
+  // bytes stop being counted as extra context. Binary artifacts are only recorded,
+  // never rewritten — an alias written into an .xlsx would corrupt it.
+  let duplicateAliasesWritten = 0;
+  for (const family of contentFamilies.families) {
+    const canonical = family.members.find((member) => member.canonical);
+    if (!canonical) continue;
+    for (const member of family.members) {
+      if (member.canonical) continue;
+      if (!/\.(?:csv|tsv|txt)$/i.test(member.relpath)) continue;
+      const entry = files.find((file) => file.relpath === member.relpath);
+      if (!entry || entry.omitted) continue;
+      const alias = duplicateAliasText(family);
+      // The bytes this artifact contributed BEFORE aliasing, so the saving reported
+      // is the real one. Estimating the token cost of the byte COUNT (`"195"`) was a
+      // meaningless subtraction of ~1 token per file.
+      const replacedText = familyCandidates.find(
+        (candidate) => candidate.relpath === member.relpath,
+      )?.text;
+      // ONLY alias when it actually shrinks the agent-visible context. The alias body
+      // carries a family id, a canonical path, a public document id and (for a
+      // normalized family) a format-loss note, so for a SMALL table the stub is
+      // larger than the table it replaces — aliasing there would increase delivered
+      // bytes, which is the opposite of the point. The duplicate is still recorded in
+      // the family metrics either way.
+      if (replacedText !== undefined && alias.length >= replacedText.length) {
+        entry.duplicateOfFamily = family.familyId;
+        entry.canonicalRelpath = family.canonicalRelpath;
+        if (family.canonicalDocumentId) entry.canonicalDocumentId = family.canonicalDocumentId;
+        continue;
+      }
+      await writeMirrored(outDir, member.relpath, alias);
+      entry.afterChars = alias.length;
+      // `compressed` is what Safe Apply refuses to write back to source
+      // (`patch-compressed-source`), which is exactly right for a stub: an agent
+      // edit to an alias must never overwrite the real table.
+      entry.contextRepresentation = "compressed";
+      entry.duplicateOfFamily = family.familyId;
+      entry.canonicalRelpath = family.canonicalRelpath;
+      if (family.canonicalDocumentId) entry.canonicalDocumentId = family.canonicalDocumentId;
+      if (replacedText !== undefined) {
+        const saved = tokenEstimate(replacedText).tokens - tokenEstimate(alias).tokens;
+        afterTokens -= Math.max(0, saved);
+      }
+      duplicateAliasesWritten += 1;
+    }
+  }
+  if (duplicateAliasesWritten > 0) {
+    progress(
+      `Duplicate content: ${duplicateAliasesWritten} redundant representation(s) replaced ` +
+        `with a canonical alias across ${contentFamilies.families.length} family(ies).`,
+    );
+  }
+
+
   refreshPublicAvailability(files);
   let publicSummary = buildPublicPreparedContextSummary({
     files,
@@ -3488,6 +3677,10 @@ export async function prepareWorkspace(
     largeArtifactsRepresented: largeCompactEntries.length,
     reductionByStructuralCompression: Math.max(0, structuralReduction),
     reductionByLargeArtifactRepresentation: largeArtifactReduction,
+    delivery: {
+      rawFallbackFiles: deliveryIntegrity.rawFallbackFiles,
+      identifierResidueFiles: deliveryIntegrity.identifierResidueFiles,
+    },
   });
   let finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
   yuhiModeSummary = buildYuhiModeSummary({
@@ -3499,6 +3692,10 @@ export async function prepareWorkspace(
     largeArtifactsRepresented: largeCompactEntries.length,
     reductionByStructuralCompression: Math.max(0, structuralReduction),
     reductionByLargeArtifactRepresentation: largeArtifactReduction,
+    delivery: {
+      rawFallbackFiles: deliveryIntegrity.rawFallbackFiles,
+      identifierResidueFiles: deliveryIntegrity.identifierResidueFiles,
+    },
   });
   finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
   await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", publicSurface(finalHandoff));
@@ -3552,6 +3749,14 @@ export async function prepareWorkspace(
         ...(f.transformations !== undefined ? { transformations: f.transformations } : {}),
         ...(f.maskedValues !== undefined ? { maskedValues: f.maskedValues } : {}),
         ...(f.transformed !== undefined ? { transformed: f.transformed } : {}),
+        ...(f.rawFallback !== undefined ? { rawFallback: f.rawFallback } : {}),
+        ...(f.duplicateOfFamily ? { duplicateOfFamily: f.duplicateOfFamily } : {}),
+        ...(f.canonicalRelpath ? { canonicalRelpath: f.canonicalRelpath } : {}),
+        ...(f.canonicalDocumentId ? { canonicalDocumentId: f.canonicalDocumentId } : {}),
+        ...(f.postTransformScan !== undefined ? { postTransformScan: f.postTransformScan } : {}),
+        ...(f.finalRescanVerified !== undefined
+          ? { finalRescanVerified: f.finalRescanVerified }
+          : {}),
         ...(f.availabilityStatus ? { availabilityStatus: f.availabilityStatus } : {}),
         ...(f.inspectionStatus ? { inspectionStatus: f.inspectionStatus } : {}),
         ...(f.backgroundStatus ? { backgroundStatus: f.backgroundStatus } : {}),
@@ -3611,6 +3816,14 @@ export async function prepareWorkspace(
       };
     }),
     sourceModified: originalSourceFilesModified,
+    contentFamilies: {
+      sourceBytes: contentFamilies.sourceBytes,
+      uniqueContentBytes: contentFamilies.uniqueContentBytes,
+      duplicateBytes: contentFamilies.duplicateBytes,
+      canonicalDeliveredBytes: contentFamilies.canonicalDeliveredBytes,
+      duplicateAliasBytes: contentFamilies.duplicateAliasBytes,
+      families: contentFamilies.families,
+    },
     status: launchAllowed ? "ready" : "blocked",
     launchAllowed,
     ...(!launchAllowed ? { blockedReason } : {}),
@@ -3619,10 +3832,14 @@ export async function prepareWorkspace(
       identifierColumnsTransformed,
       analyticalColumnsPreserved,
       postTransformScanPassed:
-        transformedSensitiveTables > 0 && malformedTables === 0 && unverifiedTransformations === 0,
+        deliveryIntegrity.postTransformScanFailed === 0 &&
+        transformedSensitiveTables > 0 &&
+        malformedTables === 0 &&
+        unverifiedTransformations === 0,
       malformedTables,
       unverifiedTransformations,
-      rawFallbackUsed: false,
+      rawFallbackUsed,
+      deliveryIntegrity,
       launchAllowed,
       claudeCodeStarted: false,
       unsupportedOrUnverifiedFiles,
@@ -3762,15 +3979,20 @@ export async function prepareWorkspace(
     ...(compressionReport ? { compression: compressionReport } : {}),
     publicSummary,
     yuhiModeSummary,
+    contentFamilies,
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,
       analyticalColumnsPreserved,
       postTransformScanPassed:
-        transformedSensitiveTables > 0 && malformedTables === 0 && unverifiedTransformations === 0,
+        deliveryIntegrity.postTransformScanFailed === 0 &&
+        transformedSensitiveTables > 0 &&
+        malformedTables === 0 &&
+        unverifiedTransformations === 0,
       malformedTables,
       unverifiedTransformations,
-      rawFallbackUsed: false,
+      rawFallbackUsed,
+      deliveryIntegrity,
       launchAllowed,
       claudeCodeStarted: false,
       unsupportedOrUnverifiedFiles,

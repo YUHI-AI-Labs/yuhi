@@ -94,7 +94,16 @@ export interface ReviewData {
     postTransformScanPassed: boolean;
     malformedTables: number;
     unverifiedTransformations: number;
-    rawFallbackUsed: false;
+    rawFallbackUsed: boolean;
+    deliveryIntegrity?: {
+      rawFallbackFiles: number;
+      rawFallbackWithFindings: number;
+      postTransformScanFailed: number;
+      postTransformScanPassed: number;
+      identifierResidueFiles: number;
+      excludedByRecommendation: number;
+      deliveredWithWarning: number;
+    };
     launchAllowed: boolean;
     claudeCodeStarted: boolean;
     unsupportedOrUnverifiedFiles?: number;
@@ -692,7 +701,7 @@ else if(withheld>0){box.hidden=false;box.innerHTML="<p><b>Kept on this computer 
 else if(unverifiedIncluded.length){box.hidden=false;box.innerHTML="<p><b>Included unchanged · "+unverifiedIncluded.length+" binary or unsupported "+(unverifiedIncluded.length===1?"file":"files")+"</b></p><p>No action needed. Yuhi found nothing sensitive to transform in "+(unverifiedIncluded.length===1?"this file":"these files")+", so "+(unverifiedIncluded.length===1?"it was":"they were")+" passed to Claude Code unchanged.</p>"+facts([["Prepared files",String(included)],["Transformed copies",String(transformed)],["Credential values kept out",environmentPrepared?"Yes":"None detected"],["Included unchanged",String(unverifiedIncluded.length)]])+"<details><summary>Which files</summary>"+unverifiedDetails()+"</details>"}
 else if(limitedButDelivered.length){box.hidden=false;box.innerHTML=withWarningSection()}
 else if(environmentFiles.length){box.hidden=false;box.innerHTML="<p><b>Credential configuration prepared locally</b></p><p>The Prepared Workspace does not contain the original credential values. An agent may still read credentials from its runtime environment if the user or runtime provides them.</p>"+facts([["Credential values","Not included in Prepared Workspace"],["Non-sensitive configuration","Included"],["Prepared copy","Created"],["Post-transformation scan","Passed"]])}
-else if(restricted.length){box.hidden=false;box.innerHTML="<p><b>Restricted tabular data transformed locally</b></p>"+facts([["Entities pseudonymized",String(a.entitiesPseudonymized)],["Identifier columns transformed",String(a.identifierColumnsTransformed)],["Analytical columns preserved",String(a.analyticalColumnsPreserved)],["Post-transformation scan",a.postTransformScanPassed?"Passed":"Failed"],["Raw fallback used","No"],["Original source modified","No"],["Claude receives","Verified transformed copy"]])}
+else if(restricted.length||(a.deliveryIntegrity&&(a.deliveryIntegrity.rawFallbackFiles>0||a.deliveryIntegrity.identifierResidueFiles>0))){box.hidden=false;box.innerHTML="<p><b>"+(a.deliveryIntegrity&&a.deliveryIntegrity.identifierResidueFiles>0?"Tabular data NOT fully de-identified":"Restricted tabular data transformed locally")+"</b></p>"+facts([["Entities pseudonymized",String(a.entitiesPseudonymized)],["Identifier columns transformed",String(a.identifierColumnsTransformed)],["Analytical columns preserved",String(a.analyticalColumnsPreserved)],["Post-transformation scan",a.deliveryIntegrity&&a.deliveryIntegrity.postTransformScanFailed>0?("Failed \u2014 "+a.deliveryIntegrity.postTransformScanFailed+" file(s) still contain identifier residue"):(a.deliveryIntegrity&&a.deliveryIntegrity.rawFallbackFiles>0&&a.deliveryIntegrity.postTransformScanPassed===0?"Not run \u2014 raw representation delivered":(a.postTransformScanPassed?"Passed":"Not run \u2014 nothing required transformation"))],["Raw fallback used",a.rawFallbackUsed?"Yes":"No"],["Detected identifier residue",String(a.deliveryIntegrity?a.deliveryIntegrity.identifierResidueFiles:0)+" file(s)"],["Original source modified","No"],["Claude receives",a.rawFallbackUsed?"Original file (NOT de-identified)":"Verified transformed copy"]])}
 document.getElementById("runtimeFacts").innerHTML=facts([["Starts in","Prepared Workspace"],["Workspace boundary",DATA.runtime.workspaceBoundary==="enforced"?"Enforced":"Advisory"],["Filesystem enforcement",DATA.runtime.filesystemEnforcement==="claude-code-sandbox"?"Claude Code sandbox":"Not enabled"],["OS sandbox",DATA.runtime.osSandboxEnabled?"Enabled":"Not enabled"],["External-path access",DATA.runtime.externalPathAccessPossible?"May still be possible":"Blocked by policy"]]);
 const action=f=>f.outcome==="background-processing-pending"?"Processing locally in background":f.outcome==="included-unverified"?"Included with warning":f.outcome==="local-only-unsupported"?"File kept local":f.outcome==="local-only-unverified"?"Restricted workbook kept local":f.outcome==="excluded-by-user"?"Excluded by user":f.outcome==="excluded-by-policy"?"Excluded by policy":f.omitted?(["local-only","inject","ask","metadata-only"].includes(f.action)?"Kept local":"Excluded"):f.transformations.includes("aggregated")?"Aggregated locally":f.transformations.includes("pseudonymized")?"Pseudonymized locally":f.transformations.includes("masked")?"Masked locally":f.transformations.includes("summarized")?"Summarized locally":"Included unchanged";
 const receive=f=>f.claudeReceives==="No"?"Nothing":f.transformations.includes("aggregated")?"Aggregated copy":f.transformations.includes("pseudonymized")?"Pseudonymized copy":f.transformed?"Prepared copy":"Unchanged";

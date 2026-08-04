@@ -35,7 +35,26 @@ function mkStatus(items: Item[], revision = 0): PublicBackgroundStatus {
     else if (it.status === "cancelled") counts.cancelled += 1;
     else counts.keptLocal += 1; // kept-local / timed-out
   }
-  return { schemaVersion: 1, counts, revision, items };
+  const documents = new Set(items.map((i) => i.documentId ?? i.relpath ?? i.displayName ?? ""));
+  return {
+    schemaVersion: 1,
+    counts,
+    accounting: {
+      sourceDocuments: documents.size,
+      inspectionJobs: items.length,
+      pendingJobs: counts.pending,
+      processingJobs: counts.processing,
+      completedJobs: counts.completed,
+      failedJobs: counts.failed,
+      cancelledJobs: counts.cancelled,
+      companionsCreated: items.filter((i) => i.status === "completed" && i.preparedRelpath).length,
+      keptLocalDocuments: 0,
+      companionUnavailableDocuments: 0,
+    },
+    activity: counts.pending + counts.processing > 0 ? "running" : "idle",
+    revision,
+    items,
+  };
 }
 
 const INITIAL = mkStatus([

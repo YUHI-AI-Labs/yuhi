@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.4.3] — 2026-08-04
+
+Real-data privacy and reporting fixes shared with the CLI. The panel now states delivery
+integrity honestly:
+
+- A FAILED post-transformation scan is shown as **Failed**, never "Not applicable".
+- **Raw fallback used** is derived from the run instead of being hardcoded to "No".
+- **Detected identifier residue** covers a partially de-identified delivery, not only a raw
+  one, and is shown even when there is no restricted-tabular finding to hang it on.
+- **Claude receives** says "Original file (NOT de-identified)" when that is what happened.
+- Documents whose companion could not be produced are reported instead of disappearing.
+
+See the root `CHANGELOG.md` for the full list.
+
 ## [0.4.2] — 2026-08-04
 
 Documentation and Marketplace metadata only. **No code changes** — the extension source,

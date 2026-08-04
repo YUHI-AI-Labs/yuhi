@@ -10,6 +10,7 @@ import { buildPreparationReport, type PreparationReport } from "./preparation-re
 import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
 import type { PublicPreparedContextSummary } from "./public-prepared-summary.js";
 import type { YuhiModeSummary } from "./yuhi-mode-summary.js";
+import type { DeliveryIntegritySummary } from "./delivery-integrity.js";
 
 /** Why a Prepared Workspace is stale relative to the current inputs. */
 export type PreparationFreshnessReason =
@@ -73,7 +74,9 @@ export interface SafePreparedRunSummary {
   restrictedUnresolvedFiles: number;
   hasLimitations: boolean;
   postTransformScanPassed: boolean;
-  rawFallbackUsed: false;
+  rawFallbackUsed: boolean;
+  /** Delivery facts every surface must render verbatim (#12). */
+  deliveryIntegrity?: DeliveryIntegritySummary;
   originalSourceFilesModified: number;
   unresolvedHighRiskFindings: number;
   launchAllowed: boolean;
@@ -140,7 +143,10 @@ export function buildSafePreparedRunSummary(report: PrepareReport): SafePrepared
     restrictedUnresolvedFiles: acceptance?.restrictedUnresolvedFiles ?? 0,
     hasLimitations: acceptance?.hasLimitations ?? false,
     postTransformScanPassed: acceptance?.postTransformScanPassed ?? false,
-    rawFallbackUsed: false,
+    rawFallbackUsed: acceptance?.rawFallbackUsed ?? false,
+    ...(acceptance?.deliveryIntegrity !== undefined
+      ? { deliveryIntegrity: acceptance.deliveryIntegrity }
+      : {}),
     originalSourceFilesModified: report.sourceModified,
     unresolvedHighRiskFindings: metrics.unresolvedHighRiskFindings,
     launchAllowed,
@@ -187,6 +193,7 @@ function buildPreparationReportSafely(report: PrepareReport, warning: boolean): 
       documentsPrepared: 0,
       secretsBlocked: 0,
       identifiersTransformed: 0,
+      largeArtifactsReduced: 0,
       largeFilesExcluded: 0,
       estimatedReductionPercent: 0,
       status: warning ? "ready-with-warning" : "ready",

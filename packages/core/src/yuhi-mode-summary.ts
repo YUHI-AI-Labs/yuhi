@@ -40,12 +40,28 @@ export interface YuhiModeSummary {
     reductionByLargeArtifactRepresentation: number;
     reductionBySafetyTransformation: number;
   };
+  /** Delivery integrity, mirrored here so the HANDOFF can state it (#12). */
+  delivery?: {
+    rawFallbackFiles: number;
+    identifierResidueFiles: number;
+  };
   background: {
     status: "idle" | "running" | "completed" | "completed-with-limitations";
     pending: number;
     processing: number;
     completed: number;
     companionUnavailable: number;
+    /**
+     * Documents that reached a TERMINAL background state with no companion and whose
+     * original was not shared — so the agent has NO context for them at all (#16).
+     *
+     * These used to be counted nowhere: not pending, not completed, not failed, not
+     * companionUnavailable (that field only covers an original delivered with a
+     * warning). The document simply vanished from every surface while its manifest
+     * entry still said `background-processing-pending`, so the UI reported work in
+     * progress forever and never admitted the context did not exist.
+     */
+    contextUnavailable: number;
   };
   protection: {
     originalWorkspaceModified: boolean;
@@ -58,6 +74,8 @@ export interface BuildYuhiModeSummaryInput {
   files: readonly PreparedFileEntry[];
   prepared: PublicPreparedContextSummary;
   background?: PublicBackgroundStatus;
+  /** Delivery facts from `buildDeliveryIntegritySummary`, when available. */
+  delivery?: { rawFallbackFiles: number; identifierResidueFiles: number };
   launchAllowed: boolean;
   selectedAgent?: string;
   autoModeAvailable?: boolean;
@@ -146,14 +164,22 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
   const failed = backgroundValues.filter(
     (item) => item.status === "failed" && !item.originalSharedWithWarning,
   ).length;
+  // Terminal, no companion published, original never shared → no context at all.
+  const TERMINAL_WITH_NO_WORK_LEFT = ["kept-local", "timed-out", "cancelled"];
+  const contextUnavailable = backgroundValues.filter(
+    (item) =>
+      !item.originalSharedWithWarning &&
+      !item.preparedRelpath &&
+      TERMINAL_WITH_NO_WORK_LEFT.includes(item.status),
+  ).length;
   const backgroundStatus = pending + processing > 0
     ? "running"
-    : completed + companionUnavailable + failed === 0
+    : completed + companionUnavailable + failed + contextUnavailable === 0
       ? "idle"
-      : companionUnavailable + failed > 0
+      : companionUnavailable + failed + contextUnavailable > 0
         ? "completed-with-limitations"
         : "completed";
-  const warnings = count("available-with-warning") + companionUnavailable + failed;
+  const warnings = count("available-with-warning") + companionUnavailable + failed + contextUnavailable;
   const before = input.prepared.originalEstimatedTokens;
   const after = input.prepared.preparedEstimatedTokens;
   const reduction = input.prepared.reducedTokens;
@@ -199,7 +225,9 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
       processing,
       completed,
       companionUnavailable,
+      contextUnavailable,
     },
+    ...(input.delivery ? { delivery: input.delivery } : {}),
     protection: {
       originalWorkspaceModified: input.prepared.originalWorkspaceModified,
       knownSecretsBlocked: input.prepared.excludedForSafetyFiles,
@@ -226,9 +254,27 @@ export function renderYuhiModeHandoff(summary: YuhiModeSummary): string {
     `- Known-risk files blocked: ${summary.contextAvailability.knownRisksBlocked}`,
     `- Unavailable after processing failure: ${summary.contextAvailability.unavailableAfterFailure}`,
     `- Processing locally in background: ${summary.background.pending + summary.background.processing}`,
+    ...(summary.background.contextUnavailable > 0
+      ? [
+          `- Documents with no available context: ${summary.background.contextUnavailable}`,
+        ]
+      : []),
     "",
     "Some documents are available in their original format before local inspection completes.",
     "Treat files marked inspection-pending as unverified, but use them when needed.",
+    ...(summary.delivery && summary.delivery.identifierResidueFiles > 0
+      ? [
+          "",
+          "## Not fully de-identified",
+          "",
+          `- Files still containing identifier residue: ${summary.delivery.identifierResidueFiles}`,
+          `- Files delivered as the unmodified original: ${summary.delivery.rawFallbackFiles}`,
+          "",
+          "These files were delivered so you still have the data, but Yuhi could NOT verify",
+          "that every direct identifier was removed. Treat their identifier columns as real",
+          "personal data: do not quote them, and do not copy them into new files.",
+        ]
+      : []),
     "Verified companions may appear as background processing completes.",
     "",
     "## Context efficiency",

@@ -13,7 +13,7 @@ const report = (over: Partial<PreparationReport> = {}): PreparationReport => ({
   documentsPrepared: 4,
   secretsBlocked: 7,
   identifiersTransformed: 2165,
-  largeFilesExcluded: 0,
+  largeArtifactsReduced: 0,
   estimatedReductionPercent: 94,
   status: "ready",
   safetyMode: "balanced",
@@ -23,15 +23,26 @@ const report = (over: Partial<PreparationReport> = {}): PreparationReport => ({
 // Strings that must NEVER appear in any public-safe surface (paths / filenames /
 // secret types / identities). The report has no such fields; these guard against
 // a regression that ever plumbed one through.
+//
+// The identity entries are SYNTHETIC CANARIES on purpose. This file is part of a
+// public repository, and hardcoding a real surname, personal handle or employer
+// here published exactly the values the guard exists to keep out (docs/HANDOFF.md
+// §7). The assertion is no weaker for it: the card has no identity-bearing fields
+// at all, so what is verified is that no arbitrary identity-shaped input string
+// reaches the surface — and a canary proves that as well as a real value would,
+// while `renderRepositoryReadyCard` never sees either.
+//
+// A maintainer who wants to scan for their own real values can do so locally
+// without committing them: see `docs/adr/0006-public-fixture-identity-strings.md`.
 const FORBIDDEN = [
   "/Users/",
   "\\Users\\",
   ".env",
   "meeting-log.md",
   "student-records.xlsx",
-  "Nakamoto",
-  "nakamolinto",
-  "@elyza",
+  "REAL_SURNAME_CANARY",
+  "PERSONAL_HANDLE_CANARY",
+  "EMPLOYER_CANARY",
   "API_KEY",
   "password",
 ];
@@ -64,12 +75,12 @@ describe("renderRepositoryReadyCard", () => {
     expect(out).toContain("public-safe");
   });
 
-  it("hides Large files excluded when zero and shows it when present", () => {
-    expect(renderRepositoryReadyCard(report({ largeFilesExcluded: 0 }))).not.toContain(
-      "Large files excluded",
+  it("hides Large artifacts reduced when zero and shows it when present", () => {
+    expect(renderRepositoryReadyCard(report({ largeArtifactsReduced: 0 }))).not.toContain(
+      "Large artifacts reduced",
     );
-    const withLarge = renderRepositoryReadyCard(report({ largeFilesExcluded: 3 }));
-    expect(withLarge).toContain("Large files excluded");
+    const withLarge = renderRepositoryReadyCard(report({ largeArtifactsReduced: 3 }));
+    expect(withLarge).toContain("Large artifacts reduced");
     expect(withLarge).toContain(">3<");
   });
 
@@ -83,7 +94,7 @@ describe("renderRepositoryReadyCard", () => {
   });
 
   it("renders only aggregate numbers — never a path, filename, or identity", () => {
-    const out = renderRepositoryReadyCard(report({ largeFilesExcluded: 5 }));
+    const out = renderRepositoryReadyCard(report({ largeArtifactsReduced: 5 }));
     for (const forbidden of FORBIDDEN) expect(out).not.toContain(forbidden);
   });
 });
@@ -101,10 +112,36 @@ describe("Repository Ready copy/export (public-safe output)", () => {
 
   it("each export format carries the numbers and leaks no path/identity", () => {
     for (const { format } of REPOSITORY_READY_EXPORT_FORMATS) {
-      const out = repositoryReadyExportText(report({ largeFilesExcluded: 6 }), format);
+      const out = repositoryReadyExportText(report({ largeArtifactsReduced: 6 }), format);
       expect(out).toContain("94");
       for (const forbidden of FORBIDDEN) expect(out).not.toContain(forbidden);
     }
+  });
+
+  it("carries no free-form string field that could smuggle a path or identity", () => {
+    // The FORBIDDEN assertions above can only catch a value that is already present.
+    // This is the structural half of the guard, and it is what actually protects the
+    // surface: the report is numbers plus two closed enums, so there is nowhere for a
+    // path, filename or identity to live. Adding a `sourcePath: string`-style field
+    // fails here immediately, before any value has to leak to prove the point.
+    const ENUM_FIELDS = new Set(["safetyMode", "status"]);
+    const walk = (value: unknown, path: string): void => {
+      if (typeof value === "string") {
+        expect(
+          ENUM_FIELDS.has(path.split(".").pop() ?? ""),
+          `${path} is a free-form string on the public report; it must be a number or a closed enum`,
+        ).toBe(true);
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((item, i) => walk(item, `${path}[${i}]`));
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [key, child] of Object.entries(value)) walk(child, `${path}.${key}`);
+      }
+    };
+    walk(report(), "report");
   });
 
   it("offers exactly Markdown, JSON, and SVG export formats", () => {
