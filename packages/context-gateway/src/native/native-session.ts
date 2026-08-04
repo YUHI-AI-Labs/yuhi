@@ -56,6 +56,7 @@ import {
   installOfficialExtension,
   installYuhiExtension,
   NATIVE_GUI_MIN_YUHI_VERSION,
+  YUHI_EXTENSION_ID,
   yuhiVersionSupportsNativeGui,
   launchIsolatedWindow,
   listInstalledExtensions,
@@ -228,7 +229,7 @@ export async function startNativeClaudeGuiSession(
   // panel never opens. Installed after the contract check so a broken Claude extension fails
   // fast instead of after a second download.
   const yuhiInstalled = await listInstalledExtensions(runner, candidate.executable, isolation);
-  if (!yuhiInstalled.some((e) => e.toLowerCase().startsWith("yuhi-ai-labs.yuhi-vscode@"))) {
+  if (!yuhiInstalled.some((e) => e.toLowerCase().startsWith(`${YUHI_EXTENSION_ID}@`))) {
     await advance("extension-installing", "installing Yuhi into the isolated window");
     const self = await installYuhiExtension(runner, candidate.executable, isolation, options.yuhiExtensionRef);
     if (!self.ok) {

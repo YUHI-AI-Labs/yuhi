@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.4 — new VS Code Marketplace extension id
+
+**The VS Code extension id changed from `yuhi-ai-labs.yuhi-vscode` to
+`yuhi-ai-labs.yuhi-code`.** No other behaviour changes.
+
+The previous listing was removed from the Marketplace, and a removed extension name is
+permanently reserved — per Microsoft's publishing documentation it "cannot be reused,
+even by the original publisher". `yuhi-ai-labs.yuhi-vscode` can therefore never serve a
+release again, so 0.4.4 moves to a new id.
+
+### If you had the extension installed
+
+Install **Yuhi** from the Marketplace again under the new id. The old entry will never
+update. Settings, keybindings and prepared workspaces are unaffected.
+
+### Changed
+
+- Extension id `yuhi-ai-labs.yuhi-code` (`name: "yuhi-code"`).
+- Native GUI Mode resolves the new id. The id was hardcoded in three places; it is now
+  read from the single `YUHI_EXTENSION_ID` constant everywhere, guarded by a test that
+  fails if the retired id reappears in shipped source or if the constant and the
+  extension manifest drift apart.
+- The CLI ships 0.4.4 too: it bundles the same gateway code and owns
+  `yuhi dynamic sessions | stop | recover`, so a 0.4.3 CLI would still resolve the dead
+  id.
+- README badges and install links point at the new id. Dated 0.4.0 measurement records
+  in `docs/design/` keep the old id, because they describe what was measured then.
+
+### Unchanged
+
+`@yuhi-ai-labs/yuhi@0.4.3` on npm is unaffected and remains installable; 0.4.4 is the
+same code with the new extension identity. Everything in the 0.4.3 notes below still
+applies.
+
 ## 0.4.3 — Real-data privacy and reporting fixes
 
 Correctness fixes found by auditing a real tabular workspace. **No new features.**

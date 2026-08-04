@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-vscode?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-code"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-code?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>
   <a href="https://github.com/YUHI-AI-Labs/yuhi/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/YUHI-AI-Labs/yuhi/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
@@ -109,7 +109,7 @@ yuhi report <run> --format svg > .github/yuhi-badge.svg
 
 ## Claude Code を開く
 
-**VS Code で** — [Yuhi 拡張機能](https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode)
+**VS Code で** — [Yuhi 拡張機能](https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-code)
 をインストールし、**`Yuhi: Prepare and Start Claude Code`** を実行します。Yuhi がワークスペースを
 準備・レビューし、公式の `anthropic.claude-code` 拡張機能向けに、**Prepared by Yuhi** と表示された
 新しいウィンドウで Prepared Workspace を開きます。

@@ -28,3 +28,11 @@ media/icon.svg
 
 # Build artifacts / packaging output.
 *.vsix
+# Release-staging files. These land in this directory while a release is prepared and
+# vsce would otherwise bundle them INTO the extension: a 0.4.4 build shipped the 562 KB
+# 0.4.3 npm tarball and a SHA256SUMS.txt before this rule existed.
+*.tgz
+*.tar.gz
+*.zip
+SHA256SUMS.txt
+SHA256SUMS*

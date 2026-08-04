@@ -15,6 +15,11 @@ const forbidden = [
   /(^|\/)node_modules(\/|$)/,
   /(^|\/)(src|tests?|fixtures?)(\/|$)/,
   /\.map$/,
+  // An archive or a checksum manifest inside the VSIX means release-staging files were
+  // packaged by accident. This inspector reported `suspiciousEntries: []` for a build
+  // that had bundled a 562 KB npm tarball, so absence of a rule was the whole gap.
+  /\.(?:tgz|tar\.gz|zip|vsix)$/,
+  /(^|\/)SHA256SUMS[^/]*$/,
 ];
 const suspiciousEntries = entries.filter((entry) => forbidden.some((pattern) => pattern.test(entry)));
 if (suspiciousEntries.length > 0) {

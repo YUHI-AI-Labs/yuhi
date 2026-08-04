@@ -1,8 +1,8 @@
 {
-  "name": "yuhi-vscode",
+  "name": "yuhi-code",
   "displayName": "Yuhi \u2014 Dynamic Context for Claude Code",
   "description": "Dynamic Context for the official Claude Code VS Code experience. Compress eligible tool outputs, retrieve omitted context when needed, and keep the session isolated from your normal VS Code environment.",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -383,8 +383,8 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package --no-dependencies -o yuhi.vsix",
-    "inspect:vsix": "node scripts/inspect-vsix.mjs yuhi.vsix"
+    "package": "vsce package --no-dependencies -o yuhi-code-$npm_package_version.vsix",
+    "inspect:vsix": "node scripts/inspect-vsix.mjs yuhi-code-$npm_package_version.vsix"
   },
   "dependencies": {
     "@yuhi/agents": "workspace:*",

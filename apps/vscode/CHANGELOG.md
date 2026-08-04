@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.4.4] — 2026-08-04
+
+**New extension id: `yuhi-ai-labs.yuhi-code`** (was `yuhi-ai-labs.yuhi-vscode`).
+
+The previous listing was removed from the Marketplace. A removed extension name is
+permanently reserved and cannot be reused even by the original publisher, so this
+extension moves to a new id. **If you had Yuhi installed, install it again under the new
+id** — the old entry will never receive updates. Settings, keybindings and prepared
+workspaces are unaffected.
+
+No functional changes: this is 0.4.3's code under a new identity. Native GUI Mode now
+resolves `yuhi-ai-labs.yuhi-code@<version>`.
+
 ## [0.4.3] — 2026-08-04
 
 Real-data privacy and reporting fixes shared with the CLI. The panel now states delivery

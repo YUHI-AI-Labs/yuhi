@@ -18,7 +18,7 @@ Yuhi: Open Claude Code Dynamic Workspace   (normal window)
    spawn BROKER  (detached node process, dist/native-broker.js)
         │
         ├── startDynamicClaudeSession()  ── Context Gateway (127.0.0.1:<ephemeral>)
-        ├── install Anthropic.claude-code + yuhi-ai-labs.yuhi-vscode into an isolated dir
+        ├── install Anthropic.claude-code + yuhi-ai-labs.yuhi-code into an isolated dir
         ├── merge claudeCode.environmentVariables into isolated user settings
         ├── launch isolated VS Code window
         └── attach server (loopback, token-guarded)
