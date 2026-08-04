@@ -36,3 +36,8 @@ apps/vscode/*.vsix
 
 # build artifacts — never committed; regenerate with `npm pack`
 apps/cli/*.tgz
+# Release-staging copies. These are built artifacts that get staged next to the
+# extension while a release is prepared; a 562 KB tarball was committed once because
+# only apps/cli/*.tgz was ignored.
+apps/vscode/*.tgz
+apps/vscode/SHA256SUMS.txt

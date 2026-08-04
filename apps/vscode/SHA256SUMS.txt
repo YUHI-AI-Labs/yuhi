@@ -1,6 +1,0 @@
-# Yuhi v0.4.5 — verified release artifacts, built from main 77d8943.
-# Neither artifact was regenerated after verification.
-# The VSIX is NOT byte-reproducible (zip timestamps): this checksum binds to the
-# exact file published to the Marketplace and attached to this release.
-12df99ce325d7aba4fa485eeed39bad179ed6255f5c1789cc0a309eb42301e69  yuhi-ai-labs-yuhi-0.4.5.tgz
-451004ce73af51e804fa7fb6cf14ad6d869ed20c06d5f8db3b24b29116011894  yuhi-code-0.4.5.vsix
