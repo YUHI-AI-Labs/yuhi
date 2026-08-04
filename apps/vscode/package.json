@@ -1,8 +1,8 @@
 {
   "name": "yuhi-code",
-  "displayName": "Yuhi \u2014 Dynamic Context for Claude Code",
+  "displayName": "Yuhi Code \u2014 See What Your AI Agent Sees",
   "description": "Dynamic Context for the official Claude Code VS Code experience. Compress eligible tool outputs, retrieve omitted context when needed, and keep the session isolated from your normal VS Code environment.",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
