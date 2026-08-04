@@ -75,6 +75,11 @@ export interface StartNativeClaudeGuiOptions {
   /** Pin a specific official-extension version. Omitted means "whatever satisfies the contract". */
   readonly extensionVersion?: string;
   readonly vscodeExecutable?: string;
+  /**
+   * Which build of Yuhi to install into the isolated window: a marketplace id by default,
+   * or a `.vsix` path when running a build that is not published yet.
+   */
+  readonly yuhiExtensionRef?: string;
   readonly signal?: AbortSignal;
 }
 

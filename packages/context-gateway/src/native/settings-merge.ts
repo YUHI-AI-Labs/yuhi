@@ -32,6 +32,10 @@ export function yuhiProfileDefaults(accentColour: string): Record<string, unknow
   return {
     "window.restoreWindows": "none",
     "window.openFoldersInNewWindow": "on",
+    // Restricted Mode would disable both the official Claude extension and Yuhi in this
+    // window. The launch flag covers the first run; this setting keeps it true across
+    // reloads. Scoped to Yuhi's own isolated directory and its own Prepared Workspace.
+    "security.workspace.trust.enabled": false,
     "workbench.colorCustomizations": {
       "titleBar.activeBackground": accentColour,
       "titleBar.inactiveBackground": accentColour,

@@ -1,13 +1,10 @@
 /**
  * Launching the isolated window, and installing the official extension into its profile.
  *
- * Two things the feasibility probe made non-negotiable:
+ * Two things the feasibility probe and the first real launch made non-negotiable:
  *
- * 1. **`--profile` alone does not isolate, and it does not carry extensions.** A profile
- *    created by the CLI starts with no extensions at all, so `--extensions-dir` pointing at
- *    a directory containing the extension is NOT enough — the extension host will not load
- *    it. Isolation comes from `--user-data-dir` + `--extensions-dir`; the profile is for the
- *    settings scope and the visual identity.
+ * 1. **Isolation is `--user-data-dir` + `--extensions-dir`.** See `isolationArgs` for why
+ *    `--profile` is not used at all.
  * 2. **The install must go through the VS Code CLI.** Copying an unpacked extension
  *    directory looks like it works and then silently does not, and hand-writing VS Code's
  *    per-profile extension bookkeeping would be guessing at an internal format.
@@ -77,15 +74,18 @@ export interface IsolationPaths {
   readonly profileName: string;
 }
 
+/**
+ * Isolation is `--user-data-dir` + `--extensions-dir`, and deliberately NOT `--profile`.
+ *
+ * A named profile adds nothing here — the user-data-dir is already Yuhi's own, so its
+ * default profile is private by construction — and it actively breaks two things:
+ * `--install-extension --profile X` fails with "Profile 'X' not found" before the profile
+ * has ever been created, and a CLI-created profile starts with no extensions, so the
+ * extension host would load nothing. The window is instead made visually distinct through
+ * `workbench.colorCustomizations`, which is a setting we already own in that directory.
+ */
 function isolationArgs(paths: IsolationPaths): string[] {
-  return [
-    "--user-data-dir",
-    paths.userDataDir,
-    "--extensions-dir",
-    paths.extensionsDir,
-    "--profile",
-    paths.profileName,
-  ];
+  return ["--user-data-dir", paths.userDataDir, "--extensions-dir", paths.extensionsDir];
 }
 
 /** Read the manifest of the extension as installed in the ISOLATED directory. */
@@ -126,7 +126,7 @@ export interface InstallResult {
 }
 
 /**
- * Install the official extension into the isolated profile.
+ * Install the official extension into the isolated extensions directory.
  *
  * A version is requested when the caller pins one, which keeps a Native GUI session on the
  * build the contract was validated against instead of whatever happens to be latest.
@@ -162,8 +162,20 @@ export interface LaunchInput extends IsolationPaths {
   readonly processEnvFallback?: NativeGuiEnvironment;
 }
 
+/**
+ * `--disable-workspace-trust` is required, not cosmetic.
+ *
+ * A fresh `--user-data-dir` has trusted nothing, so the window opens in Restricted Mode, and
+ * Restricted Mode DISABLES every extension that does not declare untrusted-workspace support
+ * — including the official Claude extension and Yuhi itself. Without this the session starts
+ * a gateway, opens a window, and then silently loads neither extension.
+ *
+ * The scope is narrow enough to be defensible: this flag applies only to the isolated window
+ * Yuhi created, opening a Prepared Workspace Yuhi itself produced. The user's normal window
+ * and its trust decisions are untouched.
+ */
 export function buildLaunchArgs(input: LaunchInput): string[] {
-  return ["--new-window", ...isolationArgs(input), input.preparedWorkspace];
+  return ["--new-window", ...isolationArgs(input), "--disable-workspace-trust", input.preparedWorkspace];
 }
 
 export function launchIsolatedWindow(runner: ProcessRunner, input: LaunchInput): { pid: number | undefined } {
@@ -182,7 +194,7 @@ export async function focusIsolatedWindow(
 ): Promise<void> {
   await runner.run({
     file: input.executable,
-    args: [...isolationArgs(input), "--reuse-window", input.preparedWorkspace],
+    args: [...isolationArgs(input), "--disable-workspace-trust", "--reuse-window", input.preparedWorkspace],
     timeoutMs: 30_000,
   });
 }
@@ -194,4 +206,33 @@ export async function readVsCodeVersion(runner: ProcessRunner, executable: strin
   } catch {
     return undefined;
   }
+}
+
+/** Marketplace identity of the Yuhi extension itself. */
+export const YUHI_EXTENSION_ID = "yuhi-ai-labs.yuhi-vscode";
+
+/**
+ * Install Yuhi into the isolated directory as well as Claude.
+ *
+ * Without this the isolated window has no Yuhi extension, so nothing attaches to the broker
+ * and nothing opens the official panel — the session would start a gateway and then sit
+ * there. `ref` is either a marketplace id (production) or a path to a `.vsix` (development
+ * and E2E, where the build under test is not the published one).
+ */
+export async function installYuhiExtension(
+  runner: ProcessRunner,
+  executable: string,
+  paths: IsolationPaths,
+  ref: string = YUHI_EXTENSION_ID,
+): Promise<InstallResult> {
+  const result = await runner.run({
+    file: executable,
+    args: [...isolationArgs(paths), "--install-extension", ref, "--force"],
+    timeoutMs: 300_000,
+  });
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  if (result.code !== 0) return { ok: false, installedVersion: undefined, output };
+  const installed = await listInstalledExtensions(runner, executable, paths);
+  const line = installed.find((e) => e.toLowerCase().startsWith(`${YUHI_EXTENSION_ID}@`));
+  return { ok: line !== undefined, installedVersion: line?.split("@")[1], output };
 }

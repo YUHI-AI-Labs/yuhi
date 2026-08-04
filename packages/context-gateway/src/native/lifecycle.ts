@@ -28,7 +28,9 @@ const ALLOWED: Record<NativeSessionState, readonly NativeSessionState[]> = {
   "gateway-starting": ["gateway-ready", "failed", "closing"],
   "gateway-ready": ["profile-provisioning", "failed", "closing"],
   "profile-provisioning": ["extension-installing", "vscode-launching", "failed", "closing"],
-  "extension-installing": ["vscode-launching", "failed", "closing"],
+  // Two installs can happen in a row (official Claude, then Yuhi itself), so this state
+  // must be able to re-enter without being treated as an illegal transition.
+  "extension-installing": ["extension-installing", "vscode-launching", "failed", "closing"],
   "vscode-launching": ["vscode-started", "failed", "closing"],
   "vscode-started": ["vscode-attaching", "failed", "closing", "orphaned"],
   "vscode-attaching": ["vscode-attached", "failed", "closing", "orphaned"],

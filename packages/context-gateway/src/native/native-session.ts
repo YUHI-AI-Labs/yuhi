@@ -53,7 +53,9 @@ import {
 import {
   focusIsolatedWindow,
   installOfficialExtension,
+  installYuhiExtension,
   launchIsolatedWindow,
+  listInstalledExtensions,
   nodeProcessRunner,
   readIsolatedManifest,
   readVsCodeVersion,
@@ -219,6 +221,20 @@ export async function startNativeClaudeGuiSession(
     await advance("failed", "extension contract broken");
     throw new NativeSessionError("extension-contract-broken", describeContractFailure(contract));
   }
+  // Yuhi must be present in the isolated window too, or nothing attaches and the official
+  // panel never opens. Installed after the contract check so a broken Claude extension fails
+  // fast instead of after a second download.
+  const yuhiInstalled = await listInstalledExtensions(runner, candidate.executable, isolation);
+  if (!yuhiInstalled.some((e) => e.toLowerCase().startsWith("yuhi-ai-labs.yuhi-vscode@"))) {
+    await advance("extension-installing", "installing Yuhi into the isolated window");
+    const self = await installYuhiExtension(runner, candidate.executable, isolation, options.yuhiExtensionRef);
+    if (!self.ok) {
+      await cleanupSession(layout, { closeGateway: () => void gateway.close() });
+      await advance("failed", "yuhi self-install failed");
+      throw new NativeSessionError("extension-install-failed", self.output.slice(0, 500));
+    }
+  }
+
   recorder.describe({
     claudeExtensionId: "Anthropic.claude-code",
     claudeExtensionVersion: contract.version,
@@ -266,9 +282,18 @@ export async function startNativeClaudeGuiSession(
           await advance("claude-activating");
         })();
       },
-      onHeartbeat: () => {
+      onHeartbeat: (_id, _client, claudeReady) => {
         heartbeat?.beat();
         void touchLock(layout.lockFile, iso());
+        // The window reports when the official panel is actually open. Yuhi does not claim
+        // `active` on its own timer — a session that says "ready" while the panel failed to
+        // open would make the status bar lie about the thing the user is looking at.
+        if (claudeReady && recorder.state() === "claude-activating") {
+          void (async () => {
+            await advance("claude-ready", "official Claude panel open");
+            await advance("active");
+          })();
+        }
       },
       onDetach: (_id, reason) => {
         void close(reason === "window-closed" ? "window-closed" : "extension-host-shutdown");

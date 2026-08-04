@@ -55,6 +55,8 @@ export interface AttachClientOptions {
 
 export interface AttachClient {
   attach(): Promise<boolean>;
+  /** Told once the official Claude panel is open, so the broker can move to `active`. */
+  setClaudeReady(ready: boolean): void;
   startHeartbeat(): void;
   detach(reason: string): Promise<void>;
   dispose(): void;
@@ -73,6 +75,7 @@ export function createAttachClient(options: AttachClientOptions): AttachClient {
   const base = options.setting.controlUrl;
   let ticker: { dispose(): void } | undefined;
   let token: string | undefined;
+  let claudeReady = false;
 
   return {
     async attach() {
@@ -90,6 +93,9 @@ export function createAttachClient(options: AttachClientOptions): AttachClient {
       });
       return result.ok;
     },
+    setClaudeReady(ready: boolean) {
+      claudeReady = ready;
+    },
     startHeartbeat() {
       if (!base || !token) return;
       ticker?.dispose();
@@ -97,6 +103,7 @@ export function createAttachClient(options: AttachClientOptions): AttachClient {
         void post(fetcher, `${base}/heartbeat`, {
           bootstrapToken: token,
           clientInstanceId: options.clientInstanceId,
+          claudeReady,
         }).then((r) => {
           // A rejected heartbeat means the broker no longer recognises us. Stop beating
           // rather than hammering a socket that will keep refusing.

@@ -27,6 +27,7 @@ export interface BrokerConfig {
   readonly retrievalMode: RetrievalMode;
   readonly extensionVersion?: string;
   readonly vscodeExecutable?: string;
+  readonly yuhiExtensionRef?: string;
   readonly sessionsRoot?: string;
   /** Where the broker reports its control endpoint back to the originating window. */
   readonly handshakeFile: string;
@@ -41,6 +42,7 @@ export async function runBroker(config: BrokerConfig): Promise<void> {
       retrievalMode: config.retrievalMode,
       ...(config.extensionVersion ? { extensionVersion: config.extensionVersion } : {}),
       ...(config.vscodeExecutable ? { vscodeExecutable: config.vscodeExecutable } : {}),
+      ...(config.yuhiExtensionRef ? { yuhiExtensionRef: config.yuhiExtensionRef } : {}),
     },
     {
       ...(config.sessionsRoot ? { sessionsRoot: config.sessionsRoot } : {}),

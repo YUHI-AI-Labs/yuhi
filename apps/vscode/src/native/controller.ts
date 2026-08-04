@@ -146,6 +146,7 @@ export async function joinNativeSession(host: IsolatedWindowHost): Promise<Isola
   client.startHeartbeat();
 
   const open = await openOfficialClaudePanel(host);
+  client.setClaudeReady(open.kind === "opened");
   return {
     attached: true,
     open,

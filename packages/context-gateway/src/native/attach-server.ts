@@ -47,7 +47,7 @@ export interface AttachOutcome {
 
 export interface AttachServerHooks {
   onAttach(payload: AttachPayload): void;
-  onHeartbeat(sessionId: string, clientInstanceId: string): void;
+  onHeartbeat(sessionId: string, clientInstanceId: string, claudeReady: boolean): void;
   onDetach(sessionId: string, reason: string): void;
   /**
    * Control routes used by the ORIGINATING window (the normal one), not the isolated one.
@@ -149,7 +149,7 @@ export async function startAttachServer(
       if (!tokensMatch(token, expect.bootstrapToken)) return send(res, 403, { error: "bad-token" });
 
       if (path === "/heartbeat") {
-        hooks.onHeartbeat(expect.sessionId, String(raw["clientInstanceId"] ?? "unknown"));
+        hooks.onHeartbeat(expect.sessionId, String(raw["clientInstanceId"] ?? "unknown"), raw["claudeReady"] === true);
         return send(res, 200, { ok: true });
       }
       if (path === "/detach") {

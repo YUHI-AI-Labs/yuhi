@@ -354,12 +354,15 @@ describe("security boundary", () => {
 });
 
 describe("launch arguments and platform gating", () => {
-  it("always isolates by user-data-dir AND extensions-dir, not by profile alone", () => {
+  it("isolates by user-data-dir AND extensions-dir, disables restricted mode, and does not pass --profile", () => {
     const args = buildLaunchArgs({
       executable: "code", preparedWorkspace: "/prepared",
       userDataDir: "/u", extensionsDir: "/e", profileName: "Yuhi Dynamic",
     });
-    expect(args).toEqual(["--new-window", "--user-data-dir", "/u", "--extensions-dir", "/e", "--profile", "Yuhi Dynamic", "/prepared"]);
+    expect(args).toEqual([
+      "--new-window", "--user-data-dir", "/u", "--extensions-dir", "/e", "--disable-workspace-trust", "/prepared",
+    ]);
+    expect(args).not.toContain("--profile");
   });
 
   it("detects remote environments so Native GUI Mode can fail closed", () => {
