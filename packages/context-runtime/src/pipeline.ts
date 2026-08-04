@@ -130,6 +130,15 @@ export type Delivery =
       readonly metadataRedactions: number;
       /** Whether to advertise retrieval for this delivery (compressor's declaration). */
       readonly hintPolicy: HintPolicy;
+      /**
+       * The safety-scanned ORIGINAL — same bytes minus masking, before compression.
+       *
+       * The delivery layer adds a marker envelope that the runtime cannot price, so only the
+       * caller can tell whether the compressed view is still smaller once wrapped. When it is
+       * not, this is what must be delivered: a weak view plus an envelope is strictly worse
+       * than the scanned original.
+       */
+      readonly scannedText: string;
     }
   | {
       readonly status: "withheld";
@@ -438,6 +447,7 @@ export class ContextRuntime {
       secretRedactions: this.policy.redactSecretsBeforeDelivery ? scan.redactions : keyMaterial.count,
       metadataRedactions: metadata.redactions,
       hintPolicy,
+      scannedText: safeContent,
       ...(fallback ? { fallback } : {}),
     };
   }

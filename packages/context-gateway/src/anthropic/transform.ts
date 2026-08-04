@@ -52,6 +52,8 @@ export interface TransformDeps {
   readonly verifyLiveZoneMaxBytes?: number;
   /** How many blocks per session carry a retrieve hint before it becomes noise. */
   readonly hintRetrieveForFirstBlocks?: number;
+  /** Ceiling above which a prose/log `Read` is compressed anyway. Default 20,000 est tokens. */
+  readonly scanGuardMaxTokens?: number;
   /** Developer Mode: watch delivered secrets and report them leaving. Never blocks. */
   readonly egressGuard?: EgressGuard;
   readonly onEgress?: (verdict: EgressVerdict) => void;
@@ -139,7 +141,9 @@ export async function transformRequest(
     //    on the forced log-read task: 120 blocks with 1 compressible, turns 7 → 9-16, cost
     //    +75%. Those bytes still go through the SAFETY pipeline — only compression is
     //    skipped — so the secret/PII/metadata guarantees are unchanged.
-    if (isScanRead(ref, (t) => deps.runtime.estimateTokens(t))) {
+    if (
+      isScanRead(ref, (t) => deps.runtime.estimateTokens(t), deps.scanGuardMaxTokens ?? DEFAULT_SCAN_GUARD_MAX_TOKENS)
+    ) {
       const scanned = await deps.runtime.deliver({
         sessionId,
         tool: "read",
@@ -225,7 +229,9 @@ export async function transformRequest(
       metrics.block(delivery.fallback ? "fallback" : "compressed");
       transformed++;
     } else {
-      finalText = delivery.text;
+      // The envelope-inclusive view is not substantively smaller: deliver the scanned
+      // original rather than a weak view wrapped in a marker, which would be larger still.
+      finalText = delivery.scannedText;
       strategy = "passthrough-scanned";
       metrics.block("passthrough");
     }
@@ -304,12 +310,14 @@ function toolNameFor(ref: ToolResultRef): ToolName {
 }
 
 /**
- * Above this, a "scan" is no longer a scan — it is a single read large enough to threaten
- * the context window, and delivering it whole is worse than any re-read the guard was
- * protecting. Measured in the field: a 69,000-token plain-text Read passed through the guard
- * intact and exhausted the window.
+ * Default ceiling for the scan guard. Above this, a "scan" is no longer a scan — it is a
+ * single read large enough to threaten the context window, and delivering it whole is worse
+ * than any re-read the guard was protecting. Measured in the field: a 69,000-token plain-text
+ * Read passed through the guard intact and exhausted the window.
+ *
+ * Configurable per session; an adaptive, budget-aware ceiling is v0.4.1 work.
  */
-const SCAN_GUARD_MAX_TOKENS = 20_000;
+export const DEFAULT_SCAN_GUARD_MAX_TOKENS = 20_000;
 
 /**
  * True when this block is a file scan rather than command output, AND small enough that
@@ -317,9 +325,13 @@ const SCAN_GUARD_MAX_TOKENS = 20_000;
  * still a compression target — the win there is proven; it is line-oriented log/prose paging
  * that must be left alone, up to the ceiling above.
  */
-function isScanRead(ref: ToolResultRef, estimateTokens: (text: string) => number): boolean {
+export function isScanRead(
+  ref: Pick<ToolResultRef, "toolName" | "kind" | "text">,
+  estimateTokens: (text: string) => number,
+  ceiling: number = DEFAULT_SCAN_GUARD_MAX_TOKENS,
+): boolean {
   const tool = (ref.toolName ?? "").toLowerCase();
   if (tool !== "read") return false;
   if (ref.kind !== "log" && ref.kind !== "text" && ref.kind !== "markdown") return false;
-  return estimateTokens(ref.text) <= SCAN_GUARD_MAX_TOKENS;
+  return estimateTokens(ref.text) <= ceiling;
 }

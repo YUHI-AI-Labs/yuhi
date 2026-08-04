@@ -55,6 +55,8 @@ export interface GatewayOptions {
   readonly retrievalMode?: RetrievalMode;
   /** What a detected secret means for delivery. Defaults to Developer Mode. */
   readonly deliveryPolicy?: DeliveryPolicy;
+  /** Ceiling above which a prose/log `Read` is compressed anyway (default 20,000 est tokens). */
+  readonly scanGuardMaxTokens?: number;
   readonly log?: (line: string) => void;
 }
 
@@ -138,6 +140,7 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
   const deps: TransformDeps = {
     runtime,
     retrievalMode: opts.retrievalMode ?? "disabled",
+    ...(opts.scanGuardMaxTokens === undefined ? {} : { scanGuardMaxTokens: opts.scanGuardMaxTokens }),
     prefixFor: async (sessionId) => {
       const existing = prefixes.get(sessionId);
       if (existing) return existing;
