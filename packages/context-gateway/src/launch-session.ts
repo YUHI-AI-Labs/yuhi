@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import { startGateway, type GatewayHandle, type GatewayStats } from "./server.js";
 import type { RetrievalMode } from "./anthropic/transform.js";
+import { policyForMode, type DeliveryMode } from "@yuhi/context-runtime";
 
 export const GATEWAY_STARTUP_TIMEOUT_MS = 15_000;
 export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "disabled";
@@ -31,6 +32,12 @@ export interface DynamicClaudeSessionOptions {
    * needed retrieval.
    */
   readonly retrievalMode?: RetrievalMode;
+  /**
+   * What a detected secret means for delivery. `developer` (default) lets the agent read
+   * project configuration; `strict` masks detected secrets before they leave, which is the
+   * 0.3.x behaviour and the right choice when the folder holds documents rather than code.
+   */
+  readonly deliveryMode?: DeliveryMode;
   /** Upstream base URL. Defaults to the public API; an enterprise gateway chains here. */
   readonly upstreamBaseUrl?: string;
   readonly sessionId?: string;
@@ -60,6 +67,7 @@ export interface DynamicClaudeSession {
   readonly sessionId: string;
   readonly contextRoot: string;
   readonly retrievalMode: RetrievalMode;
+  readonly deliveryMode: DeliveryMode;
   readonly readyMs: number;
   readonly command: DynamicSessionCommand;
   getStats(): Promise<DynamicContextStats>;
@@ -112,6 +120,7 @@ export async function startDynamicClaudeSession(
     gateway = await start({
       storeRoot: contextRoot,
       retrievalMode,
+      deliveryPolicy: policyForMode(options.deliveryMode ?? "developer"),
       sessionOverride: sessionId,
       ...(options.upstreamBaseUrl ? { upstreamBaseUrl: options.upstreamBaseUrl } : {}),
       log,
@@ -151,6 +160,7 @@ export async function startDynamicClaudeSession(
     sessionId,
     contextRoot,
     retrievalMode,
+    deliveryMode: options.deliveryMode ?? "developer",
     readyMs,
     command: {
       file: options.claudeCommand ?? "claude",

@@ -321,6 +321,19 @@
           ],
           "default": "disabled",
           "description": "Retrieval capability shown to the agent during a dynamic context session. Measured: registering the retrieval tools adds ~507 tokens to every request and costs extra agent turns, so the default is disabled. Originals stay privately stored and retrievable in every mode."
+        },
+        "yuhi.dynamicContext.deliveryMode": {
+          "type": "string",
+          "enum": [
+            "developer",
+            "strict"
+          ],
+          "default": "developer",
+          "enumDescriptions": [
+            "Developer Mode: project configuration, including .env, may be read by Claude Code. Raw values are never written to Yuhi logs, evidence or UI.",
+            "Strict Mode: detected secrets are masked before Claude Code sees them (the 0.3.x behaviour). Use for folders that hold documents or personal data rather than code."
+          ],
+          "description": "How detected secrets are handled during a dynamic context session."
         }
       }
     }

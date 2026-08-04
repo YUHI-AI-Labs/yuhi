@@ -916,6 +916,11 @@ async function main(): Promise<void> {
         false,
       )
       .option(
+        "--delivery-mode <mode>",
+        "how detected secrets are handled: developer (default, project configuration reaches the agent) | strict (mask before delivery, 0.3.x behaviour)",
+        "developer",
+      )
+      .option(
         "--retrieval <mode>",
         "retrieval capability shown to the agent: disabled | conditional | required (measured: registering the tools costs agent turns)",
         "disabled",
@@ -936,6 +941,7 @@ async function main(): Promise<void> {
               spawn: !opts.dryRun,
               json: g.json,
               cliEntry: process.argv[1] ?? "",
+              deliveryMode: opts.deliveryMode === "strict" ? "strict" : "developer",
               retrieval: (["disabled", "conditional", "required"] as const).includes(opts.retrieval)
                 ? (opts.retrieval as "disabled" | "conditional" | "required")
                 : "disabled",

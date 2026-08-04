@@ -15,7 +15,9 @@ import { join } from "node:path";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
-import { DEVELOPER_MODE_NOTICE } from "@yuhi/context-runtime";
+import { DEVELOPER_MODE_NOTICE, STRICT_MODE_POLICY } from "@yuhi/context-runtime";
+
+const STRICT_MODE_NOTICE = STRICT_MODE_POLICY.notice;
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -44,6 +46,8 @@ export interface DynamicLaunchOptions {
    * benchmark scores 3/3 with them and records real retrievals in the ledger.
    */
   readonly retrieval?: RetrievalMode;
+  /** `strict` masks detected secrets before delivery (0.3.x behaviour). */
+  readonly deliveryMode?: "developer" | "strict";
   readonly env?: NodeJS.ProcessEnv;
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
@@ -112,6 +116,7 @@ export async function launchClaudeWithDynamicContext(
     session = await startSession({
       preparedWorkspace: workspace,
       retrievalMode: retrieval,
+      deliveryMode: opts.deliveryMode ?? "developer",
       upstreamBaseUrl: upstream.baseUrl,
       sessionId,
       ...(opts.startGatewayImpl ? { startGatewayImpl: opts.startGatewayImpl } : {}),
@@ -141,7 +146,7 @@ export async function launchClaudeWithDynamicContext(
     out(`Yuhi dynamic context: ON — gateway ${session.gatewayUrl} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
     out("");
-    out(DEVELOPER_MODE_NOTICE);
+    out(opts.deliveryMode === "strict" ? STRICT_MODE_NOTICE : DEVELOPER_MODE_NOTICE);
     out("");
     out(`Retrieval mode: ${retrieval}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);

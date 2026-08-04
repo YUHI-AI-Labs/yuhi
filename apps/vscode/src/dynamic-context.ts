@@ -18,7 +18,16 @@
  *    {@link DynamicContextHost}, so this is unit-testable without an editor.
  */
 
-import { DEVELOPER_MODE_NOTICE } from "@yuhi/context-runtime";
+import { DEVELOPER_MODE_NOTICE, STRICT_MODE_POLICY } from "@yuhi/context-runtime";
+
+/** Shown instead of the Developer Mode notice when strict delivery is selected. */
+export const STRICT_MODE_NOTICE = [
+  "Strict Mode",
+  "",
+  "Detected secrets are masked before Claude Code sees them.",
+  "Project configuration values will not be readable by the agent.",
+].join("\n");
+void STRICT_MODE_POLICY;
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -73,6 +82,8 @@ export interface StartDynamicSessionInput {
   readonly preparedWorkspace: string;
   readonly claudeCommand: string;
   readonly retrievalMode?: RetrievalMode;
+  /** `strict` masks detected secrets before delivery — the right choice for document folders. */
+  readonly deliveryMode?: "developer" | "strict";
   readonly upstreamBaseUrl?: string;
   readonly sessionId?: string;
 }
@@ -97,6 +108,7 @@ export async function startDynamicSession(
   const session: DynamicClaudeSession = await start({
     preparedWorkspace: input.preparedWorkspace,
     retrievalMode: input.retrievalMode ?? "disabled",
+    deliveryMode: input.deliveryMode ?? "developer",
     claudeCommand: input.claudeCommand,
     ...(input.upstreamBaseUrl ? { upstreamBaseUrl: input.upstreamBaseUrl } : {}),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -131,8 +143,10 @@ export async function startDynamicSession(
     }
   };
 
-  host.log(`[dynamic] ${DEVELOPER_MODE_NOTICE.replace(/\n+/g, " ")}`);
-  host.showMessage(DEVELOPER_MODE_NOTICE);
+  // The notice must describe the mode actually in force, not the default.
+  const notice = session.deliveryMode === "strict" ? STRICT_MODE_NOTICE : DEVELOPER_MODE_NOTICE;
+  host.log(`[dynamic] ${notice.replace(/\n+/g, " ")}`);
+  host.showMessage(notice);
 
   publish();
   const ticker = (host.setInterval ?? defaultInterval)(() => void refresh(), STATS_POLL_INTERVAL_MS);

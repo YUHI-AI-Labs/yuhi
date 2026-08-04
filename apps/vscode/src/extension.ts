@@ -349,6 +349,7 @@ async function commandLaunchClaudeDynamic(): Promise<void> {
       preparedWorkspace: check.preparedRoot,
       claudeCommand: "claude",
       retrievalMode: mode,
+      deliveryMode: dynamicDeliveryModeSetting(),
     });
   } catch (err) {
     // NEVER downgrade silently: the user asked for dynamic context.
@@ -377,6 +378,15 @@ function watchDynamicTerminalClose(): vscode.Disposable {
       void vscode.window.showInformationMessage("Yuhi: dynamic context session complete. Gateway stopped.");
     });
   });
+}
+
+/**
+ * `strict` restores the 0.3.x behaviour: detected secrets are masked before the agent sees
+ * them. The right choice when the folder holds documents rather than code.
+ */
+function dynamicDeliveryModeSetting(): "developer" | "strict" {
+  const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.deliveryMode");
+  return configured === "strict" ? "strict" : "developer";
 }
 
 function dynamicRetrievalModeSetting(): RetrievalMode {
