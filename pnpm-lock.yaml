@@ -133,6 +133,12 @@ importers:
       '@yuhi/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@yuhi/context-gateway':
+        specifier: workspace:*
+        version: link:../../packages/context-gateway
+      '@yuhi/context-runtime':
+        specifier: workspace:*
+        version: link:../../packages/context-runtime
       '@yuhi/core':
         specifier: workspace:*
         version: link:../../packages/core
