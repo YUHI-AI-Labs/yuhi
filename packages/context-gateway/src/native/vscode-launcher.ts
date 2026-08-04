@@ -238,7 +238,7 @@ export async function installYuhiExtension(
   // A pinned version that is not on the marketplace yet (the build is newer than the
   // published one) must not leave the isolated window with no Yuhi at all. Fall back to
   // whatever is published and let the version check below report what actually landed.
-  if (result.code !== 0 && ref.includes("@")) {
+  if (result.code !== 0 && ref.includes("@") && !ref.toLowerCase().endsWith(".vsix")) {
     result = await attempt(ref.split("@")[0] ?? YUHI_EXTENSION_ID);
   }
   if (result.code !== 0) return { ok: false, installedVersion: undefined, output: result.output };

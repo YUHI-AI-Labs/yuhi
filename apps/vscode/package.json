@@ -364,6 +364,12 @@
           "default": null,
           "scope": "machine",
           "description": "Set by Yuhi inside its own isolated Native GUI profile. Do not set this by hand; it identifies the session this window belongs to and carries no credential."
+        },
+        "yuhi.nativeGui.extensionRef": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Advanced. Which Yuhi build the isolated Native GUI window installs: a marketplace id, an id@version, or an absolute path to a .vsix. Leave empty to pin the running version. Set this to a local .vsix to try a build that is not published yet."
         }
       }
     }

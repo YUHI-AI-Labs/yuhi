@@ -77,6 +77,21 @@ function controllerHost(output: vscode.OutputChannel, context: vscode.ExtensionC
   };
 }
 
+/**
+ * Which Yuhi build the isolated window installs.
+ *
+ * Default: pin to the version running here, so the isolated window can never get an older
+ * Yuhi that has no attach client. `yuhi.nativeGui.extensionRef` overrides it with a
+ * marketplace id, an `id@version`, or a local `.vsix` — the only way to exercise Native GUI
+ * Mode before the matching version reaches the marketplace.
+ */
+export function isolatedYuhiRef(context: vscode.ExtensionContext): string {
+  const override = vscode.workspace.getConfiguration("yuhi").get<string>("nativeGui.extensionRef");
+  if (override && override.trim() !== "") return override.trim();
+  const version = (context.extension.packageJSON as { version?: string }).version ?? "";
+  return version ? `yuhi-ai-labs.yuhi-vscode@${version}` : "yuhi-ai-labs.yuhi-vscode";
+}
+
 /** The `yuhi.nativeSession` setting is the only way an isolated window knows its session. */
 export function readNativeSessionSetting(): NativeSessionSettingValue | undefined {
   const value = vscode.workspace.getConfiguration("yuhi").get<unknown>("nativeSession");
@@ -132,9 +147,10 @@ async function commandOpen(context: vscode.ExtensionContext, deps: NativeCommand
         configPath,
         handshakePath,
         // Pin the isolated window to THIS build. Without it the broker installs whatever is
-        // published, which is an older Yuhi with no Native GUI support — the window would
-        // never attach and the failure would look like a timeout.
-        yuhiExtensionRef: `yuhi-ai-labs.yuhi-vscode@${(context.extension.packageJSON as { version?: string }).version ?? ""}`,
+        // published, which can be an older Yuhi with no Native GUI support — the window would
+        // never attach and the failure would look like a timeout. An explicit override lets a
+        // maintainer point at a local .vsix before the matching version is published.
+        yuhiExtensionRef: isolatedYuhiRef(context),
       });
     },
   );
