@@ -37,6 +37,8 @@ export interface MetricsSnapshot {
   readonly maxCompressionLatencyMs: number;
   readonly usage: ProviderUsageObserved;
   readonly liveZoneViolations: number;
+  /** Outbound appearances of a delivered secret. Detected and audited, never blocked. */
+  readonly egressDetections: number;
   readonly upstreamErrors: number;
   readonly peakRssBytes: number;
 }
@@ -56,6 +58,7 @@ export class GatewayMetrics {
   private markerTokens = 0;
   private latencies: number[] = [];
   private liveZoneViolations = 0;
+  private egressDetections = 0;
   private upstreamErrors = 0;
   private peakRss = 0;
   private readonly usage: ProviderUsageObserved = {
@@ -102,6 +105,10 @@ export class GatewayMetrics {
     this.liveZoneViolations++;
   }
 
+  egressDetected(): void {
+    this.egressDetections++;
+  }
+
   upstreamError(): void {
     this.upstreamErrors++;
   }
@@ -139,6 +146,7 @@ export class GatewayMetrics {
       maxCompressionLatencyMs: this.latencies.length === 0 ? 0 : Math.max(...this.latencies),
       usage: { ...this.usage },
       liveZoneViolations: this.liveZoneViolations,
+      egressDetections: this.egressDetections,
       upstreamErrors: this.upstreamErrors,
       peakRssBytes: this.peakRss,
     };

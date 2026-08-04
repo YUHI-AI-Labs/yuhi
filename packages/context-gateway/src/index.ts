@@ -6,3 +6,4 @@ export * from "./anthropic/upstream.js";
 export * from "./session/metrics.js";
 export * from "./session/prefix-state.js";
 export * from "./policy/delivery.js";
+export * from "./policy/egress-guard.js";

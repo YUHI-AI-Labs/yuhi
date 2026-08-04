@@ -54,7 +54,14 @@ import {
   type RetrievalRecord,
 } from "./ledger.js";
 import { locatorWithin, narrowSuggestion, parseLocator, type Locator } from "./locator.js";
-import { DEFAULT_DETECTOR_OPTIONS, exactOutputScan, scanAndRedact, scanMetadata } from "./safety.js";
+import {
+  DEFAULT_DETECTOR_OPTIONS,
+  exactOutputScan,
+  redactKeyMaterial,
+  scanAndRedact,
+  scanMetadata,
+} from "./safety.js";
+import { DEVELOPER_MODE_POLICY, type DeliveryPolicy } from "./delivery-policy.js";
 
 export interface FallbackPolicy {
   /** Behaviour when compression is UNAVAILABLE. Security failures ignore this. */
@@ -167,6 +174,11 @@ export interface ContextRuntimeOptions {
   readonly tokenBudget?: number;
   readonly fallbackPolicy?: FallbackPolicy;
   readonly retrievalLimits?: RetrievalLimits;
+  /**
+   * What a detected secret means for delivery. Defaults to Developer Mode (v0.4.0): the
+   * agent can read project configuration, and no raw value ever reaches logs, evidence or UI.
+   */
+  readonly deliveryPolicy?: DeliveryPolicy;
 }
 
 interface DeliveredBytes {
@@ -183,6 +195,7 @@ export class ContextRuntime {
   private readonly ctx: CompressContext;
   private readonly tokenBudget: number | undefined;
   private readonly fallbackPolicy: FallbackPolicy;
+  private readonly policy: DeliveryPolicy;
   private readonly limits: RetrievalLimits;
   private readonly seqs = new Map<string, number>();
   /**
@@ -202,6 +215,7 @@ export class ContextRuntime {
     this.compressors = opts.compressors;
     this.tokenBudget = opts.tokenBudget;
     this.fallbackPolicy = opts.fallbackPolicy ?? DEFAULT_FALLBACK_POLICY;
+    this.policy = opts.deliveryPolicy ?? DEVELOPER_MODE_POLICY;
     this.limits = opts.retrievalLimits ?? DEFAULT_RETRIEVAL_LIMITS;
     this.ctx = defaultCompressContext({
       now: this.now,
@@ -211,6 +225,10 @@ export class ContextRuntime {
 
   get retrievalLimits(): RetrievalLimits {
     return this.limits;
+  }
+
+  get deliveryPolicy(): DeliveryPolicy {
+    return this.policy;
   }
 
   estimateTokens(text: string): number {
@@ -250,8 +268,12 @@ export class ContextRuntime {
     };
 
     // 1-3. Secret scan → PII scan → metadata scan, before anything is compressed.
+    // Detection ALWAYS runs; the policy decides what a finding means for delivery.
     const scan = scanAndRedact(req.content, this.detectorOptions);
-    const metadata = scanMetadata(scan.text, req.privateMetadata);
+    // Key material is masked in EVERY mode — the kind is recorded, the value never is.
+    const keyMaterial = redactKeyMaterial(req.content, this.policy, this.detectorOptions);
+    const scannedContent = this.policy.redactSecretsBeforeDelivery ? scan.text : keyMaterial.text;
+    const metadata = scanMetadata(scannedContent, req.privateMetadata);
     const safeContent = metadata.text;
 
     // 4. Compression, over the already-safe text so the view carries placeholders.
@@ -349,7 +371,7 @@ export class ContextRuntime {
     }
 
     // 5. Exact output scan on the precise bytes about to leave the runtime.
-    const verdict = exactOutputScan(candidate, req.privateMetadata, this.detectorOptions);
+    const verdict = exactOutputScan(candidate, req.privateMetadata, this.detectorOptions, undefined, this.policy);
     if (!verdict.ok) {
       return this.withhold(event, scan, metadata, verdict.reason, "security");
     }
@@ -380,7 +402,11 @@ export class ContextRuntime {
       removed,
       omissions: toLedgerOmissions(omissions),
       safetyFindings: verdict.findings,
-      secretRedactions: scan.redactions,
+      // Metadata only: category, count, fingerprint, policy. Never a value.
+      ...(scan.fingerprints.length > 0 ? { secretFingerprints: scan.fingerprints } : {}),
+      deliveryPolicy: this.policy.mode,
+      ...(keyMaterial.categories.length > 0 ? { keyMaterialMasked: keyMaterial.categories } : {}),
+      secretRedactions: this.policy.redactSecretsBeforeDelivery ? scan.redactions : keyMaterial.count,
       metadataRedactions: metadata.redactions,
       metadataLabels: metadata.labels,
       deliveryPath,
@@ -409,7 +435,7 @@ export class ContextRuntime {
       prefixStable,
       anchors,
       removed: [...removed],
-      secretRedactions: scan.redactions,
+      secretRedactions: this.policy.redactSecretsBeforeDelivery ? scan.redactions : keyMaterial.count,
       metadataRedactions: metadata.redactions,
       hintPolicy,
       ...(fallback ? { fallback } : {}),
@@ -477,8 +503,11 @@ export class ContextRuntime {
 
     // A retrieval is a delivery: it goes through the same gates.
     const scan = scanAndRedact(raw, this.detectorOptions);
-    const metadata = scanMetadata(scan.text, { scope: "private" });
-    const verdict = exactOutputScan(metadata.text, { scope: "private" }, this.detectorOptions);
+    const retrievedContent = this.policy.redactSecretsBeforeDelivery
+      ? scan.text
+      : redactKeyMaterial(raw, this.policy, this.detectorOptions).text;
+    const metadata = scanMetadata(retrievedContent, { scope: "private" });
+    const verdict = exactOutputScan(metadata.text, { scope: "private" }, this.detectorOptions, undefined, this.policy);
     if (!verdict.ok) return this.refuse(req, verdict.reason, undefined, eventId);
 
     const text = metadata.text;
@@ -582,6 +611,8 @@ export class ContextRuntime {
       removed: [],
       omissions: [],
       safetyFindings: scan.findings,
+      ...(scan.fingerprints.length > 0 ? { secretFingerprints: scan.fingerprints } : {}),
+      deliveryPolicy: this.policy.mode,
       secretRedactions: scan.redactions,
       metadataRedactions: metadata.redactions,
       metadataLabels: metadata.labels,

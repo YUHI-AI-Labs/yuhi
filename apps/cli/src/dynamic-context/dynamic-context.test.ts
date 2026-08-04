@@ -40,6 +40,7 @@ const EMPTY_SNAPSHOT: MetricsSnapshot = {
   maxCompressionLatencyMs: 90,
   usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
   liveZoneViolations: 0,
+  egressDetections: 0,
   upstreamErrors: 0,
   peakRssBytes: 120 * 1024 * 1024,
 };

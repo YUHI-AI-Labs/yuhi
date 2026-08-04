@@ -9,6 +9,7 @@
  */
 
 import { jsonCompressor } from "./json.js";
+import { dotenvCompressor } from "./dotenv.js";
 import { jsonTolerantCompressor } from "./json-tolerant.js";
 import { searchResultsCompressor } from "./search-results.js";
 import { testOutputCompressor } from "./test-output.js";
@@ -24,12 +25,14 @@ import {
 
 /**
  * Order is the routing policy (ADR-0005, derived from observed traffic):
- * strict JSON → tolerant JSON scan → search results → test/shell output → text window.
+ * strict JSON → tolerant JSON scan → config (KEY=VALUE) → search results → test/shell
+ * output → text window.
  * Most specific first; the generic byte/line window is always last and always available.
  */
 export const BUILTIN_COMPRESSORS: readonly Compressor[] = [
   jsonCompressor,
   jsonTolerantCompressor,
+  dotenvCompressor,
   searchResultsCompressor,
   testOutputCompressor,
   textCompressor,

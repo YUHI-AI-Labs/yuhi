@@ -2,6 +2,7 @@ export * from "./contract.js";
 export * from "./line-selection.js";
 export * from "./json.js";
 export * from "./json-tolerant.js";
+export * from "./dotenv.js";
 export * from "./search-results.js";
 export * from "./test-output.js";
 export * from "./text.js";

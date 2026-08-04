@@ -216,7 +216,27 @@ Do not silently reinterpret these conflicts:
 3. Yuhi is not an OS-level filesystem jail. A user override must never be described
    as safe, verified, or confined merely because the agent starts in the Prepared
    Workspace.
-4. Current surfaces may conflate background-pending, processing failure, unsupported,
+4. **v0.4.0 Developer Mode inverts the credential default for DYNAMIC context.** Through
+   0.3.x the invariant was "credentials/PII never raw in any mode". From v0.4.0 the dynamic
+   runtime ships Developer Mode as its default: `.env` and project configuration ARE
+   delivered to the agent, because an agent that cannot read configuration cannot diagnose
+   configuration. What replaces the old invariant is narrower and must be stated exactly:
+
+   ```text
+   detection      always runs, in every mode
+   delivery       policy decides (Developer Mode: values reach the agent)
+   evidence/UI    NEVER carries a raw value, in any mode
+   key material   private keys, certificates, recovery keys, seed phrases: masked in every mode
+   egress         a delivered secret leaving is detected, warned and audited (not blocked in v0.4.0)
+   ```
+
+   Consequences that must not be papered over: a public "Secrets exposed: 0" claim now means
+   *zero raw secrets in Yuhi's logs, evidence, statistics and UI* — NOT that the agent never
+   saw one. Static `prepare` behaviour and its Safety Modes are unchanged. Strict Mode remains
+   available as `STRICT_MODE_POLICY` and restores the 0.3.x behaviour whole. See
+   `docs/design/V0_4_0_DEVELOPER_MODE.md` and `docs/THREAT_MODEL.md`.
+
+5. Current surfaces may conflate background-pending, processing failure, unsupported,
    and excluded-for-safety. Apply the Safety Mode-specific routing above, and keep manifests,
    manifests, Review UI, handoff wording, and regression tests so those states remain
    distinct and do not block Yuhi Mode.

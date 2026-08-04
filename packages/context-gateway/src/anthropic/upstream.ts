@@ -73,6 +73,8 @@ export function copyResponseHeaders(response: Response, res: ServerResponse): vo
 
 /** Bounded window kept for usage scanning. Usage frames are small and near the ends. */
 const USAGE_WINDOW_BYTES = 64 * 1024;
+/** Carried between chunks so a secret split across a frame boundary is still detected. */
+const EGRESS_OVERLAP_CHARS = 256;
 
 /**
  * Stream the upstream response to the client, teeing chunks into a bounded buffer so
@@ -82,6 +84,8 @@ export async function pipeWithUsageCapture(
   response: Response,
   res: ServerResponse,
   onUsage: (usage: Partial<ProviderUsageObserved>) => void,
+  /** Called with each decoded chunk (plus a small overlap) for egress inspection. */
+  onText?: (text: string) => void,
 ): Promise<void> {
   if (!response.body) {
     res.end();
@@ -93,6 +97,7 @@ export async function pipeWithUsageCapture(
   // so the last frame is reported once at the end. Reporting per chunk would multiply
   // the same tokens by the number of chunks and inflate the measurement.
   let latest: Partial<ProviderUsageObserved> | undefined;
+  let overlap = "";
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -101,7 +106,11 @@ export async function pipeWithUsageCapture(
       // Write first: measurement must never add latency to the agent's stream.
       const flushed = res.write(Buffer.from(value));
       if (!flushed) await new Promise<void>((resolve) => res.once("drain", () => resolve()));
-      window = `${window}${Buffer.from(value).toString("utf8")}`.slice(-USAGE_WINDOW_BYTES);
+      const chunkText = Buffer.from(value).toString("utf8");
+      // Overlap so a value split across two chunks is still recognisable.
+      if (onText) onText(`${overlap}${chunkText}`);
+      overlap = chunkText.slice(-EGRESS_OVERLAP_CHARS);
+      window = `${window}${chunkText}`.slice(-USAGE_WINDOW_BYTES);
       const usage = extractUsage(window);
       if (usage) latest = { ...latest, ...usage };
     }

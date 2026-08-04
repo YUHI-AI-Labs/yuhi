@@ -46,8 +46,24 @@ export interface ProviderUsage {
   readonly billedCost?: { readonly amount: number; readonly currency: string };
 }
 
+/**
+ * Security outcomes.
+ *
+ * v0.4.0 REDEFINES exposure. Developer Mode delivers project configuration to the agent on
+ * purpose, so "the agent saw a secret" is no longer a failure — it is the feature. Exposure
+ * now means a raw value reaching YUHI's own surfaces: logs, evidence, statistics, panel,
+ * handoff or error messages. Those must stay at zero in every mode.
+ *
+ * `agentVisibleSecrets` records the deliberate half so a report can state it plainly rather
+ * than let a reader assume the old meaning.
+ */
 export interface SecurityOutcome {
+  /** Raw secret values found in Yuhi logs, evidence, stats or UI. Must be 0. */
   readonly secretExposure: number;
+  /** Secrets deliberately delivered to the agent under Developer Mode. NOT a failure. */
+  readonly agentVisibleSecrets?: number;
+  /** Outbound reappearances detected by the egress guard. Audited, not blocked, in v0.4.0. */
+  readonly egressDetections?: number;
   readonly piiExposure: number;
   readonly metadataExposure: number;
   readonly brokenEditAnchors: number;
@@ -236,7 +252,8 @@ export function evaluateSuccessCriteria(runs: readonly RunMetrics[]): Criterion[
   const s = dynamic.security;
   out.push({
     id: "security-zeros",
-    target: "0 secret / PII / metadata exposure, 0 broken anchors, 0 Safe Apply regressions, 0 source modified",
+    target:
+      "0 raw secrets in Yuhi logs/evidence/UI, 0 PII exposure, 0 metadata exposure, 0 broken anchors, 0 Safe Apply regressions, 0 source modified (agent-visible configuration under Developer Mode is expected and not counted here)",
     actual: JSON.stringify(s),
     pass:
       s.secretExposure === 0 &&

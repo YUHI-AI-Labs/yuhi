@@ -12,15 +12,17 @@
  */
 
 import type { ObjectId, SessionId } from "@yuhi/context-store";
-import type { ContextRuntime, ToolName } from "@yuhi/context-runtime";
+import { detectSecretValues, type ContextRuntime, type ToolName } from "@yuhi/context-runtime";
 
 import type { GatewayMetrics } from "../session/metrics.js";
 import type { PrefixState } from "../session/prefix-state.js";
 import { compactIsWorthIt, renderCompactToolResult, renderWithheldNotice } from "../policy/delivery.js";
+import type { EgressGuard, EgressVerdict } from "../policy/egress-guard.js";
 import {
   applyToolResultText,
   changedPaths,
   collectToolResults,
+  collectToolUses,
   deriveSessionId,
   isToolResultContentPath,
   type AnthropicRequest,
@@ -50,6 +52,9 @@ export interface TransformDeps {
   readonly verifyLiveZoneMaxBytes?: number;
   /** How many blocks per session carry a retrieve hint before it becomes noise. */
   readonly hintRetrieveForFirstBlocks?: number;
+  /** Developer Mode: watch delivered secrets and report them leaving. Never blocks. */
+  readonly egressGuard?: EgressGuard;
+  readonly onEgress?: (verdict: EgressVerdict) => void;
 }
 
 export interface TransformOutcome {
@@ -60,6 +65,8 @@ export interface TransformOutcome {
   readonly withheld: number;
   readonly liveZoneViolations: readonly string[];
   readonly passthrough: boolean;
+  /** Outbound detections found in what the agent was about to send. */
+  readonly egress: readonly EgressVerdict[];
 }
 
 export async function transformRequest(
@@ -81,6 +88,7 @@ export async function transformRequest(
       withheld: 0,
       liveZoneViolations: [],
       passthrough: true,
+      egress: [],
     };
   }
 
@@ -97,6 +105,7 @@ export async function transformRequest(
       withheld: 0,
       liveZoneViolations: [],
       passthrough: true,
+      egress: [],
     };
   }
 
@@ -108,6 +117,21 @@ export async function transformRequest(
   let reused = 0;
   let withheld = 0;
   let hinted = 0;
+  const egress: EgressVerdict[] = [];
+
+  // Request-side egress: a secret the agent is about to WRITE — into a file, a patch, a
+  // commit message, an outbound MCP or web call — appears in its tool_use input.
+  if (deps.egressGuard) {
+    for (const [id, use] of collectToolUses(body)) {
+      const verdict = deps.egressGuard.scan(JSON.stringify(use.input), "request", use.name);
+      if (verdict.detected) {
+        egress.push(verdict);
+        deps.onEgress?.(verdict);
+        metrics.egressDetected();
+        void id;
+      }
+    }
+  }
 
   for (const ref of refs) {
     // 0. Scan guard. A `Read` of a log or prose file is the agent paging through content;
@@ -207,6 +231,9 @@ export async function transformRequest(
     }
 
     applyToolResultText(body, ref, finalText);
+    // Developer Mode: remember what we just handed the agent so its reappearance on an
+    // outbound surface is recognisable. Values stay in memory; only fingerprints are recorded.
+    deps.egressGuard?.watch(detectSecretValues(ref.text));
     metrics.tokens(delivery.tokensBefore, deps.runtime.estimateTokens(finalText), markerTokens);
     await remember(prefix, ref, finalText, strategy, deps, delivery.tokensBefore, delivery.publicMetadata.objectId);
   }
@@ -226,6 +253,7 @@ export async function transformRequest(
         withheld: 0,
         liveZoneViolations: violations,
         passthrough: true,
+        egress,
       };
     }
   }
@@ -238,6 +266,7 @@ export async function transformRequest(
     withheld,
     liveZoneViolations: violations,
     passthrough: false,
+    egress,
   };
 }
 

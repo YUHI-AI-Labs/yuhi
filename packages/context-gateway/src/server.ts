@@ -16,14 +16,18 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { ContextStore, asSessionId, type SessionId } from "@yuhi/context-store";
 import {
   ContextRuntime,
+  EvidenceLedger,
   type ContextRuntimeOptions,
+  type DeliveryPolicy,
   type FallbackPolicy,
   type RetrievalLimits,
 } from "@yuhi/context-runtime";
 import type { Compressor } from "@yuhi/context-compression";
 
+import { deriveSessionId } from "./anthropic/request.js";
 import { transformRequest, type RetrievalMode, type TransformDeps } from "./anthropic/transform.js";
 import { copyResponseHeaders, forwardRequest, pipeWithUsageCapture, type FetchLike } from "./anthropic/upstream.js";
+import { EgressGuard, type EgressVerdict } from "./policy/egress-guard.js";
 import { GatewayMetrics, type MetricsSnapshot } from "./session/metrics.js";
 import { PrefixState } from "./session/prefix-state.js";
 
@@ -49,6 +53,8 @@ export interface GatewayOptions {
   readonly compressors?: readonly Compressor[];
   /** How much retrieval capability to advertise. Defaults to `disabled` (measured cheapest). */
   readonly retrievalMode?: RetrievalMode;
+  /** What a detected secret means for delivery. Defaults to Developer Mode. */
+  readonly deliveryPolicy?: DeliveryPolicy;
   readonly log?: (line: string) => void;
 }
 
@@ -83,12 +89,51 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
     ...(opts.retrievalLimits ? { retrievalLimits: opts.retrievalLimits } : {}),
     ...(opts.tokenBudget === undefined ? {} : { tokenBudget: opts.tokenBudget }),
     ...(opts.compressors ? { compressors: opts.compressors } : {}),
+    ...(opts.deliveryPolicy ? { deliveryPolicy: opts.deliveryPolicy } : {}),
   };
   const runtime = new ContextRuntime(runtimeOptions);
 
   const prefixes = new Map<string, PrefixState>();
   const metrics = new Map<string, GatewayMetrics>();
+  const ledger = new EvidenceLedger(store);
+  // One guard per session: Developer Mode delivers secrets on purpose, so what matters is
+  // noticing them come back OUT. Values live only in this process's memory.
+  const egressGuards = new Map<string, EgressGuard>();
+  /** Fingerprints already evidenced, so one leaked value is not audited on every chunk. */
+  const egressSeen = new Map<string, Set<string>>();
   let requests = 0;
+
+  const guardFor = (sessionId: SessionId): EgressGuard => {
+    const existing = egressGuards.get(sessionId);
+    if (existing) return existing;
+    const created = new EgressGuard();
+    egressGuards.set(sessionId, created);
+    return created;
+  };
+
+  /** Pending ledger writes, awaited before a request finishes so evidence is never late. */
+  const pendingEvidence: Promise<void>[] = [];
+
+  const recordEgress = (sessionId: SessionId, verdict: EgressVerdict): void => {
+    const seen = egressSeen.get(sessionId) ?? new Set<string>();
+    const fresh = verdict.hits.filter((h) => !seen.has(`${verdict.direction}:${h.fingerprint}`));
+    if (fresh.length === 0) return;
+    for (const hit of fresh) seen.add(`${verdict.direction}:${hit.fingerprint}`);
+    egressSeen.set(sessionId, seen);
+    log(EgressGuard.warning(verdict));
+    pendingEvidence.push(
+      ledger.record({
+      type: "egress-detection",
+      sessionId,
+      timestamp: now(),
+      direction: verdict.direction,
+      surface: verdict.surface,
+      // Fingerprints and counts only — the ledger never carries a value.
+        fingerprints: fresh.map((h) => h.fingerprint),
+        occurrences: fresh.reduce((sum, h) => sum + h.occurrences, 0),
+      }),
+    );
+  };
 
   const deps: TransformDeps = {
     runtime,
@@ -101,6 +146,7 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
       prefixes.set(sessionId, loaded);
       return loaded;
     },
+    onEgress: () => {},
     metricsFor: (sessionId) => {
       const existing = metrics.get(sessionId);
       if (existing) return existing;
@@ -155,8 +201,13 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
     let outBody = body;
     let sessionId: SessionId | undefined;
     if (req.method === "POST" && path.startsWith("/v1/messages") && !path.includes("count_tokens")) {
-      const outcome = await transformRequest(body, deps, opts.sessionOverride);
+      const outcome = await transformRequest(
+        body,
+        { ...deps, egressGuard: guardFor(deriveSession(body, opts.sessionOverride)), onEgress: () => {} },
+        opts.sessionOverride,
+      );
       sessionId = outcome.sessionId;
+      for (const verdict of outcome.egress) recordEgress(outcome.sessionId, verdict);
       outBody = outcome.body;
       deps.metricsFor(outcome.sessionId).request();
       if (outcome.liveZoneViolations.length > 0) {
@@ -186,9 +237,26 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
 
     res.statusCode = response.status;
     copyResponseHeaders(response, res);
-    await pipeWithUsageCapture(response, res, (usage) => {
-      if (sessionId) deps.metricsFor(sessionId).observeUsage(usage);
-    });
+    await pipeWithUsageCapture(
+      response,
+      res,
+      (usage) => {
+        if (sessionId) deps.metricsFor(sessionId).observeUsage(usage);
+      },
+      // Response-side egress: the model pasting a delivered secret into its answer.
+      sessionId
+        ? (text) => {
+            const verdict = guardFor(sessionId as SessionId).scan(text, "response", "assistant-message");
+            if (verdict.detected) {
+              deps.metricsFor(sessionId as SessionId).egressDetected();
+              recordEgress(sessionId as SessionId, verdict);
+            }
+          }
+        : undefined,
+    );
+
+    // Evidence must be on disk before the caller can observe the response as finished.
+    await Promise.all(pendingEvidence.splice(0));
 
     if (sessionId) {
       // Persist the snapshot so `yuhi dynamic stats` works after the gateway exits.
@@ -210,6 +278,15 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+}
+
+/** Session identity for the guard, before the transform computes it. */
+function deriveSession(body: Buffer, override?: string): SessionId {
+  try {
+    return deriveSessionId(JSON.parse(body.toString("utf8")) as Record<string, unknown>, override);
+  } catch {
+    return deriveSessionId({}, override);
+  }
 }
 
 async function isReady(store: ContextStore, now: () => string): Promise<{ ok: boolean; checks: Record<string, boolean> }> {

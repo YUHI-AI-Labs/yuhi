@@ -18,6 +18,7 @@
  *    {@link DynamicContextHost}, so this is unit-testable without an editor.
  */
 
+import { DEVELOPER_MODE_NOTICE } from "@yuhi/context-runtime";
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -130,6 +131,9 @@ export async function startDynamicSession(
     }
   };
 
+  host.log(`[dynamic] ${DEVELOPER_MODE_NOTICE.replace(/\n+/g, " ")}`);
+  host.showMessage(DEVELOPER_MODE_NOTICE);
+
   publish();
   const ticker = (host.setInterval ?? defaultInterval)(() => void refresh(), STATS_POLL_INTERVAL_MS);
 
@@ -165,6 +169,13 @@ function defaultInterval(fn: () => void, ms: number): { dispose(): void } {
 }
 
 /** The notice that makes the terminal's scope explicit (spec §5). */
+/**
+ * Shown when a session starts. Deliberately does NOT say secrets are withheld — Developer
+ * Mode delivers them on purpose, and a user who believed otherwise would make a worse
+ * decision than one who knows.
+ */
+export const DEVELOPER_MODE_NOTICE_TEXT = DEVELOPER_MODE_NOTICE;
+
 export const DYNAMIC_SCOPE_NOTICE =
   "Dynamic Context is active in this terminal only. Commands run here may use the Yuhi local gateway; other terminals and windows are unaffected.";
 

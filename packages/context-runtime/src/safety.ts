@@ -9,11 +9,14 @@
  * concatenates content cannot smuggle a secret past a pre-scan.
  */
 
+import { createHash } from "node:crypto";
+
 import { BUILTIN_DETECTORS, redactText, runDetectors, type Detector } from "@yuhi/scanner";
 import type { DetectorOptions } from "@yuhi/scanner";
 import type { ScanFinding } from "@yuhi/shared";
 
 import { privateLiterals, type PrivateMetadata } from "./event.js";
+import { STRICT_MODE_POLICY, type DeliveryPolicy } from "./delivery-policy.js";
 
 export type Severity = ScanFinding["severity"];
 
@@ -35,6 +38,18 @@ export interface ContentScan {
   readonly findings: readonly PublicFinding[];
   readonly redactions: number;
   readonly criticalOrHigh: number;
+  /**
+   * sha256 prefixes of the detected values. Never the values themselves.
+   *
+   * These exist so the evidence ledger can say "this finding recurred" and so the egress
+   * guard can recognise a secret leaving without anything ever storing one.
+   */
+  readonly fingerprints: readonly string[];
+}
+
+/** Stable, non-reversible fingerprint of a secret value. */
+export function fingerprint(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 16);
 }
 
 export function scanAndRedact(
@@ -45,12 +60,64 @@ export function scanAndRedact(
   const list = detectors as Detector[];
   const raw = runDetectors(content, opts, list);
   const { redacted, count } = redactText(content, opts, list);
+  // One extraction for both fingerprints and egress watching: the regex detectors miss
+  // entropy- and assignment-shaped values (`AWS_SECRET_ACCESS_KEY=…`), which are exactly the
+  // `.env` values Developer Mode delivers and therefore exactly what must be traceable.
+  const values = detectSecretValues(content, opts, list);
   return {
     text: redacted,
     findings: summarize(raw),
     redactions: count,
     criticalOrHigh: raw.filter((f) => f.severity === "critical" || f.severity === "high").length,
+    fingerprints: [...new Set(values.map(fingerprint))],
   };
+}
+
+/**
+ * Mask ONLY hard-blocked key material, leaving everything else intact.
+ *
+ * Developer Mode's point is that a `.env` value reaches the agent; a private key never
+ * should. Withholding the whole tool result because one line carried a PEM header would
+ * block the work for the sake of a span we can simply mask — the `file blocked ≠ launch
+ * blocked` principle applied to bytes.
+ */
+export function redactKeyMaterial(
+  content: string,
+  policy: DeliveryPolicy,
+  opts: DetectorOptions = DEFAULT_DETECTOR_OPTIONS,
+  detectors: readonly Detector[] = BUILTIN_DETECTORS,
+): { text: string; count: number; categories: string[] } {
+  const hardBlocked = (detectors as Detector[]).filter((d) => policy.hardBlockedCategories.includes(d.category));
+  if (hardBlocked.length === 0) return { text: content, count: 0, categories: [] };
+  const { redacted, count } = redactText(content, opts, hardBlocked);
+  const categories = [...new Set(hardBlocked.filter((d) => d.scan(content).length > 0).map((d) => d.category))].sort();
+  return { text: redacted, count, categories };
+}
+
+/**
+ * The detected secret VALUES in `content`.
+ *
+ * Deliberately not part of any scan result: this exists solely so the egress guard can
+ * recognise a value coming back out. Callers must keep it in memory and never log, store,
+ * evidence or display it — the fingerprints are what get recorded.
+ */
+export function detectSecretValues(
+  content: string,
+  opts: DetectorOptions = DEFAULT_DETECTOR_OPTIONS,
+  detectors: readonly Detector[] = BUILTIN_DETECTORS,
+): string[] {
+  const out = new Set<string>();
+  for (const detector of detectors as Detector[]) {
+    for (const hit of detector.scan(content)) out.add(hit.value);
+  }
+  // Entropy-detected assignments (`KEY=…`) are the common `.env` shape and are exactly what
+  // Developer Mode delivers, so they are watched too.
+  for (const line of content.split("\n")) {
+    const assignment = /^[A-Z0-9_]{3,}\s*=\s*["']?([^"'\s]{12,})["']?\s*$/.exec(line.trim());
+    if (assignment?.[1]) out.add(assignment[1]);
+  }
+  void opts;
+  return [...out];
 }
 
 export interface MetadataScan {
@@ -95,19 +162,31 @@ export type ExactOutputVerdict =
   | { readonly ok: false; readonly reason: string; readonly findings: readonly PublicFinding[] };
 
 /**
- * The last gate before delivery. Re-scans the exact bytes about to be sent. Anything
- * critical/high, or any surviving private literal, fails closed — the runtime turns
- * that into `withheld`, never a raw fallback.
+ * The last gate before delivery. Re-scans the exact bytes about to be sent.
+ *
+ * What a finding MEANS here is the policy's call, not the scanner's:
+ *  - strict    → anything critical/high fails closed (0.3.x behaviour, still the default
+ *                for direct callers).
+ *  - developer → a detected credential is expected content (the `.env` the developer asked
+ *                the agent to read), so it does not fail; HARD-BLOCKED key material still
+ *                does, and private metadata still does in both modes.
  */
 export function exactOutputScan(
   deliveryText: string,
   meta: PrivateMetadata,
   opts: DetectorOptions = DEFAULT_DETECTOR_OPTIONS,
   detectors: readonly Detector[] = BUILTIN_DETECTORS,
+  policy: DeliveryPolicy = STRICT_MODE_POLICY,
 ): ExactOutputVerdict {
   const findings = runDetectors(deliveryText, opts, detectors as Detector[]);
   const summary = summarize(findings);
-  const severe = findings.filter((f) => f.severity === "critical" || f.severity === "high");
+  const blocked = summary.filter((f) => policy.hardBlockedCategories.includes(f.detector));
+  if (blocked.length > 0) {
+    return { ok: false, reason: `key-material-in-output:${blocked.map((f) => f.detector).join(",")}`, findings: summary };
+  }
+  const severe = policy.redactSecretsBeforeDelivery
+    ? findings.filter((f) => f.severity === "critical" || f.severity === "high")
+    : [];
   if (severe.length > 0) {
     return { ok: false, reason: "secret-in-output", findings: summary };
   }

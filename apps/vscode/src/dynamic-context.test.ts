@@ -46,6 +46,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     maxCompressionLatencyMs: 4,
     usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
     liveZoneViolations: 0,
+    egressDetections: 0,
     upstreamErrors: 0,
     peakRssBytes: 1024,
     ...overrides,

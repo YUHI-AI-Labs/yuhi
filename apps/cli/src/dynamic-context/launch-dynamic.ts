@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
+import { DEVELOPER_MODE_NOTICE } from "@yuhi/context-runtime";
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -139,6 +140,9 @@ export async function launchClaudeWithDynamicContext(
   if (!opts.json) {
     out(`Yuhi dynamic context: ON — gateway ${session.gatewayUrl} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
+    out("");
+    out(DEVELOPER_MODE_NOTICE);
+    out("");
     out(`Retrieval mode: ${retrieval}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);
     else out("Retrieval tools: not registered — originals are still stored privately and stay retrievable via `yuhi dynamic stats`.");

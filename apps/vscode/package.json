@@ -339,7 +339,8 @@
     "@yuhi/shared": "workspace:*",
     "@yuhi/config": "workspace:*",
     "yaml": "^2.6.1",
-    "@yuhi/context-gateway": "workspace:*"
+    "@yuhi/context-gateway": "workspace:*",
+    "@yuhi/context-runtime": "workspace:*"
   },
   "optionalDependencies": {
     "typescript": "^5.7.2"

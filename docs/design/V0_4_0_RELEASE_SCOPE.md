@@ -104,3 +104,25 @@ retrieval mode · retrieval count. Anything unknown prints **Not measured**, nev
 
 Current status is tracked in `V0_4_0_DYNAMIC_RUNTIME.md`; that file is the evidence, this
 one is the contract.
+
+---
+
+## 6. Developer Mode (added to v0.4.0 scope)
+
+The dynamic runtime defaults to **Developer Mode**: project configuration, including `.env`,
+is delivered to the agent. Full design and threat treatment in
+`V0_4_0_DEVELOPER_MODE.md`; the boundary table is in `../THREAT_MODEL.md`.
+
+What this changes for claims — the old sentence is now false and must not be used:
+
+| Claim | Status |
+|---|---|
+| "Secrets are not sent to Claude." | **Prohibited.** Under Developer Mode they are, deliberately. |
+| "Secret values are not written to Yuhi logs, evidence, or UI." | Permitted — and enforced by tests that byte-scan everything Yuhi wrote. |
+| "Secrets exposed: 0" (report/benchmark/UI) | Permitted **only** with the redefined meaning: zero raw values in Yuhi's own surfaces. `agentVisibleSecrets` states the deliberate half separately. |
+| "Private keys are never delivered." | Permitted. Key material is masked in every mode, span-level, without withholding the rest of the file. |
+| "A secret leaving is blocked." | **Prohibited.** v0.4.0 detects, warns and audits; blocking is Enterprise Strict Mode. |
+
+Strict Mode (`STRICT_MODE_POLICY`) keeps the 0.3.x behaviour whole and is selectable today;
+Enterprise Strict Mode — policy-based redaction, approvals, organisation rules — is a later
+release and is not a v0.4.0 gate.

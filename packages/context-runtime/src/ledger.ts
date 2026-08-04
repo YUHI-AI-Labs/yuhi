@@ -40,6 +40,15 @@ export interface EvidenceRecord {
   readonly removed: readonly RemovedSummary[];
   readonly omissions: readonly LedgerOmission[];
   readonly safetyFindings: readonly PublicFinding[];
+  /**
+   * sha256 prefixes of detected secret values — NEVER the values. Lets the ledger show that
+   * a finding recurred, and lets the egress guard correlate, without storing a credential.
+   */
+  readonly secretFingerprints?: readonly string[];
+  /** Which delivery policy governed this delivery (`developer` | `strict`). */
+  readonly deliveryPolicy?: string;
+  /** Categories of key material masked before delivery, in any mode. Kinds only. */
+  readonly keyMaterialMasked?: readonly string[];
   readonly secretRedactions: number;
   readonly metadataRedactions: number;
   readonly metadataLabels: readonly string[];
@@ -96,7 +105,25 @@ export interface DeliveredBlockRecord {
   readonly tokensAfter: number;
 }
 
-export type LedgerRow = EvidenceRecord | RetrievalRecord | DeliveredBlockRecord;
+/**
+ * An observation that a secret Yuhi delivered appeared on an OUTBOUND path — an assistant
+ * response, a generated patch, a commit or issue body, an external request. v0.4.0 detects,
+ * warns and audits; a future Enterprise Strict Mode blocks or requires approval.
+ *
+ * Carries fingerprints and counts only, exactly like every other row.
+ */
+export interface EgressDetectionRecord {
+  readonly type: "egress-detection";
+  readonly sessionId: SessionId;
+  readonly timestamp: string;
+  /** `response` (model output) or `request` (something the agent is about to send/write). */
+  readonly direction: "response" | "request";
+  readonly surface: string;
+  readonly fingerprints: readonly string[];
+  readonly occurrences: number;
+}
+
+export type LedgerRow = EvidenceRecord | RetrievalRecord | DeliveredBlockRecord | EgressDetectionRecord;
 
 export function toLedgerOmissions(omissions: readonly Omission[]): LedgerOmission[] {
   return omissions.map((o) => ({
