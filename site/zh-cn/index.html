@@ -522,6 +522,20 @@
     </div>
   </section>
 
+  <!-- NATIVE CLAUDE GUI (v0.4.1) -->
+  <section id="nativegui" class="sec">
+  <h2 data-i18n="ng_h">Native Claude GUI (v0.4.1)</h2>
+  <p data-i18n="ng_p"></p>
+  <ul>
+    <li data-i18n="ng_1"></li>
+    <li data-i18n="ng_2"></li>
+    <li data-i18n="ng_3"></li>
+    <li data-i18n="ng_4"></li>
+    <li data-i18n="ng_5"></li>
+  </ul>
+  <p class="muted" data-i18n="ng_m"></p>
+  <p class="mono" style="font-size:11px;color:var(--ink-faint);margin-top:12px" data-i18n="ng_disc"></p>
+</section>
   <!-- HONESTY -->
   <section id="dynamic" class="sec">
   <h2 data-i18n="dyn_h">Dynamic Context (v0.4.0)</h2>
@@ -621,6 +635,7 @@
      (Sent to Claude / Prepare locally / Runtime only / Keep local). */
   var I18N = {
     en: {
+      ng_h:"Native Claude GUI (v0.4.1)", ng_p:"Use Yuhi Dynamic Context directly from the official Claude Code VS Code interface. One command opens the official Anthropic extension in an isolated window whose Claude process runs through the Yuhi gateway.", ng_1:"Isolated from your normal VS Code environment — its own user data and extensions directory.", ng_2:"Developer Mode and Strict Mode, the same policy the CLI uses.", ng_3:"Dynamic tool-output compression, with everything withheld still retrievable.", ng_4:"Retrieval of only the omitted parts, off by default and available when you turn it on.", ng_5:"Closing the window ends the session and stops its gateway.", ng_m:"Yuhi does not read, copy, or store your Claude credentials. Existing Claude Code authentication is supported; first-time sign-in inside an isolated Yuhi environment has not yet been validated.", ng_disc:"macOS verified. Linux and Windows are implemented but not yet verified on a real GUI; remote environments (SSH, WSL, Dev Containers, Codespaces) are unsupported — use Dynamic Terminal Mode there. The isolated window runs with workspace trust disabled, because VS Code Restricted Mode would otherwise disable both Claude and Yuhi inside it.",
       _title:"Yuhi — Don't send everything to Claude",
       _desc:"Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.",
       nav_install:"Install", nav_docs:"Documentation", nav_roadmap:"Roadmap",
@@ -680,6 +695,7 @@
       avail:"Available now — Beta", foot_neutral:"vendor-neutral", foot_demo:"Demo", foot_routes:"Routes", foot_start:"Get started"
     },
     ja: {
+      ng_h:"ネイティブ Claude GUI (v0.4.1)", ng_p:"公式 Claude Code の GUI を、そのまま Yuhi Dynamic Context 経由で使えます。コマンド1つで、公式 Anthropic 拡張が隔離ウィンドウで開き、その Claude プロセスが Yuhi ゲートウェイを通ります。", ng_1:"通常の VS Code 環境とは分離 — 専用の user-data と extensions ディレクトリで動きます。", ng_2:"Developer Mode と Strict Mode。CLI と同じポリシーです。", ng_3:"tool output を動的に圧縮し、省略した部分は取得可能なまま残ります。", ng_4:"必要な部分だけの retrieval。既定はオフで、必要なときに有効化できます。", ng_5:"ウィンドウを閉じるとセッションが終了し、ゲートウェイも停止します。", ng_m:"Yuhi はあなたの Claude 認証情報を読み取り・複製・保存しません。既存の Claude Code 認証は利用できます。隔離環境内での初回サインインは未検証です。", ng_disc:"macOS で実機確認済み。Linux・Windows は実装済みですが実 GUI 未検証、リモート環境（SSH・WSL・Dev Container・Codespaces）は非対応です — そこでは Dynamic Terminal Mode をお使いください。隔離ウィンドウは workspace trust を無効化して起動します。VS Code の Restricted Mode では Claude と Yuhi の双方が無効化されてしまうためです。",
       dyn_h:"動的コンテキスト (v0.4.0)", dyn_p:"Claude Code をローカル Yuhi ゲートウェイ経由で実行します。新しい tool result は毎回、非公開に保存 → スキャン → 圧縮 → 再スキャンを経てからプロバイダへ送られ、省略した部分は取得可能なまま残ります。", dyn_m:"実測（実 Claude Code・haiku・n=3・プロバイダ報告値）: パッチ正答 3/3、入力側トークン −22%、プロバイダ実費 −13%、配信 tool output −70%。結果はタスク・モデル・キャッシュ挙動・retrieval 設定により変わります。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code は .env を含むプロジェクト設定を利用できます。", dyn_d2:"生のシークレット値は Yuhi のログ・evidence・統計・UI には書かれません。", dyn_d3:"秘密鍵・証明書・リカバリキー・シードフレーズはどのモードでもマスクされます。", dyn_d4:"直接的な再露出は可能な範囲で検知・監査します。", dyn_d5:"Egress 検知はトリップワイヤであり、完全な防止機構ではありません。", dyn_d6:"Strict Mode は、検出されたシークレットとサポート対象の識別子を配信前にマスクします。検出範囲はファイル形式と内容に依存します。 すべてのシークレット・識別子が除去される保証ではありません。",
       _title:"Yuhi — Claudeに、全部を渡さない。",
       _desc:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。",
@@ -739,6 +755,7 @@
       avail:"提供中 — Beta", foot_neutral:"ベンダー非依存", foot_demo:"デモ", foot_routes:"経路", foot_start:"使ってみる"
     },
     "zh-cn": {
+      ng_h:"原生 Claude GUI (v0.4.1)", ng_p:"直接在官方 Claude Code 的 VS Code 界面中使用 Yuhi Dynamic Context。一条命令即可在隔离窗口中打开官方 Anthropic 扩展，其 Claude 进程通过 Yuhi 网关运行。", ng_1:"与你的常规 VS Code 环境隔离 — 使用独立的 user-data 与 extensions 目录。", ng_2:"Developer Mode 与 Strict Mode，与 CLI 使用同一套策略。", ng_3:"动态压缩 tool output，被省略的内容仍可检索。", ng_4:"仅检索被省略的部分；默认关闭，可按需开启。", ng_5:"关闭窗口即结束会话并停止其网关。", ng_m:"Yuhi 不会读取、复制或存储你的 Claude 凭据。支持已有的 Claude Code 认证；在隔离环境中首次登录尚未验证。", ng_disc:"已在 macOS 实机验证。Linux 与 Windows 已实现但尚未在真实 GUI 上验证；远程环境（SSH、WSL、Dev Containers、Codespaces）不受支持 — 请在这些环境中使用 Dynamic Terminal Mode。隔离窗口以停用 workspace trust 的方式启动，否则 VS Code 的受限模式会同时停用 Claude 与 Yuhi。",
       _title:"Yuhi — 不要把所有内容都交给 Claude。",
       _desc:"Yuhi 会在本地整理文档和代码，只把真正需要的上下文发送给 AI，同时减少敏感信息暴露和输入 Token 消耗。本地优先，Apache-2.0。",
       nav_install:"安装", nav_docs:"文档", nav_roadmap:"路线图",
