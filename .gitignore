@@ -41,3 +41,4 @@ apps/cli/*.tgz
 # only apps/cli/*.tgz was ignored.
 apps/vscode/*.tgz
 apps/vscode/SHA256SUMS.txt
+.vercel
