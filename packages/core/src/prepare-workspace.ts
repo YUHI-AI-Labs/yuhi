@@ -15,6 +15,8 @@ import {
   parseDelimitedTable,
   splitTablePreamble,
   tabularDirectIdentifierValues,
+  tabularVerificationValues,
+  tabularResidueCells,
   inspectXlsxRecords,
   pseudonymizeXlsxRecords,
   xlsxContainsAnyValue,
@@ -2902,6 +2904,10 @@ export async function prepareWorkspace(
     const deliveredAbs = path.join(outDir, ...entry.relpath.split("/"));
     let sourceValues: string[] = [];
     let deliveredText = "";
+    // LAYER 1 — structured full-table rescan (header/body agnostic, never uses
+    // dataStartRow). Populated for delimited text below.
+    let structuredResidueCells = 0;
+    let structuredResidueValues: string[] = [];
     try {
       if (/\.xlsx$/i.test(entry.relpath)) {
         const srcBuf = await readFile(sourceAbs);
@@ -2913,8 +2919,14 @@ export async function prepareWorkspace(
         }
         deliveredText = await xlsxCellText(await readFile(deliveredAbs));
       } else {
-        sourceValues = tabularDirectIdentifierValues(await readFile(sourceAbs, "utf8"));
+        const sourceText = await readFile(sourceAbs, "utf8");
         deliveredText = await readFile(deliveredAbs, "utf8");
+        // Candidate values are collected across EVERY row — a header/body
+        // misdetection must not shrink the verification surface.
+        sourceValues = tabularVerificationValues(sourceText);
+        const structured = tabularResidueCells(sourceText, deliveredText);
+        structuredResidueCells = structured.residueCells;
+        structuredResidueValues = structured.residueValues;
       }
     } catch {
       // Could not reopen/parse the delivered artifact to verify it → cannot claim
@@ -2930,19 +2942,27 @@ export async function prepareWorkspace(
     // actual identifier COLUMN of the delivered table (never an analytical cell).
     const numericRe = /^[+-]?\d+(?:\.\d+)?$/;
     const candidates = sourceValues.filter((value) => value.length >= 2);
+    // LAYER 2 — independent scan of the delivered BYTES. Substring search, so it
+    // holds even when the delivered artifact no longer parses as a table.
     const surviving = candidates.filter((value) => !numericRe.test(value) && deliveredText.includes(value));
     const numericValues = candidates.filter((value) => numericRe.test(value));
     if (numericValues.length > 0 && !/\.xlsx$/i.test(entry.relpath)) {
       try {
         const table = parseTabularRegion(deliveredText);
         const idIdx = classifyStudentRecordTable(table.rows).directIdentifierIndexes;
+        // EVERY row, row 0 included: a numeric identifier left in a misdetected
+        // header row is exactly the residue this gate exists to catch.
         const idCells = new Set(
-          table.rows.slice(1).flatMap((row) => idIdx.map((i) => (row[i] ?? "").trim())),
+          table.rows.flatMap((row) => idIdx.map((i) => (row[i] ?? "").trim())),
         );
         for (const value of numericValues) if (idCells.has(value)) surviving.push(value);
       } catch {
         /* unparseable delivered table → rely on the non-numeric check above */
       }
+    }
+    // Fold LAYER 1 in: a structured residue counts even if the byte scan missed it.
+    for (const value of structuredResidueValues) {
+      if (!surviving.includes(value)) surviving.push(value);
     }
     const credentialFindings = runDetectors(deliveredText, {
       entropyThreshold: plan.context.config.scan.entropy_threshold,
@@ -2956,7 +2976,9 @@ export async function prepareWorkspace(
     progress(
       `Final rescan ${entry.relpath}: ${
         surviving.length ? `SURVIVING ${surviving.length} identifier(s)` : "clean"
-      }${credentialFindings.length ? " +credential" : ""}`,
+      } (structured=${structuredResidueCells} cell(s), byte-scan=${
+        candidates.filter((v) => deliveredText.includes(v)).length
+      } value(s))${credentialFindings.length ? " +credential" : ""}`,
     );
     if (credentialFindings.length > 0) {
       // A credential survived into the delivered file → keep local. Remove it from
