@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Yuhi creates a protected workspace for AI agents, monitors changes, and helps you safely apply results.</strong></p>
 
-> **Current release: 0.3.6** — **Safe Patch Review: review first, apply safely.** Claude Code and Codex work in the Prepared Repository; Yuhi detects their changes and applies only explicitly selected, revalidated files or hunks to the Source Repository.
+> **Current release: 0.4.0** — **Dynamic Context Runtime.** Claude Code runs through a local Yuhi gateway: every new tool result is stored privately, scanned, compressed and re-scanned before it reaches the provider, and everything withheld stays retrievable. Defaults to **Developer Mode** — see [Dynamic context (v0.4.0)](#dynamic-context-v040).
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi?label=npm&color=cb3837&logo=npm&logoColor=white"></a>
@@ -130,10 +130,43 @@ context the agent needs; some of it is context it shouldn't have.
 Yuhi answers a simple question — *how much of this repository should the AI really see?* —
 and then prepares exactly that:
 
-- **Blocks secrets.** Credentials and private keys are neutralized locally and never handed to the agent.
+- **Blocks secrets during preparation.** In `yuhi prepare`, credentials and private keys are neutralized locally and never handed to the agent. The v0.4.0 dynamic runtime is different by design — see [Dynamic context (v0.4.0)](#dynamic-context-v040) below.
 - **Converts documents to AI-friendly content.** Supported documents (PDF / DOCX / PPTX) gain sanitized Markdown companions in the background. Balanced can make an original available with an explicit inspection-pending warning; Maximum Privacy keeps unverified originals local.
 - **Reduces the repository to what matters.** Oversized and irrelevant files are kept local; files Yuhi can't safely inspect are either kept local or included with an explicit *unverified* warning.
 - **Prepares your workspace in one command.** Then start Claude Code from the VS Code extension.
+
+## Dynamic context (v0.4.0)
+
+`yuhi launch claude --dynamic-context` — or **Yuhi: Start Claude Code with Dynamic Context**
+in VS Code — routes Claude Code through a local gateway. Each new tool result is stored
+privately, scanned, compressed and re-scanned before it reaches the provider, and everything
+withheld stays retrievable.
+
+Measured on a real edit-and-verify loop (Claude Code, haiku, n=3, provider-reported usage):
+correct patches 3/3, input-side tokens −22%, provider cost −13%, delivered tool output −70%.
+*Results vary by task, model, cache behaviour, and retrieval configuration.*
+
+### Developer Mode
+
+The dynamic runtime defaults to **Developer Mode**, which changes what a detected secret
+means — and this is a deliberate reversal of the preparation-time default above:
+
+- Claude Code **may use project configuration, including `.env`**. An agent that cannot read
+  configuration cannot diagnose configuration.
+- **Raw secret values are excluded from Yuhi logs, evidence, statistics, and UI.** Only the
+  type, a count, and a non-reversible fingerprint are recorded.
+- **Private keys, certificates, recovery keys and seed phrases are masked in every mode** —
+  span-level, so the rest of the file still reaches the agent.
+- **Direct re-exposure is detected and audited where possible**: a delivered value
+  reappearing in a response, a patch, a commit body or an outbound request is recorded.
+- **Egress detection is a tripwire, not a complete prevention control.** It matches literal
+  values; a paraphrased or re-encoded secret is not detected.
+- **Strict pre-delivery masking is planned as a future policy mode.** `STRICT_MODE_POLICY`
+  restores the 0.3.x behaviour today for callers that want it.
+
+`yuhi prepare` and its Safety Modes are unchanged. Details:
+[docs/design/V0_4_0_DEVELOPER_MODE.md](docs/design/V0_4_0_DEVELOPER_MODE.md) ·
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Share the result
 

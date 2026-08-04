@@ -192,3 +192,24 @@ apps/      cli · vscode
 ## 许可证
 
 [Apache-2.0](./LICENSE) — © Yuhi contributors。无遥测。本地优先。厂商中立。
+
+
+## 动态上下文 (v0.4.0)
+
+`yuhi launch claude --dynamic-context`（或 VS Code 中的 **Yuhi: Start Claude Code with Dynamic Context**）让 Claude Code 通过本地网关运行：每个新的 tool result 都会先被私有存储、扫描、压缩并二次扫描，然后才发送给提供方；被省略的部分始终可以取回。
+
+实测（真实 Claude Code、haiku、n=3、提供方报告值）：补丁正确 3/3，输入侧 token −22%，提供方费用 −13%，投递的 tool output −70%。*结果因任务、模型、缓存行为与 retrieval 配置而异。*
+
+### Developer Mode
+
+动态运行时默认启用 **Developer Mode**，这与准备阶段的默认行为相反：
+
+- Claude Code **可以使用项目配置，包括 `.env`**。无法读取配置的 agent 无法诊断配置问题。
+- **原始密钥值不会写入 Yuhi 的日志、evidence、统计或 UI**，只记录类型、计数与不可逆指纹。
+- **私钥、证书、恢复密钥与助记词在所有模式下都会被遮蔽**（仅遮蔽相应片段，文件其余部分仍会送达）。
+- **在可能的范围内检测并审计直接再暴露**（回答、补丁、提交信息、外发请求中的再次出现）。
+- **Egress 检测是绊线，而非完整的阻断控制**：仅匹配字面值。
+- **投递前遮蔽的严格模式将作为未来的策略模式提供**（`STRICT_MODE_POLICY` 现在即可恢复 0.3.x 行为）。
+
+`yuhi prepare` 与 Safety Mode 的行为没有变化。
+

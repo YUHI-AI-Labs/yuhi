@@ -4,7 +4,7 @@
 
 <p align="center">Yuhi は、コーディングエージェントがリポジトリを見る前に、より小さく、よりクリーンで、より安全なワークスペースを準備します — そして、AI が何を見えるかを端末内で詳細にレビューでき、共有できるのは public-safe な集計要約です。</p>
 
-> **現在のリリース: 0.3.6** — **Safe Patch Review: 先にレビューし、安全に反映。** Claude Code / Codex の変更はPrepared Repositoryに隔離され、ユーザーが選択した安全なファイルまたはhunkだけを再検査後にSource Repositoryへ反映します。自動Applyは行いません。
+> **現在のリリース: 0.4.0** — **Dynamic Context Runtime.** Claude Code をローカル Yuhi ゲートウェイ経由で実行し、tool result を安全・可逆・キャッシュ安定に圧縮します。既定は **Developer Mode**（下記）。
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm (beta)" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi/beta?label=npm%20%40beta&color=cb3837&logo=npm&logoColor=white"></a>
@@ -192,3 +192,24 @@ Issue と PR を歓迎します — [`CONTRIBUTING.md`](./docs/CONTRIBUTING.md) 
 ## ライセンス
 
 [Apache-2.0](./LICENSE) — © Yuhi contributors. テレメトリなし。ローカルファースト。ベンダー中立。
+
+
+## 動的コンテキスト (v0.4.0)
+
+`yuhi launch claude --dynamic-context`、または VS Code の **Yuhi: Start Claude Code with Dynamic Context** で、Claude Code をローカルゲートウェイ経由で起動します。新しい tool result は毎回、非公開に保存 → スキャン → 圧縮 → 再スキャンを経てからプロバイダへ送られ、省略した部分は常に取得可能なまま残ります。
+
+実測（実 Claude Code・haiku・n=3・プロバイダ報告値）: パッチ正答 3/3、入力側トークン −22%、プロバイダ実費 −13%、配信 tool output −70%。*結果はタスク・モデル・キャッシュ挙動・retrieval 設定により変わります。*
+
+### Developer Mode
+
+動的ランタイムの既定は **Developer Mode** です。準備時の既定とは意図的に逆になります。
+
+- Claude Code は **`.env` を含むプロジェクト設定を利用できます**。設定を読めないエージェントは設定を診断できません。
+- **生のシークレット値は Yuhi のログ・evidence・統計・UI に一切書かれません**。記録されるのは種別・件数・不可逆なフィンガープリントだけです。
+- **秘密鍵・証明書・リカバリキー・シードフレーズはどのモードでもマスク**されます（該当スパンのみ。ファイルの残りはエージェントに届きます）。
+- **直接的な再露出は可能な範囲で検知・監査**します（応答・パッチ・コミット本文・外向きリクエストへの再出現）。
+- **Egress 検知はトリップワイヤであり、完全な防止機構ではありません**。リテラル一致のみで、言い換えや再エンコードは検知しません。
+- **配信前マスクの厳格モードは将来のポリシーモードとして計画中**です（`STRICT_MODE_POLICY` で 0.3.x 相当の挙動が今も選べます）。
+
+`yuhi prepare` と Safety Mode の挙動は変更ありません。
+

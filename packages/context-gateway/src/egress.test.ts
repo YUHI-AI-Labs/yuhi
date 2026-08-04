@@ -106,12 +106,19 @@ function request(toolInput?: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/**
+ * Posts and DRAINS the body. `fetch` resolves on headers, so a test that asserted on
+ * evidence written during streaming was racing the stream — which is exactly how this
+ * suite flaked once in three full runs.
+ */
 async function post(handle: GatewayHandle, body: unknown): Promise<Response> {
-  return fetch(`${handle.url}/v1/messages`, {
+  const response = await fetch(`${handle.url}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": "never-logged" },
     body: JSON.stringify(body),
   });
+  await response.text();
+  return response;
 }
 
 async function ledgerText(root: string): Promise<string> {

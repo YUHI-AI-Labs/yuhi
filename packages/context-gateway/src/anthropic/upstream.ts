@@ -86,6 +86,12 @@ export async function pipeWithUsageCapture(
   onUsage: (usage: Partial<ProviderUsageObserved>) => void,
   /** Called with each decoded chunk (plus a small overlap) for egress inspection. */
   onText?: (text: string) => void,
+  /**
+   * Flushed BEFORE the response is ended. Anything an auditor could look for after seeing
+   * the answer — an egress row, a usage snapshot — must already be durable at that point,
+   * or "the response finished" and "the evidence exists" become racy.
+   */
+  flushBeforeEnd?: () => Promise<void>,
 ): Promise<void> {
   if (!response.body) {
     res.end();
@@ -116,6 +122,7 @@ export async function pipeWithUsageCapture(
     }
   } finally {
     if (latest) onUsage(latest);
+    if (flushBeforeEnd) await flushBeforeEnd().catch(() => {});
     res.end();
   }
 }

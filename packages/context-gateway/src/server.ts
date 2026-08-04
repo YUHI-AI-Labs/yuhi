@@ -253,9 +253,12 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
             }
           }
         : undefined,
+      // Evidence lands before the client can observe the response as finished.
+      async () => {
+        await Promise.all(pendingEvidence.splice(0));
+      },
     );
 
-    // Evidence must be on disk before the caller can observe the response as finished.
     await Promise.all(pendingEvidence.splice(0));
 
     if (sessionId) {
