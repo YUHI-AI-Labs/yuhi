@@ -28,7 +28,8 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
       `Unsupported or unverified files: ${result.unsupportedOrUnverifiedFiles}`,
       `Restricted unresolved files: ${result.restrictedUnresolvedFiles}`,
       `Files kept local: ${result.filesKeptLocal}`,
-      "Raw fallback used: No",
+      // Derived here too: the failure path had its own hardcoded "No" (#12).
+      `Raw fallback used: ${result.rawFallbackUsed ? "Yes" : "No"}`,
       "Launch allowed: No",
       "Agent launch blocked: Yes",
       "",
@@ -91,6 +92,15 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
         `Background processing: ${mode.background.processing}`,
         `Background completed: ${mode.background.completed}`,
         `Background companion unavailable: ${mode.background.companionUnavailable}`,
+        // #16: a document that reached a terminal state with no companion and whose
+        // original was never shared leaves the agent with NO context for it. Say so.
+        ...(mode.background.contextUnavailable > 0
+          ? [
+              `Documents with no available context: ${mode.background.contextUnavailable}`,
+              "  These documents were kept on this computer and no verified companion could be produced,",
+              "  so Claude Code has no context for them. Review or include them later.",
+            ]
+          : []),
         `Original workspace modified: ${mode.protection.originalWorkspaceModified ? "Yes" : "No"}`,
         `Safe Apply required: ${mode.protection.safeApplyRequired ? "Yes" : "No"}`,
         "",

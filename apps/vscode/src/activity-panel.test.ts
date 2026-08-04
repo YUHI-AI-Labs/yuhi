@@ -45,6 +45,7 @@ function summary(overrides: {
       processing: 0,
       completed: 0,
       companionUnavailable: 0,
+      contextUnavailable: 0,
       ...overrides.background,
     },
     protection: { originalWorkspaceModified: false, knownSecretsBlocked: 0, safeApplyRequired: true },

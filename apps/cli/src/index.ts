@@ -76,6 +76,7 @@ import {
   performBackgroundCancel,
   performBackgroundRetry,
   maybeWaitBackground,
+  readRefreshedYuhiModeSummary,
 } from "./background.js";
 import {
   patchApply,
@@ -679,7 +680,17 @@ async function main(): Promise<void> {
             }),
         });
 
-        const result = buildCliPrepareResult(res);
+        let result = buildCliPrepareResult(res);
+        // #16: with --wait-background the background pass has already refreshed
+        // `.yuhi/yuhi-mode-summary.json` on disk, but `res` was captured BEFORE it
+        // ran — so printing straight from `res` reported "Background status: running"
+        // and a plain "ready" for a document that had in fact finished with no
+        // context at all. Re-read the refreshed summary and render that instead of
+        // recomputing anything here.
+        if (cmd.opts().waitBackground) {
+          const refreshed = await readRefreshedYuhiModeSummary(res.outDir);
+          if (refreshed) result = { ...result, yuhiModeSummary: refreshed };
+        }
         if (g.json) printJson(result);
         else if (result.status === "Success") {
           // Blue "Yuhi Mode" banner mirroring the VS Code accent; file-level
