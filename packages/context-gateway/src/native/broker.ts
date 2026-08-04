@@ -11,6 +11,7 @@
  */
 
 import { readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import type { DeliveryMode } from "@yuhi/context-runtime";
 
@@ -28,9 +29,16 @@ export interface BrokerConfig {
   readonly extensionVersion?: string;
   readonly vscodeExecutable?: string;
   readonly yuhiExtensionRef?: string;
+  readonly mcpServerScript?: string;
   readonly sessionsRoot?: string;
   /** Where the broker reports its control endpoint back to the originating window. */
   readonly handshakeFile: string;
+}
+
+/** `dist/native-broker.js` and `dist/native-mcp.js` are siblings in the VSIX. */
+function defaultMcpServerScript(): string {
+  const self = process.argv[1] ?? "";
+  return self ? join(dirname(self), "native-mcp.js") : "";
 }
 
 export async function runBroker(config: BrokerConfig): Promise<void> {
@@ -43,6 +51,8 @@ export async function runBroker(config: BrokerConfig): Promise<void> {
       ...(config.extensionVersion ? { extensionVersion: config.extensionVersion } : {}),
       ...(config.vscodeExecutable ? { vscodeExecutable: config.vscodeExecutable } : {}),
       ...(config.yuhiExtensionRef ? { yuhiExtensionRef: config.yuhiExtensionRef } : {}),
+      // Default to the sibling bundle: broker and MCP server ship in the same dist/.
+      mcpServerScript: config.mcpServerScript ?? defaultMcpServerScript(),
     },
     {
       ...(config.sessionsRoot ? { sessionsRoot: config.sessionsRoot } : {}),

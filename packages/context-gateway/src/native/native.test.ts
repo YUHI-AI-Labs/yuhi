@@ -417,3 +417,44 @@ describe("session tree", () => {
     await mkdir(join(layout.root, "probe"), { recursive: true });
   });
 });
+
+describe("retrieval registration", () => {
+  it("registers nothing when retrieval is disabled — the measured default", async () => {
+    const dir = await scratch();
+    const { registerRetrievalTools } = await import("./mcp-registration.js");
+    const path = await registerRetrievalTools("disabled", {
+      preparedWorkspace: dir, contextRoot: "/ctx", sessionId: "s", serverScript: "/x/native-mcp.js",
+    });
+    expect(path).toBeUndefined();
+  });
+
+  it("merges into a repository's own .mcp.json instead of replacing it", async () => {
+    const dir = await scratch();
+    const { registerRetrievalTools, unregisterRetrievalTools, PROJECT_MCP_FILENAME } = await import("./mcp-registration.js");
+    const file = join(dir, PROJECT_MCP_FILENAME);
+    await writeFile(file, JSON.stringify({ mcpServers: { theirs: { command: "their-server" } } }), "utf8");
+
+    await registerRetrievalTools("required", {
+      preparedWorkspace: dir, contextRoot: "/ctx", sessionId: "s", serverScript: "/x/native-mcp.js",
+    });
+    const withYuhi = JSON.parse(await readFile(file, "utf8")) as any;
+    expect(Object.keys(withYuhi.mcpServers).sort()).toEqual(["theirs", "yuhi"]);
+    expect(withYuhi.mcpServers.yuhi.args).toEqual(["/x/native-mcp.js"]);
+    expect(withYuhi.mcpServers.yuhi.env.YUHI_SESSION_ID).toBe("s");
+
+    // Shutdown must leave the developer's own servers exactly as they were.
+    await unregisterRetrievalTools(dir);
+    const after = JSON.parse(await readFile(file, "utf8")) as any;
+    expect(Object.keys(after.mcpServers)).toEqual(["theirs"]);
+  });
+
+  it("removes a .mcp.json it created outright", async () => {
+    const dir = await scratch();
+    const { registerRetrievalTools, unregisterRetrievalTools, PROJECT_MCP_FILENAME } = await import("./mcp-registration.js");
+    await registerRetrievalTools("conditional", {
+      preparedWorkspace: dir, contextRoot: "/ctx", sessionId: "s", serverScript: "/x/native-mcp.js",
+    });
+    await unregisterRetrievalTools(dir);
+    await expect(readFile(join(dir, PROJECT_MCP_FILENAME), "utf8")).rejects.toThrow();
+  });
+});

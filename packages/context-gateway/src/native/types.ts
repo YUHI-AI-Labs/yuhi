@@ -80,6 +80,12 @@ export interface StartNativeClaudeGuiOptions {
    * or a `.vsix` path when running a build that is not published yet.
    */
   readonly yuhiExtensionRef?: string;
+  /**
+   * Absolute path to the bundled Yuhi MCP stdio server. Required for retrieval to be
+   * offered at all: the official extension owns the `claude` command line, so registration
+   * has to go through a project-scoped `.mcp.json` pointing at a real script.
+   */
+  readonly mcpServerScript?: string;
   readonly signal?: AbortSignal;
 }
 

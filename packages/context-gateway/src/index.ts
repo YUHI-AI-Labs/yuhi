@@ -25,3 +25,4 @@ export * from "./native/diagnostics.js";
 export * from "./native/native-session.js";
 export * from "./native/native-session-manager.js";
 export * from "./native/broker.js";
+export * from "./native/mcp-registration.js";

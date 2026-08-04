@@ -41,6 +41,7 @@ import {
   type SessionLayout,
 } from "./session-layout.js";
 import { touchLock, writeLock, type SessionLock } from "./session-lock.js";
+import { registerRetrievalTools, unregisterRetrievalTools } from "./mcp-registration.js";
 import { applyManagedSettings, yuhiProfileDefaults, NATIVE_SESSION_SETTING } from "./settings-merge.js";
 import {
   detectRemote,
@@ -253,6 +254,22 @@ export async function startNativeClaudeGuiSession(
     overrides: { [NATIVE_SESSION_SETTING]: { sessionId, sessionRoot: layout.root } },
   });
 
+  // ---- retrieval tools ---------------------------------------------------
+  // `disabled` (the measured default) registers nothing, which is the cheapest configuration.
+  if (options.retrievalMode !== "disabled") {
+    if (!options.mcpServerScript) {
+      log("[native] retrieval requested but no MCP server script was provided; tools will NOT be offered.");
+    } else {
+      const written = await registerRetrievalTools(options.retrievalMode, {
+        preparedWorkspace,
+        contextRoot: gateway.contextRoot,
+        sessionId,
+        serverScript: options.mcpServerScript,
+      });
+      if (written) log(`[native] retrieval tools registered for this workspace (${options.retrievalMode})`);
+    }
+  }
+
   // ---- attach server + lock ---------------------------------------------
   const token = newBootstrapToken();
   await writeBootstrapToken(layout, token);
@@ -374,6 +391,7 @@ export async function startNativeClaudeGuiSession(
       await recorder.transition("closing", reason, reason);
       const result = await cleanupSession(layout, {
         stopHeartbeat: () => heartbeat?.dispose(),
+        flushEvidence: () => unregisterRetrievalTools(preparedWorkspace),
         stopAttachServer: () => attachServer.close(),
         closeGateway: async () => {
           lastStats = await gateway.close();

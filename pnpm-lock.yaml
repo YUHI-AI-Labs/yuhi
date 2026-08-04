@@ -136,6 +136,9 @@ importers:
       '@yuhi/context-gateway':
         specifier: workspace:*
         version: link:../../packages/context-gateway
+      '@yuhi/context-mcp':
+        specifier: workspace:*
+        version: link:../../packages/context-mcp
       '@yuhi/context-runtime':
         specifier: workspace:*
         version: link:../../packages/context-runtime

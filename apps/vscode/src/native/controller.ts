@@ -55,6 +55,7 @@ export interface StartNativeInput {
   readonly handshakePath: string;
   readonly vscodeExecutable?: string;
   readonly extensionVersion?: string;
+  readonly mcpServerScript?: string;
 }
 
 /**
@@ -76,6 +77,7 @@ export async function startNativeSessionViaBroker(
     handshakeFile: input.handshakePath,
     ...(input.vscodeExecutable ? { vscodeExecutable: input.vscodeExecutable } : {}),
     ...(input.extensionVersion ? { extensionVersion: input.extensionVersion } : {}),
+    ...(input.mcpServerScript ? { mcpServerScript: input.mcpServerScript } : {}),
   });
 
   host.spawnBroker(input.configPath);
