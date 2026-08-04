@@ -139,7 +139,7 @@ export async function transformRequest(
     //    on the forced log-read task: 120 blocks with 1 compressible, turns 7 → 9-16, cost
     //    +75%. Those bytes still go through the SAFETY pipeline — only compression is
     //    skipped — so the secret/PII/metadata guarantees are unchanged.
-    if (isScanRead(ref)) {
+    if (isScanRead(ref, (t) => deps.runtime.estimateTokens(t))) {
       const scanned = await deps.runtime.deliver({
         sessionId,
         tool: "read",
@@ -304,12 +304,22 @@ function toolNameFor(ref: ToolResultRef): ToolName {
 }
 
 /**
- * True when this block is a file scan rather than command output. `Read` of structured
- * data (JSON, CSV, a diff) is still a compression target — the win there is proven; it is
- * line-oriented log/prose paging that must be left alone.
+ * Above this, a "scan" is no longer a scan — it is a single read large enough to threaten
+ * the context window, and delivering it whole is worse than any re-read the guard was
+ * protecting. Measured in the field: a 69,000-token plain-text Read passed through the guard
+ * intact and exhausted the window.
  */
-function isScanRead(ref: ToolResultRef): boolean {
+const SCAN_GUARD_MAX_TOKENS = 20_000;
+
+/**
+ * True when this block is a file scan rather than command output, AND small enough that
+ * leaving it alone is the cheaper mistake. `Read` of structured data (JSON, CSV, a diff) is
+ * still a compression target — the win there is proven; it is line-oriented log/prose paging
+ * that must be left alone, up to the ceiling above.
+ */
+function isScanRead(ref: ToolResultRef, estimateTokens: (text: string) => number): boolean {
   const tool = (ref.toolName ?? "").toLowerCase();
   if (tool !== "read") return false;
-  return ref.kind === "log" || ref.kind === "text" || ref.kind === "markdown";
+  if (ref.kind !== "log" && ref.kind !== "text" && ref.kind !== "markdown") return false;
+  return estimateTokens(ref.text) <= SCAN_GUARD_MAX_TOKENS;
 }

@@ -396,6 +396,34 @@ describe("slice 3 compressors through the gateway", () => {
     expect(snapshot ? 1 - snapshot.deliveredEstimatedTokens / snapshot.rawEstimatedTokens : 0).toBeGreaterThan(0.4);
   });
 
+  it("leaves a moderate plain-text Read alone, but compresses one large enough to break the window", async () => {
+    const upstream = await fakeUpstream();
+    const handle = await gateway(upstream);
+
+    const readRequest = (text: string) => ({
+      model: "claude-sonnet-5",
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Investigate." }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_r", name: "Read", input: { file_path: "/repo/notes.txt" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_r", content: text }] },
+      ],
+    });
+
+    // Scanning: the agent is paging, so the bytes pass through unrestructured.
+    const moderate = Array.from({ length: 400 }, (_, i) => `note line ${i}`).join("\n");
+    await post(handle, readRequest(moderate));
+    expect(toolResultContent(upstream.bodies[0] ?? "")).toBe(moderate);
+
+    // Oversized: delivering this whole would threaten the context window, which is a worse
+    // outcome than the re-reads the guard exists to prevent.
+    const oversized = Array.from({ length: 30_000 }, (_, i) => `line ${i} with some filler text`).join("\n");
+    await post(handle, readRequest(oversized));
+    const delivered = toolResultContent(upstream.bodies[1] ?? "");
+    expect(delivered).not.toBe(oversized);
+    expect(delivered.length).toBeLessThan(oversized.length / 2);
+  });
+
   it("routes a truncated JSON fragment to the tolerant scanner instead of giving up", async () => {
     const upstream = await fakeUpstream();
     const handle = await gateway(upstream);
