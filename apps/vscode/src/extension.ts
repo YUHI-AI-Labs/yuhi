@@ -1,4 +1,16 @@
 import * as vscode from "vscode";
+import type { RetrievalMode } from "@yuhi/context-gateway";
+import {
+  DYNAMIC_COMMAND_ID,
+  DYNAMIC_SCOPE_NOTICE,
+  DYNAMIC_TERMINAL_NAME,
+  handleStartupFailure as handleDynamicStartupFailure,
+  panelView as dynamicPanelView,
+  preflight as dynamicPreflight,
+  startDynamicSession,
+  type DynamicContextHost,
+  type DynamicSessionHandle,
+} from "./dynamic-context.js";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -95,7 +107,7 @@ import {
   type LaunchHost,
   type VisibleLaunchFailureKind,
 } from "./launch.js";
-import { createDefaultRegistry } from "@yuhi/agents";
+import { createDefaultRegistry, DEFAULT_DETECT_TIMEOUT_MS } from "@yuhi/agents";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import {
@@ -206,6 +218,107 @@ function shQuoteToken(token: string): string {
  * argv handling). The terminal inherits the user's shell environment; the adapter's
  * allow-listed `env` is not force-applied to an interactive terminal.
  */
+// --- v0.4.0 Dynamic Context -------------------------------------------------------
+/** One session per window. A second start replaces the first rather than racing it. */
+let dynamicSession: DynamicSessionHandle | undefined;
+let dynamicStatusBar: vscode.StatusBarItem | undefined;
+
+function dynamicHost(): DynamicContextHost {
+  return {
+    createTerminal: ({ name, cwd, env }) => {
+      const term = vscode.window.createTerminal({ name, cwd, env });
+      return { sendText: (t, nl) => term.sendText(t, nl), show: () => term.show(), dispose: () => term.dispose() };
+    },
+    log: (line) => yuhiOutput?.appendLine(line),
+    setStatus: (text, tooltip) => {
+      if (!dynamicStatusBar) {
+        dynamicStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+        dynamicStatusBar.command = "yuhi.showDynamicStats";
+      }
+      dynamicStatusBar.text = text;
+      dynamicStatusBar.tooltip = tooltip;
+      dynamicStatusBar.show();
+    },
+    clearStatus: () => dynamicStatusBar?.hide(),
+    showMessage: (m) => void vscode.window.showInformationMessage(m),
+    showWarning: (m) => void vscode.window.showWarningMessage(m),
+    choose: async (message, choices) => vscode.window.showWarningMessage(message, ...choices),
+    onStatsChanged: (view) => {
+      // The panel keeps this in its own section; static metrics are untouched.
+      activityProvider?.setDynamic(view);
+    },
+  };
+}
+
+async function commandLaunchClaudeDynamic(): Promise<void> {
+  const root = firstWorkspaceRoot();
+  const check = dynamicPreflight({
+    preparedRoot: root,
+    insidePreparedWorkspace: reviewingOpenedPreparedWorkspace,
+    sandboxVerified: preparedSandboxVerified,
+    claudeAvailable: await claudeCliAvailable(),
+  });
+  if (!check.ok) {
+    void vscode.window.showWarningMessage(`Yuhi: ${check.message}`);
+    return;
+  }
+
+  if (dynamicSession) {
+    void vscode.window.showInformationMessage(
+      "Yuhi: a dynamic context session is already running in this window. Close its terminal to end it.",
+    );
+    return;
+  }
+
+  const host = dynamicHost();
+  const mode = dynamicRetrievalModeSetting();
+  try {
+    dynamicSession = await startDynamicSession(host, {
+      preparedWorkspace: check.preparedRoot,
+      claudeCommand: "claude",
+      retrievalMode: mode,
+    });
+  } catch (err) {
+    // NEVER downgrade silently: the user asked for dynamic context.
+    const reason = err instanceof Error ? err.message : "unknown";
+    const choice = await handleDynamicStartupFailure(host, reason);
+    if (choice === "Retry") return commandLaunchClaudeDynamic();
+    if (choice === "Open Doctor Output") yuhiOutput?.show(true);
+    if (choice === "Start normal Claude Code") await commandOpenClaudeHere();
+    return;
+  }
+
+  void vscode.window.showInformationMessage(`Yuhi: ${DYNAMIC_SCOPE_NOTICE}`);
+  yuhiOutput?.appendLine(`[dynamic] ${DYNAMIC_SCOPE_NOTICE}`);
+}
+
+/** Closing the dedicated terminal ends the session: gateway down, evidence flushed. */
+function watchDynamicTerminalClose(): vscode.Disposable {
+  return vscode.window.onDidCloseTerminal((term) => {
+    if (term.name !== DYNAMIC_TERMINAL_NAME || !dynamicSession) return;
+    const session = dynamicSession;
+    dynamicSession = undefined;
+    void session.close().then(() => {
+      void vscode.window.showInformationMessage("Yuhi: dynamic context session complete. Gateway stopped.");
+    });
+  });
+}
+
+function dynamicRetrievalModeSetting(): RetrievalMode {
+  const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.retrievalMode");
+  return configured === "conditional" || configured === "required" ? configured : "disabled";
+}
+
+async function claudeCliAvailable(): Promise<boolean> {
+  try {
+    const registry = createDefaultRegistry();
+    const adapter = await registry.get("claude");
+    return (await adapter.detect({ timeoutMs: DEFAULT_DETECT_TIMEOUT_MS })).available;
+  } catch {
+    return false;
+  }
+}
+
 function agentTerminalRunner(displayName: string): (command: AgentCommand) => Promise<AgentRunOutcome> {
   return async (command) => {
     const term = vscode.window.createTerminal({ name: `Yuhi · ${displayName}`, cwd: command.cwd });
@@ -3282,6 +3395,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(LAUNCH_COMMANDS.prepareAndStartClaude, () =>
       runVisibleCommand(() => commandPrepareAndStartClaude(context)),
     ),
+    vscode.commands.registerCommand(DYNAMIC_COMMAND_ID, () =>
+      runVisibleCommand(commandLaunchClaudeDynamic),
+    ),
+    vscode.commands.registerCommand("yuhi.showDynamicStats", () => {
+      yuhiOutput?.show(true);
+      const view = dynamicPanelView(
+        dynamicSession?.state() ?? "complete",
+        dynamicSession?.latestStats(),
+      );
+      for (const row of view.rows) yuhiOutput?.appendLine(`  ${row.label}: ${row.value}`);
+      yuhiOutput?.appendLine(`  ${view.footnote}`);
+    }),
+    watchDynamicTerminalClose(),
     vscode.commands.registerCommand("yuhi.launchAgent", (agentId?: unknown) =>
       commandLaunchAgent(typeof agentId === "string" ? agentId : "").catch(reportLaunchFailure),
     ),
@@ -3333,4 +3459,10 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   // Stop the fire-and-forget background worker + its poll timer on shutdown.
   stopProgressiveContext();
+  // A dynamic session outliving the window would leave a listening gateway behind.
+  const session = dynamicSession;
+  dynamicSession = undefined;
+  void session?.close();
+  dynamicStatusBar?.dispose();
+  dynamicStatusBar = undefined;
 }

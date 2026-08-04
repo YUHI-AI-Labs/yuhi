@@ -16,7 +16,8 @@ import type { GatewayHandle, GatewayStats, MetricsSnapshot } from "@yuhi/context
 import { describe, expect, it } from "vitest";
 
 import { credentialPresence, detectUpstream, dynamicContextEnv, mcpConfig } from "./environment.js";
-import { writeMcpConfig, startAndWaitForReady } from "./gateway-process.js";
+import { writeMcpConfig } from "./gateway-process.js";
+import { startDynamicClaudeSession } from "@yuhi/context-gateway";
 import { createDynamicRunner, launchClaudeWithDynamicContext } from "./launch-dynamic.js";
 import { formatSnapshot, formatStatsReport } from "./stats.js";
 import { formatDoctorReport, doctorExitCode, runDynamicDoctor } from "./doctor.js";
@@ -237,11 +238,12 @@ describe("launch orchestration", () => {
   });
 
   it("times out rather than hanging when readiness never arrives", async () => {
+    // The shared launch contract owns this, so the CLI and VS Code time out identically.
     await expect(
-      startAndWaitForReady({
-        storeRoot: "/unused",
-        startImpl: async () => fakeGateway().handle,
-        fetchProbe: async () => ({ ok: false }),
+      startDynamicClaudeSession({
+        preparedWorkspace: "/unused",
+        startGatewayImpl: async () => fakeGateway().handle,
+        readyProbe: async () => ({ ok: false }),
         startupTimeoutMs: 120,
       }),
     ).rejects.toThrow("gateway-not-ready");

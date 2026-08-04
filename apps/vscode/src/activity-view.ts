@@ -10,6 +10,7 @@ import {
   type SafetyModeValue,
 } from "./activity-panel.js";
 import type { AgentPickerData } from "./agent-picker.js";
+import type { DynamicPanelView } from "./dynamic-context.js";
 import type { ProgressiveContextViewModel } from "./progressive-context.js";
 
 export const YUHI_ACTIVITY_VIEW_ID = "yuhi.workspace";
@@ -171,6 +172,15 @@ export class YuhiActivityProvider implements vscode.WebviewViewProvider {
     const cfg = vscode.workspace.getConfiguration("yuhi");
     await cfg.update("tokenBudget", value, vscode.ConfigurationTarget.Workspace);
     if (this.data.phase === "not-prepared") this.setNotPrepared();
+  }
+
+  /**
+   * v0.4.0 — update ONLY the Dynamic Context section. Static metrics are left exactly as
+   * they are so a session measurement can never overwrite a repository estimate.
+   */
+  setDynamic(dynamic: DynamicPanelView): void {
+    if (this.data.phase !== "yuhi-mode") return;
+    this.set({ ...this.data, dynamic });
   }
 
   private set(data: ActivityPanelData): void {

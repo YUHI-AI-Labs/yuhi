@@ -15,11 +15,17 @@ import { join } from "node:path";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
-import type { GatewayStats, RetrievalMode } from "@yuhi/context-gateway";
+import {
+  startDynamicClaudeSession,
+  type DynamicClaudeSession,
+  type DynamicClaudeSessionOptions,
+  type GatewayStats,
+  type RetrievalMode,
+} from "@yuhi/context-gateway";
 
 import { performLaunch, resolveRunForLaunch, type PerformLaunchOptions } from "../launch.js";
-import { detectUpstream, dynamicContextEnv, type UpstreamConfig } from "./environment.js";
-import { startAndWaitForReady, writeMcpConfig, type DynamicGatewayOptions } from "./gateway-process.js";
+import { detectUpstream, type UpstreamConfig } from "./environment.js";
+import { writeMcpConfig } from "./gateway-process.js";
 import { formatStatsReport } from "./stats.js";
 
 export interface DynamicLaunchOptions {
@@ -42,8 +48,9 @@ export interface DynamicLaunchOptions {
   readonly err?: (line: string) => void;
   // Injectables (tests) ----------------------------------------------------
   readonly performLaunchImpl?: typeof performLaunch;
-  readonly startGatewayImpl?: DynamicGatewayOptions["startImpl"];
-  readonly fetchProbe?: DynamicGatewayOptions["fetchProbe"];
+  readonly startSessionImpl?: typeof startDynamicClaudeSession;
+  readonly startGatewayImpl?: DynamicClaudeSessionOptions["startGatewayImpl"];
+  readonly fetchProbe?: DynamicClaudeSessionOptions["readyProbe"];
   readonly runCommandImpl?: (command: AgentCommand) => Promise<AgentRunOutcome>;
   readonly resolveWorkspace?: (ref: string | undefined) => Promise<string | undefined>;
   readonly sessionId?: string;
@@ -97,34 +104,40 @@ export async function launchClaudeWithDynamicContext(
   const contextRoot = join(workspace, ".yuhi", "context");
 
   const retrieval: RetrievalMode = opts.retrieval ?? "disabled";
-  const ready = await startAndWaitForReady({
-    storeRoot: contextRoot,
-    upstreamBaseUrl: upstream.baseUrl,
-    sessionOverride: sessionId,
-    retrievalMode: retrieval,
-    ...(opts.startGatewayImpl ? { startImpl: opts.startGatewayImpl } : {}),
-    ...(opts.fetchProbe ? { fetchProbe: opts.fetchProbe } : {}),
-  }).catch(() => undefined);
-
-  if (!ready) {
+  // Shared with the VS Code command: one launch contract, so the two surfaces cannot drift.
+  const startSession = opts.startSessionImpl ?? startDynamicClaudeSession;
+  let session: DynamicClaudeSession;
+  try {
+    session = await startSession({
+      preparedWorkspace: workspace,
+      retrievalMode: retrieval,
+      upstreamBaseUrl: upstream.baseUrl,
+      sessionId,
+      ...(opts.startGatewayImpl ? { startGatewayImpl: opts.startGatewayImpl } : {}),
+      ...(opts.fetchProbe ? { readyProbe: opts.fetchProbe } : {}),
+    });
+  } catch {
     err("Yuhi could not start the local context gateway.\n\nSafe error category: gateway-not-ready");
     return { exitCode: 3, sessionId };
   }
 
   const mcpConfigPath =
     retrieval !== "disabled" && opts.cliEntry
-      ? await writeMcpConfig({ workspace, contextRoot, sessionId, cliEntry: opts.cliEntry }).catch(() => undefined)
+      ? await writeMcpConfig({
+          workspace,
+          contextRoot: session.contextRoot,
+          sessionId,
+          cliEntry: opts.cliEntry,
+        }).catch(() => undefined)
       : undefined;
 
-  const extraEnv = dynamicContextEnv({
-    gatewayUrl: ready.handle.url,
-    sessionId,
-    contextRoot,
-    ...(mcpConfigPath ? { mcpConfigPath } : {}),
-  });
+  const extraEnv: Record<string, string> = {
+    ...session.command.env,
+    ...(mcpConfigPath ? { YUHI_MCP_CONFIG: mcpConfigPath } : {}),
+  };
 
   if (!opts.json) {
-    out(`Yuhi dynamic context: ON — gateway ${ready.handle.url} → ${upstream.baseUrl} (${upstream.mode})`);
+    out(`Yuhi dynamic context: ON — gateway ${session.gatewayUrl} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
     out(`Retrieval mode: ${retrieval}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);
@@ -149,8 +162,7 @@ export async function launchClaudeWithDynamicContext(
     exitCode = await launch(launchOptions);
   } finally {
     // Step 8-10: notify session close, flush evidence and stats, then stop listening.
-    const stats = ready.handle.stats();
-    await ready.handle.close();
+    const stats = await session.close();
     if (opts.json) {
       out(JSON.stringify({ command: "launch", dynamicContext: true, sessionId, stats }, null, 2));
     } else {
@@ -159,7 +171,7 @@ export async function launchClaudeWithDynamicContext(
     }
   }
 
-  return { exitCode, gatewayUrl: ready.handle.url, sessionId, stats: ready.handle.stats() };
+  return { exitCode, gatewayUrl: session.gatewayUrl, sessionId, stats: await session.getStats() };
 }
 
 async function defaultResolveWorkspace(ref: string | undefined): Promise<string | undefined> {
