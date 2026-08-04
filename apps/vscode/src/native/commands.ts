@@ -131,6 +131,10 @@ async function commandOpen(context: vscode.ExtensionContext, deps: NativeCommand
         retrievalMode: deps.retrievalMode(),
         configPath,
         handshakePath,
+        // Pin the isolated window to THIS build. Without it the broker installs whatever is
+        // published, which is an older Yuhi with no Native GUI support — the window would
+        // never attach and the failure would look like a timeout.
+        yuhiExtensionRef: `yuhi-ai-labs.yuhi-vscode@${(context.extension.packageJSON as { version?: string }).version ?? ""}`,
       });
     },
   );

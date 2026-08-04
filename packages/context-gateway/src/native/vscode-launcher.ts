@@ -225,14 +225,47 @@ export async function installYuhiExtension(
   paths: IsolationPaths,
   ref: string = YUHI_EXTENSION_ID,
 ): Promise<InstallResult> {
-  const result = await runner.run({
-    file: executable,
-    args: [...isolationArgs(paths), "--install-extension", ref, "--force"],
-    timeoutMs: 300_000,
-  });
-  const output = `${result.stdout}\n${result.stderr}`.trim();
-  if (result.code !== 0) return { ok: false, installedVersion: undefined, output };
+  const attempt = async (target: string): Promise<{ code: number | null; output: string }> => {
+    const r = await runner.run({
+      file: executable,
+      args: [...isolationArgs(paths), "--install-extension", target, "--force"],
+      timeoutMs: 300_000,
+    });
+    return { code: r.code, output: `${r.stdout}\n${r.stderr}`.trim() };
+  };
+
+  let result = await attempt(ref);
+  // A pinned version that is not on the marketplace yet (the build is newer than the
+  // published one) must not leave the isolated window with no Yuhi at all. Fall back to
+  // whatever is published and let the version check below report what actually landed.
+  if (result.code !== 0 && ref.includes("@")) {
+    result = await attempt(ref.split("@")[0] ?? YUHI_EXTENSION_ID);
+  }
+  if (result.code !== 0) return { ok: false, installedVersion: undefined, output: result.output };
+
   const installed = await listInstalledExtensions(runner, executable, paths);
   const line = installed.find((e) => e.toLowerCase().startsWith(`${YUHI_EXTENSION_ID}@`));
-  return { ok: line !== undefined, installedVersion: line?.split("@")[1], output };
+  return { ok: line !== undefined, installedVersion: line?.split("@")[1], output: result.output };
+}
+
+/**
+ * The isolated window needs a Yuhi that knows about Native GUI Mode.
+ *
+ * An older published build has no attach client and no Claude adapter, so the session would
+ * start a gateway, open a window, and then sit at `vscode-attaching` forever with no
+ * explanation. Comparing versions turns that into a sentence the user can act on.
+ */
+export const NATIVE_GUI_MIN_YUHI_VERSION = "0.4.1";
+
+export function yuhiVersionSupportsNativeGui(version: string | undefined): boolean {
+  if (!version) return false;
+  const parts = version.split(".").map((n) => Number.parseInt(n, 10));
+  const min = NATIVE_GUI_MIN_YUHI_VERSION.split(".").map((n) => Number.parseInt(n, 10));
+  for (let i = 0; i < min.length; i++) {
+    const a = parts[i] ?? 0;
+    const b = min[i] ?? 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return true;
 }

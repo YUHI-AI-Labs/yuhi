@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi \u2014 AI-Ready Repositories",
   "description": "Scan, sanitize, convert, and reduce your repository before opening it with an AI coding agent. Local-first, no telemetry.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",

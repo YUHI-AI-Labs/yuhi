@@ -459,3 +459,16 @@ describe("retrieval registration", () => {
     await expect(readFile(join(dir, PROJECT_MCP_FILENAME), "utf8")).rejects.toThrow();
   });
 });
+
+describe("the isolated window needs a Yuhi that knows about Native GUI Mode", () => {
+  it("accepts 0.4.1 and newer, rejects older and unknown", async () => {
+    const { yuhiVersionSupportsNativeGui } = await import("./vscode-launcher.js");
+    expect(yuhiVersionSupportsNativeGui("0.4.1")).toBe(true);
+    expect(yuhiVersionSupportsNativeGui("0.5.0")).toBe(true);
+    expect(yuhiVersionSupportsNativeGui("1.0.0")).toBe(true);
+    // 0.4.0 has no attach client: the session would sit at `vscode-attaching` forever.
+    expect(yuhiVersionSupportsNativeGui("0.4.0")).toBe(false);
+    expect(yuhiVersionSupportsNativeGui("0.3.9")).toBe(false);
+    expect(yuhiVersionSupportsNativeGui(undefined)).toBe(false);
+  });
+});

@@ -56,6 +56,7 @@ export interface StartNativeInput {
   readonly vscodeExecutable?: string;
   readonly extensionVersion?: string;
   readonly mcpServerScript?: string;
+  readonly yuhiExtensionRef?: string;
 }
 
 /**
@@ -78,6 +79,7 @@ export async function startNativeSessionViaBroker(
     ...(input.vscodeExecutable ? { vscodeExecutable: input.vscodeExecutable } : {}),
     ...(input.extensionVersion ? { extensionVersion: input.extensionVersion } : {}),
     ...(input.mcpServerScript ? { mcpServerScript: input.mcpServerScript } : {}),
+    ...(input.yuhiExtensionRef ? { yuhiExtensionRef: input.yuhiExtensionRef } : {}),
   });
 
   host.spawnBroker(input.configPath);

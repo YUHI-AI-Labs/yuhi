@@ -21,7 +21,10 @@ GUI, with tool output compressed, recorded and policy-checked on the way past.
 - **Your normal VS Code profile and windows are unaffected.** Isolation is a private
   `--user-data-dir` and `--extensions-dir`.
 - **Yuhi does not read, copy, or store Claude credentials.** Sign-in, when needed, happens in
-  the official extension's own UI.
+  the official extension's own UI. Existing Claude Code authentication is supported;
+  first-time sign-in in an isolated Yuhi environment has not yet been validated.
+- Strict Mode masks detected secrets and supported identifiers; coverage depends on file
+  format and content. It is not a guarantee that every secret or identifier is removed.
 - The isolated window runs with workspace trust disabled — VS Code's Restricted Mode would
   otherwise disable both Claude and Yuhi inside it. It applies only to the window Yuhi opens,
   on a workspace Yuhi prepared.

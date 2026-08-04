@@ -55,6 +55,8 @@ import {
   focusIsolatedWindow,
   installOfficialExtension,
   installYuhiExtension,
+  NATIVE_GUI_MIN_YUHI_VERSION,
+  yuhiVersionSupportsNativeGui,
   launchIsolatedWindow,
   listInstalledExtensions,
   nodeProcessRunner,
@@ -233,6 +235,14 @@ export async function startNativeClaudeGuiSession(
       await cleanupSession(layout, { closeGateway: () => void gateway.close() });
       await advance("failed", "yuhi self-install failed");
       throw new NativeSessionError("extension-install-failed", self.output.slice(0, 500));
+    }
+    if (!yuhiVersionSupportsNativeGui(self.installedVersion)) {
+      await cleanupSession(layout, { closeGateway: () => void gateway.close() });
+      await advance("failed", "installed yuhi too old for native gui");
+      throw new NativeSessionError(
+        "extension-install-failed",
+        `The Yuhi extension available to the isolated window is ${self.installedVersion ?? "unknown"}, which does not support Native GUI Mode (needs ${NATIVE_GUI_MIN_YUHI_VERSION} or newer). Use Dynamic Terminal Mode until the newer Yuhi is published.`,
+      );
     }
   }
 

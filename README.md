@@ -147,7 +147,12 @@ policy-checked on the way past.
 - The endpoint is set through the official, documented `claudeCode.environmentVariables`
   setting, merged with whatever is already there.
 - **Yuhi never reads, copies, or stores your Claude credentials.** If the isolated window
-  needs a sign-in, you sign in through the official extension's own UI.
+  needs a sign-in, you sign in through the official extension's own UI. Existing Claude Code
+  authentication is supported; **first-time sign-in in an isolated Yuhi environment has not
+  yet been validated.**
+- Strict Mode is available here too. It **masks detected secrets and supported identifiers;
+  coverage depends on file format and content** — it is not a guarantee that every secret or
+  identifier is removed.
 - Closing the window ends the session and stops its gateway. `yuhi dynamic sessions`,
   `yuhi dynamic stop <id>` and `yuhi dynamic recover` handle anything left behind.
 

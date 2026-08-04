@@ -48,6 +48,9 @@ Permitted:
 * "Yuhi can run the official Claude Code extension through its dynamic context gateway in an
   isolated VS Code window."
 * "Yuhi does not read, copy, or store your Claude authentication credentials."
+* "Existing Claude Code authentication is supported. First-time sign-in in an isolated Yuhi
+  environment has not yet been validated." — this sentence must accompany any statement about
+  authentication, because every measured run reused existing `~/.claude` auth.
 * "Secret values are not written to Yuhi logs, evidence, statistics, or UI." (unchanged from
   v0.4.0, and enforced by tests that byte-scan Yuhi's own output)
 * "Your normal VS Code profile and windows are unaffected."
@@ -59,6 +62,10 @@ Prohibited:
   unsupported.
 * "Secrets are not sent to Claude." — Developer Mode delivers project configuration
   deliberately. (v0.4.0 conflict #4.)
+* "First-time sign-in works in Native GUI Mode." — unverified.
+* "Strict Mode removes all secrets and personal information." — the accurate sentence is
+  always: *Masks detected secrets and supported identifiers. Coverage depends on file format
+  and content.*
 * "Yuhi compresses everything Claude Code sends." — compression targets command output and
   structured data; a `Read` of a log or prose file is deliberately skipped.
 * Any claim that Native GUI Mode adds a security control. It adds a *surface*; the controls
@@ -75,13 +82,18 @@ Prohibited:
    created, opening a Prepared Workspace Yuhi produced; the user's normal trust decisions are
    untouched. It is a real reduction in that window's defences and is recorded as such.
 3. **One session per Original Workspace.** A second launch offers focus, restart, or cancel.
-4. **First launch downloads two extensions** into the isolated directory (the official
+4. **The isolated window needs a published Yuhi 0.4.1 or newer.** Yuhi pins the isolated
+   install to the running build's version; if that version is not on the marketplace yet it
+   falls back to the latest published one and then *refuses to continue* with a plain message
+   rather than opening a window that can never attach. Native GUI Mode therefore only works
+   for real users once 0.4.1 is published — a release-ordering constraint, not a runtime bug.
+5. **First launch downloads two extensions** into the isolated directory (the official
    extension and Yuhi), so it is materially slower than later launches.
-5. **The session directory is not shared with the normal profile**, so a first sign-in inside
+6. **The session directory is not shared with the normal profile**, so a first sign-in inside
    the isolated window may be required if CLI auth is not already present in `~/.claude`.
-6. **Egress guard is a tripwire, not a control** (unchanged from v0.4.0): literal matching
+7. **Egress guard is a tripwire, not a control** (unchanged from v0.4.0): literal matching
    only, no blocking.
-7. **Prepared-workspace reuse** relies on the existing v0.4.0 resolution; Native GUI Mode adds
+8. **Prepared-workspace reuse** relies on the existing v0.4.0 resolution; Native GUI Mode adds
    no new validation of its own.
 
 ## 5. Release gate
