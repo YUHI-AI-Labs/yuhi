@@ -161,8 +161,11 @@ means — and this is a deliberate reversal of the preparation-time default abov
   reappearing in a response, a patch, a commit body or an outbound request is recorded.
 - **Egress detection is a tripwire, not a complete prevention control.** It matches literal
   values; a paraphrased or re-encoded secret is not detected.
-- **Strict pre-delivery masking is planned as a future policy mode.** `STRICT_MODE_POLICY`
-  restores the 0.3.x behaviour today for callers that want it.
+- **Strict Mode is selectable today** — `--delivery-mode strict` (CLI) or
+  `yuhi.dynamicContext.deliveryMode` (VS Code). Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is not a guarantee that every
+  secret or identifier is removed: record-level pseudonymization applies to tabular files
+  (`.csv` / `.tsv` / `.xlsx`), and a number with no surrounding context in a plain text file
+  is not distinguishable from any other number.
 
 `yuhi prepare` and its Safety Modes are unchanged. Details:
 [docs/design/V0_4_0_DEVELOPER_MODE.md](docs/design/V0_4_0_DEVELOPER_MODE.md) ·

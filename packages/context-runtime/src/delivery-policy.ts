@@ -72,7 +72,12 @@ export const STRICT_MODE_POLICY: DeliveryPolicy = {
   redactSecretsBeforeDelivery: true,
   hardBlockedCategories: HARD_BLOCKED_CATEGORIES,
   maskValuesInEvidence: true,
-  notice: "Strict Mode — detected secrets are masked before the agent sees them.",
+  notice: [
+    "Strict Mode",
+    "",
+    "Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content.",
+    "It is not a guarantee that every secret or identifier is removed.",
+  ].join("\n"),
 };
 
 export function policyForMode(mode: DeliveryMode): DeliveryPolicy {

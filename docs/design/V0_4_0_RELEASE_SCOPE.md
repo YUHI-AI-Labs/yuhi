@@ -122,6 +122,7 @@ What this changes for claims — the old sentence is now false and must not be u
 | "Secrets exposed: 0" (report/benchmark/UI) | Permitted **only** with the redefined meaning: zero raw values in Yuhi's own surfaces. `agentVisibleSecrets` states the deliberate half separately. |
 | "Private keys are never delivered." | Permitted. Key material is masked in every mode, span-level, without withholding the rest of the file. |
 | "A secret leaving is blocked." | **Prohibited.** v0.4.0 detects, warns and audits; blocking is Enterprise Strict Mode. |
+| "Strict Mode removes all secrets and personal information." | **Prohibited.** The accurate sentence is: "Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content." |
 
 Strict Mode (`STRICT_MODE_POLICY`) keeps the 0.3.x behaviour whole and is selectable today;
 Enterprise Strict Mode — policy-based redaction, approvals, organisation rules — is a later

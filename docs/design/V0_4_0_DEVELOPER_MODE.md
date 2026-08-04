@@ -110,6 +110,21 @@ The benchmark's `secretExposure` metric is redefined to match: it counts raw val
 **Yuhi's own surfaces**, and `agentVisibleSecrets` records the deliberate half separately so
 no reader can carry the old meaning into a new number.
 
+## 7b. Strict Mode's limits
+
+Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is not a complete removal guarantee, and saying so would repeat the mistake this
+whole document exists to avoid:
+
+- Record-level pseudonymization is wired to **tabular** capabilities (`.csv`, `.tsv`,
+  `.xlsx`). A plain `.txt` gets generic secret/PII detection only, so a bare identifier with
+  no key context — a six-digit student number on its own line — is not masked, because it is
+  indistinguishable from any other number.
+- Cross-file linkage of pseudonyms is intended but has been observed to differ per file in
+  real use; treat cross-file joins on pseudonymized IDs as unreliable until that is fixed.
+
+Both are pre-existing `prepare`-side behaviours, not v0.4.0 regressions, and both are
+recorded as v0.4.1 work.
+
 ## 8. Known limitations
 
 1. **The egress guard matches literal values.** A secret the model paraphrases, splits, or

@@ -331,7 +331,7 @@
           "default": "developer",
           "enumDescriptions": [
             "Developer Mode: project configuration, including .env, may be read by Claude Code. Raw values are never written to Yuhi logs, evidence or UI.",
-            "Strict Mode: detected secrets are masked before Claude Code sees them (the 0.3.x behaviour). Use for folders that hold documents or personal data rather than code."
+            "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content \u2014 it is not a guarantee that every secret or identifier is removed."
           ],
           "description": "How detected secrets are handled during a dynamic context session."
         }

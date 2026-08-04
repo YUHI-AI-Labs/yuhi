@@ -65,8 +65,11 @@ diagnose configuration.
 - **Direct re-exposure is detected and audited where possible** — a delivered value
   reappearing in a response, patch, commit body or outbound request.
 - **Egress detection is a tripwire, not a complete prevention control.**
-- **Strict pre-delivery masking is planned as a future policy mode.** `STRICT_MODE_POLICY`
-  restores the 0.3.x behaviour today.
+- **Strict Mode is selectable today** — `--delivery-mode strict` (CLI),
+  `yuhi.dynamicContext.deliveryMode` (VS Code). Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is **not** a guarantee that every
+  secret or identifier is removed: record-level pseudonymization covers `.csv` / `.tsv` /
+  `.xlsx`, and a number with no surrounding context in a plain text file cannot be
+  distinguished from any other number.
 
 `yuhi prepare`, its Safety Modes, and Safe Patch Review / Safe Apply are unchanged.
 Details: `docs/design/V0_4_0_DEVELOPER_MODE.md`, `docs/THREAT_MODEL.md`, `CLAUDE.md` conflict #4.
@@ -87,13 +90,16 @@ with `--retrieval conditional|required` (CLI) or `yuhi.dynamicContext.retrievalM
    traffic rarely delivers a large search result or log to the model — the agent greps.
    A `Read` of a log or prose file is deliberately **not** compressed: it is the agent
    scanning, and restructuring it measured +75% cost.
-3. **Egress detection matches literal values.** Paraphrased, split or re-encoded secrets are
+3. **Strict Mode's detection coverage is format-dependent.** Record-level pseudonymization
+   applies to tabular files; identifiers in plain text rely on generic detection, so a bare
+   number with no key context is not masked.
+4. **Egress detection matches literal values.** Paraphrased, split or re-encoded secrets are
    not detected. Watched values live in gateway memory for the session.
-4. **Session identity is derived from the conversation head**, because Claude Code cannot be
+5. **Session identity is derived from the conversation head**, because Claude Code cannot be
    made to send a Yuhi header. Two conversations that begin identically in the same
    repository share a session and its retrieval authorization.
-5. **Cost benefit is model-dependent.** −20% on haiku, parity on Sonnet, same token reduction.
-6. Bedrock and Vertex are **refused** rather than proxied — they do not speak the Anthropic
+6. **Cost benefit is model-dependent.** −20% on haiku, parity on Sonnet, same token reduction.
+7. Bedrock and Vertex are **refused** rather than proxied — they do not speak the Anthropic
    Messages API at `ANTHROPIC_BASE_URL`.
 
 ## Upgrading

@@ -24,8 +24,8 @@ import { DEVELOPER_MODE_NOTICE, STRICT_MODE_POLICY } from "@yuhi/context-runtime
 export const STRICT_MODE_NOTICE = [
   "Strict Mode",
   "",
-  "Detected secrets are masked before Claude Code sees them.",
-  "Project configuration values will not be readable by the agent.",
+  "Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content.",
+  "It is not a guarantee that every secret or identifier is removed.",
 ].join("\n");
 void STRICT_MODE_POLICY;
 import {
