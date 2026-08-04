@@ -9,8 +9,9 @@ The removed listing reserved its display name as well as its id, so 0.4.4's disp
 was rejected on upload for the same reason its predecessor's id was. This release changes
 the display name so the extension can be published.
 
-`v0.4.4` was tagged but **never published** to npm, the Marketplace or a GitHub Release.
-It is superseded by 0.4.5; nothing consumed it.
+`v0.4.4` was published to **npm only** — its VSIX was never accepted by the Marketplace,
+because the display name was rejected. `@yuhi-ai-labs/yuhi@0.4.4` is therefore a valid CLI
+release; only the extension side of 0.4.4 does not exist. 0.4.5 supersedes it on both.
 
 ### Changed
 
@@ -35,7 +36,7 @@ reserved by the Marketplace, so 0.4.4's display name was rejected on upload for 
 reason its predecessor's id was. This release changes the display name so the extension
 can be published.
 
-`v0.4.4` was tagged but **never published** to npm, the Marketplace or a GitHub Release;
+`v0.4.4` was published to **npm only**; its VSIX was never accepted by the Marketplace,
 it is superseded by 0.4.5. Nothing consumed it.
 
 ### Changed

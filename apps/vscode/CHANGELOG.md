@@ -10,8 +10,8 @@ releases may include breaking changes.
 **New display name: `Yuhi Code — See What Your AI Agent Sees`.** No behaviour changes.
 
 The removed listing reserved its display name as well as its id, so 0.4.4's display name
-was rejected on upload. `v0.4.4` was tagged but never published anywhere and is
-superseded by this release.
+was rejected on upload. `v0.4.4` reached npm as a CLI release but its VSIX was
+never accepted by the Marketplace, so no 0.4.4 extension exists. This release supersedes it.
 
 The extension id remains `yuhi-ai-labs.yuhi-code`. If you had Yuhi installed under the
 old `yuhi-ai-labs.yuhi-vscode` id, install it again under the new one — the old entry
@@ -22,8 +22,8 @@ will never update.
 **New display name: `Yuhi Code — See What Your AI Agent Sees`.** No behaviour changes.
 
 The removed listing reserved its display name as well as its id, so 0.4.4's display name
-was rejected on upload. `v0.4.4` was tagged but never published anywhere and is
-superseded by this release.
+was rejected on upload. `v0.4.4` reached npm as a CLI release but its VSIX was
+never accepted by the Marketplace, so no 0.4.4 extension exists. This release supersedes it.
 
 The extension id remains `yuhi-ai-labs.yuhi-code`. If you had Yuhi installed under the
 old `yuhi-ai-labs.yuhi-vscode` id, install it again under the new one — the old entry
