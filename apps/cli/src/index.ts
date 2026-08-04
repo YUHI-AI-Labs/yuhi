@@ -1014,6 +1014,69 @@ async function main(): Promise<void> {
       }),
     );
 
+  // Native GUI Mode session management. The broker owns these sessions, so the CLI reads
+  // and repairs them from disk rather than assuming it started them.
+  dynamicCommand
+    .command("sessions")
+    .description("List Native Claude GUI sessions and their health")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const { discoverSessions, describeDiscovered } = await import("@yuhi/context-gateway");
+        const sessions = await discoverSessions();
+        if (g.json) {
+          return void printJson({
+            command: "dynamic sessions",
+            sessions: sessions.map((s) => ({ sessionId: s.sessionId, health: s.health, state: s.record?.state ?? null })),
+          });
+        }
+        if (sessions.length === 0) {
+          console.log("No Native Claude GUI sessions found.");
+          return 0;
+        }
+        for (const session of sessions) console.log(describeDiscovered(session));
+        return 0;
+      }),
+    );
+
+  dynamicCommand
+    .command("stop")
+    .description("Stop a Native Claude GUI session and its gateway")
+    .argument("<session-id>")
+    .action(
+      action(async (cmd) => {
+        const sessionId = String(cmd.args[0] ?? "");
+        const { cleanupSession, sessionLayout } = await import("@yuhi/context-gateway");
+        const result = await cleanupSession(sessionLayout(sessionId), {});
+        if (!result.ok) {
+          const failed = result.steps.filter((s) => !s.ok).map((s) => s.step);
+          console.error(`Stopped with problems: ${failed.join(", ")}`);
+          return 3;
+        }
+        console.log(`Stopped ${sessionId}.`);
+        return 0;
+      }),
+    );
+
+  dynamicCommand
+    .command("recover")
+    .description("Finish the shutdown of stale Native Claude GUI sessions")
+    .option("--purge-finished", "also delete the directories of sessions that already closed")
+    .action(
+      action(async (cmd) => {
+        const { g } = getContext(cmd);
+        const opts = cmd.opts();
+        const { recoverStaleSessions } = await import("@yuhi/context-gateway");
+        const result = await recoverStaleSessions({ purgeFinished: Boolean(opts.purgeFinished) });
+        if (g.json) return void printJson({ command: "dynamic recover", ...result });
+        console.log(
+          `Inspected ${result.inspected}; recovered ${result.recovered.length}; still running ${result.skippedLive.length}; failed ${result.failed.length}.`,
+        );
+        return result.failed.length > 0 ? 3 : 0;
+      }),
+    );
+
+
   // ---- mcp ----  retrieval server started by Claude Code, not by the user
   program
     .command("mcp")

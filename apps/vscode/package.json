@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi \u2014 AI-Ready Repositories",
   "description": "Scan, sanitize, convert, and reduce your repository before opening it with an AI coding agent. Local-first, no telemetry.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -142,6 +142,30 @@
       {
         "command": "yuhi.showDynamicStats",
         "title": "Yuhi: Show Dynamic Context Stats"
+      },
+      {
+        "command": "yuhi.openClaudeDynamicWorkspace",
+        "title": "Yuhi: Open Claude Code Dynamic Workspace"
+      },
+      {
+        "command": "yuhi.showNativeDynamicSessions",
+        "title": "Yuhi: Show Native Dynamic Sessions"
+      },
+      {
+        "command": "yuhi.focusNativeDynamicWorkspace",
+        "title": "Yuhi: Focus Native Dynamic Workspace"
+      },
+      {
+        "command": "yuhi.stopNativeDynamicSession",
+        "title": "Yuhi: Stop Native Dynamic Session"
+      },
+      {
+        "command": "yuhi.recoverNativeDynamicSessions",
+        "title": "Yuhi: Recover Native Dynamic Sessions"
+      },
+      {
+        "command": "yuhi.showNativeDynamicDiagnostics",
+        "title": "Yuhi: Show Native Dynamic Diagnostics"
       }
     ],
     "menus": {
@@ -334,6 +358,18 @@
             "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content \u2014 it is not a guarantee that every secret or identifier is removed."
           ],
           "description": "How detected secrets are handled during a dynamic context session."
+        },
+        "yuhi.nativeSession": {
+          "type": "object",
+          "default": null,
+          "scope": "machine",
+          "description": "Set by Yuhi inside its own isolated Native GUI profile. Do not set this by hand; it identifies the session this window belongs to and carries no credential."
+        },
+        "yuhi.nativeGui.extensionRef": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Advanced. Which Yuhi build the isolated Native GUI window installs: a marketplace id, an id@version, or an absolute path to a .vsix. Leave empty to pin the running version. Set this to a local .vsix to try a build that is not published yet."
         }
       }
     }
@@ -353,7 +389,8 @@
     "@yuhi/config": "workspace:*",
     "yaml": "^2.6.1",
     "@yuhi/context-gateway": "workspace:*",
-    "@yuhi/context-runtime": "workspace:*"
+    "@yuhi/context-runtime": "workspace:*",
+    "@yuhi/context-mcp": "workspace:*"
   },
   "optionalDependencies": {
     "typescript": "^5.7.2"

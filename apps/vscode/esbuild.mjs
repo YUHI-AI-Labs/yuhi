@@ -43,11 +43,51 @@ const tsRuntimeOptions = {
   logLevel: "info",
 };
 
+/**
+ * Third bundle: the Native GUI broker. It owns a session's gateway, lock and heartbeat, and
+ * is spawned DETACHED by the extension so ownership survives an extension-host reload,
+ * window close, or crash — the failure mode that would otherwise strand a listening gateway.
+ * Self-contained CJS, no `vscode` import, launched as `node dist/native-broker.js <config>`.
+ */
+const brokerOptions = {
+  entryPoints: ["src/native-broker-entry.ts"],
+  bundle: true,
+  outfile: "dist/native-broker.js",
+  external: ["vscode", "typescript"],
+  format: "cjs",
+  platform: "node",
+  target: "node18",
+  sourcemap: false,
+  minify: false,
+  logLevel: "info",
+};
+
+/**
+ * Fourth bundle: the Yuhi MCP server, launched over stdio by Claude Code itself when a
+ * Native GUI session enables retrieval. Discovered through a project-scoped `.mcp.json`
+ * Yuhi writes into the Prepared Workspace, which is how Claude Code finds MCP servers
+ * without any Yuhi-controlled command line.
+ */
+const mcpOptions = {
+  entryPoints: ["src/native-mcp-entry.ts"],
+  bundle: true,
+  outfile: "dist/native-mcp.js",
+  external: ["vscode", "typescript"],
+  format: "cjs",
+  platform: "node",
+  target: "node18",
+  sourcemap: false,
+  minify: false,
+  logLevel: "info",
+};
+
 if (process.argv.includes("--watch")) {
   const extensionCtx = await context(extensionOptions);
   const tsRuntimeCtx = await context(tsRuntimeOptions);
-  await Promise.all([extensionCtx.watch(), tsRuntimeCtx.watch()]);
+  const brokerCtx = await context(brokerOptions);
+  const mcpCtx = await context(mcpOptions);
+  await Promise.all([extensionCtx.watch(), tsRuntimeCtx.watch(), brokerCtx.watch(), mcpCtx.watch()]);
   console.log("watching…");
 } else {
-  await Promise.all([build(extensionOptions), build(tsRuntimeOptions)]);
+  await Promise.all([build(extensionOptions), build(tsRuntimeOptions), build(brokerOptions), build(mcpOptions)]);
 }
