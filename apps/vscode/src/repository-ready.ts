@@ -73,8 +73,8 @@ export function renderRepositoryReadyCard(report: PreparationReport): string {
     .map(([k, v]) => `<div class="metric"><span>${k}</span><b>${group(v)}</b></div>`)
     .join("");
   const largeFiles =
-    report.largeFilesExcluded > 0
-      ? `<div class="metric"><span>Large files excluded</span><b>${group(report.largeFilesExcluded)}</b></div>`
+    report.largeArtifactsReduced > 0
+      ? `<div class="metric"><span>Large artifacts reduced</span><b>${group(report.largeArtifactsReduced)}</b></div>`
       : "";
   return (
     `<section class="card" id="repositoryReady" style="margin-bottom:24px">` +

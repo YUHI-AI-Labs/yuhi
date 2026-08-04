@@ -19,6 +19,7 @@
  * value, secret, or raw error string.
  */
 import {
+  buildPublicStatus,
   readPublicStatus,
   runBackgroundForRun,
   requestBackgroundCancel,
@@ -70,21 +71,9 @@ export interface BackgroundCommonOptions extends BackgroundDeps {
 
 /** The public-safe empty status used when no background status file exists yet. */
 function emptyStatus(): PublicBackgroundStatus {
-  return {
-    schemaVersion: 1,
-    counts: {
-      total: 0,
-      pending: 0,
-      processing: 0,
-      completed: 0,
-      failed: 0,
-      keptLocal: 0,
-      companionUnavailable: 0,
-      cancelled: 0,
-    },
-    revision: 0,
-    items: [],
-  };
+  // Built through the shared projection so the file/job split and the activity flag
+  // can never drift from production (#15).
+  return buildPublicStatus([]);
 }
 
 /**

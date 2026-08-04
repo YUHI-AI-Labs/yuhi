@@ -51,7 +51,7 @@ const sample: PreparationReport = {
   documentsPrepared: 42,
   secretsBlocked: 18,
   identifiersTransformed: 103,
-  largeFilesExcluded: 15,
+  largeArtifactsReduced: 15,
   estimatedReductionPercent: 94,
   status: "ready",
 };
@@ -119,7 +119,7 @@ describe("formatPreparationReport (all formats are public-safe: numbers only)", 
         documentsPrepared: nums[(i + 1) % nums.length]!,
         secretsBlocked: nums[(i + 2) % nums.length]!,
         identifiersTransformed: nums[(i + 4) % nums.length]!,
-        largeFilesExcluded: nums[i % nums.length]!,
+        largeArtifactsReduced: nums[i % nums.length]!,
         estimatedReductionPercent: reductions[i % reductions.length]!,
         status: i % 2 === 0 ? "ready" : "ready-with-warning",
       });
@@ -185,7 +185,7 @@ describe("formatPreparationReport (all formats are public-safe: numbers only)", 
       documentsPrepared: 0,
       secretsBlocked: 0,
       identifiersTransformed: 0,
-      largeFilesExcluded: 0,
+      largeArtifactsReduced: 0,
       estimatedReductionPercent: 0,
       status: "ready",
     };
@@ -194,9 +194,9 @@ describe("formatPreparationReport (all formats are public-safe: numbers only)", 
     }
     const t0 = formatPreparationReport(empty, "terminal");
     expect(t0).toContain("0%");
-    // largeFilesExcluded row is hidden when zero, present when non-zero.
-    expect(t0).not.toContain("Large files excluded");
-    expect(formatPreparationReport(sample, "terminal")).toContain("Large files excluded");
+    // largeArtifactsReduced row is hidden when zero, present when non-zero.
+    expect(t0).not.toContain("Large artifacts reduced");
+    expect(formatPreparationReport(sample, "terminal")).toContain("Large artifacts reduced");
 
     const near100 = { ...empty, estimatedReductionPercent: 99.9 };
     expect(formatPreparationReport(near100, "terminal")).toContain("99.9%");

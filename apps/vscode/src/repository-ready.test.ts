@@ -13,7 +13,7 @@ const report = (over: Partial<PreparationReport> = {}): PreparationReport => ({
   documentsPrepared: 4,
   secretsBlocked: 7,
   identifiersTransformed: 2165,
-  largeFilesExcluded: 0,
+  largeArtifactsReduced: 0,
   estimatedReductionPercent: 94,
   status: "ready",
   safetyMode: "balanced",
@@ -64,12 +64,12 @@ describe("renderRepositoryReadyCard", () => {
     expect(out).toContain("public-safe");
   });
 
-  it("hides Large files excluded when zero and shows it when present", () => {
-    expect(renderRepositoryReadyCard(report({ largeFilesExcluded: 0 }))).not.toContain(
-      "Large files excluded",
+  it("hides Large artifacts reduced when zero and shows it when present", () => {
+    expect(renderRepositoryReadyCard(report({ largeArtifactsReduced: 0 }))).not.toContain(
+      "Large artifacts reduced",
     );
-    const withLarge = renderRepositoryReadyCard(report({ largeFilesExcluded: 3 }));
-    expect(withLarge).toContain("Large files excluded");
+    const withLarge = renderRepositoryReadyCard(report({ largeArtifactsReduced: 3 }));
+    expect(withLarge).toContain("Large artifacts reduced");
     expect(withLarge).toContain(">3<");
   });
 
@@ -83,7 +83,7 @@ describe("renderRepositoryReadyCard", () => {
   });
 
   it("renders only aggregate numbers — never a path, filename, or identity", () => {
-    const out = renderRepositoryReadyCard(report({ largeFilesExcluded: 5 }));
+    const out = renderRepositoryReadyCard(report({ largeArtifactsReduced: 5 }));
     for (const forbidden of FORBIDDEN) expect(out).not.toContain(forbidden);
   });
 });
@@ -101,7 +101,7 @@ describe("Repository Ready copy/export (public-safe output)", () => {
 
   it("each export format carries the numbers and leaks no path/identity", () => {
     for (const { format } of REPOSITORY_READY_EXPORT_FORMATS) {
-      const out = repositoryReadyExportText(report({ largeFilesExcluded: 6 }), format);
+      const out = repositoryReadyExportText(report({ largeArtifactsReduced: 6 }), format);
       expect(out).toContain("94");
       for (const forbidden of FORBIDDEN) expect(out).not.toContain(forbidden);
     }

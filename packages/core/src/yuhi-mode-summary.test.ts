@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PreparedFileEntry } from "./prepare-workspace.js";
-import type { PublicBackgroundStatus } from "./background/status.js";
+import { buildPublicStatus, type PublicBackgroundStatus } from "./background/status.js";
+import type { PublicBackgroundItem } from "./background/types.js";
 import { buildPublicPreparedContextSummary } from "./public-prepared-summary.js";
 import { buildYuhiModeSummary, renderYuhiModeHandoff } from "./yuhi-mode-summary.js";
 
@@ -23,12 +24,18 @@ describe("YuhiModeSummary", () => {
   it("counts a source once and keeps an available original warning when its companion fails", () => {
     const files = [file({})];
     const prepared = buildPublicPreparedContextSummary({ files, originalWorkspaceModified: false });
-    const background: PublicBackgroundStatus = {
-      schemaVersion: 1,
-      counts: { total: 1, pending: 0, processing: 0, completed: 0, failed: 0, keptLocal: 0, companionUnavailable: 1, cancelled: 0 },
-      revision: 0,
-      items: [{ relpath: "doc.pdf", kind: "document-extraction", status: "kept-local", reasonCode: "background-provider-unavailable", originalSharedWithWarning: true }],
-    };
+    // Built through `buildPublicStatus` so the file/job split and the activity flag
+    // stay consistent with production rather than being hand-written here.
+    const background: PublicBackgroundStatus = buildPublicStatus([
+      {
+        runId: "run",
+        relpath: "doc.pdf",
+        kind: "document-extraction",
+        status: "kept-local",
+        reasonCode: "background-provider-unavailable",
+        originalSharedWithWarning: true,
+      } as PublicBackgroundItem,
+    ]);
     const summary = buildYuhiModeSummary({ files, prepared, background, launchAllowed: true });
     expect(summary.contextAvailability.availableWithWarning).toBe(1);
     expect(summary.contextAvailability.unavailableAfterFailure).toBe(0);

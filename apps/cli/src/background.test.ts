@@ -50,6 +50,19 @@ function sampleStatus(): PublicBackgroundStatus {
     companionUnavailable: 0,
       cancelled: 0,
     },
+    accounting: {
+      sourceDocuments: 3,
+      inspectionJobs: 3,
+      pendingJobs: 1,
+      processingJobs: 0,
+      completedJobs: 1,
+      failedJobs: 1,
+      cancelledJobs: 0,
+      companionsCreated: 1,
+      keptLocalDocuments: 0,
+      companionUnavailableDocuments: 0,
+    },
+    activity: "running",
     revision: 1,
     revisionId: "sha256:" + "b".repeat(64),
     items: [
@@ -113,6 +126,21 @@ describe("background status", () => {
     expect(parsed).toEqual({
       schemaVersion: 1,
       counts: { total: 0, pending: 0, processing: 0, completed: 0, failed: 0, keptLocal: 0, companionUnavailable: 0, cancelled: 0 },
+      // File counts and JOB counts are reported separately (#15); an empty run is
+      // zero of both, and it is idle rather than "running".
+      accounting: {
+        sourceDocuments: 0,
+        inspectionJobs: 0,
+        pendingJobs: 0,
+        processingJobs: 0,
+        completedJobs: 0,
+        failedJobs: 0,
+        cancelledJobs: 0,
+        companionsCreated: 0,
+        keptLocalDocuments: 0,
+        companionUnavailableDocuments: 0,
+      },
+      activity: "idle",
       revision: 0,
       items: [],
     });

@@ -66,10 +66,39 @@ export interface PublicStatusItem {
   originalSharedWithWarning?: boolean;
 }
 
+/**
+ * Background accounting, with FILE counts and JOB counts kept apart (#14/#15).
+ *
+ * One source PDF can legitimately produce several jobs — a text extraction and an
+ * OCR pass — and the old `total` counted jobs while every consumer read it as a
+ * file count, so a single document appeared twice. `sourceDocuments` answers "how
+ * many of my files is this about"; the `*Jobs` fields answer "how much work is
+ * there". Never mix them.
+ */
+export interface BackgroundAccounting {
+  /** Distinct source documents represented, deduplicated by `documentId`. */
+  sourceDocuments: number;
+  /** Total inspection jobs across those documents (may exceed `sourceDocuments`). */
+  inspectionJobs: number;
+  pendingJobs: number;
+  processingJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  cancelledJobs: number;
+  /** Companions actually published (a completed job with a delivered artifact). */
+  companionsCreated: number;
+  /** Distinct documents whose original stayed local with no companion. */
+  keptLocalDocuments: number;
+  /** Distinct documents whose original was delivered with a warning, companion absent. */
+  companionUnavailableDocuments: number;
+}
+
 /** The whole PUBLIC status document. Path-safe by construction. */
 export interface PublicBackgroundStatus {
   schemaVersion: 1;
   counts: {
+    /** DEPRECATED name kept for compatibility: this is a JOB count, not a file count.
+     *  Read `accounting.inspectionJobs` / `accounting.sourceDocuments` instead. */
     total: number;
     pending: number;
     processing: number;
@@ -79,6 +108,10 @@ export interface PublicBackgroundStatus {
     companionUnavailable: number;
     cancelled: number;
   };
+  /** File-vs-job split. Authoritative for every surface. */
+  accounting: BackgroundAccounting;
+  /** Terminal when no job is pending or processing. */
+  activity: "idle" | "running";
   revision: number;
   revisionId?: string;
   items: PublicStatusItem[];
@@ -140,9 +173,40 @@ export function buildPublicStatus(
       ...(item.originalSharedWithWarning ? { originalSharedWithWarning: true } : {}),
     });
   }
+  // Deduplicate by documentId so one PDF is one document however many jobs it has.
+  const documents = new Set<string>();
+  const keptLocalDocs = new Set<string>();
+  const companionUnavailableDocs = new Set<string>();
+  let companionsCreated = 0;
+  for (const item of projected) {
+    const id = item.documentId ?? item.displayName ?? item.relpath ?? "";
+    if (id) documents.add(id);
+    if (item.status === "completed" && item.preparedRelpath) companionsCreated += 1;
+    if (item.status !== "pending" && item.status !== "processing" &&
+        item.status !== "completed" && item.status !== "failed" && item.status !== "cancelled") {
+      if (item.originalSharedWithWarning) companionUnavailableDocs.add(id);
+      else keptLocalDocs.add(id);
+    }
+  }
+  const accounting: BackgroundAccounting = {
+    sourceDocuments: documents.size,
+    inspectionJobs: items.length,
+    pendingJobs: counts.pending,
+    processingJobs: counts.processing,
+    completedJobs: counts.completed,
+    failedJobs: counts.failed,
+    cancelledJobs: counts.cancelled,
+    companionsCreated,
+    keptLocalDocuments: keptLocalDocs.size,
+    companionUnavailableDocuments: companionUnavailableDocs.size,
+  };
   return {
     schemaVersion: 1,
     counts,
+    accounting,
+    // A job in a TERMINAL state is not work in progress. Reporting "running" while
+    // every item was already kept-local left the UI spinning forever.
+    activity: counts.pending + counts.processing > 0 ? "running" : "idle",
     revision: revision.revision,
     ...(revision.revisionId ? { revisionId: revision.revisionId } : {}),
     items: projected,

@@ -22,6 +22,11 @@ export interface ReadinessFile {
   failureCategory?: string;
   limitation?: string;
   maskedValues?: number;
+  /** TRUE when the untransformed original was delivered as a verification fallback.
+   *  `limitation: "transformation-unavailable"` alone is ambiguous — it covers BOTH
+   *  "too large to inspect" and "transform could not be verified" — and conflating
+   *  them reported a raw fallback as a "large file excluded" (#12/#13). */
+  rawFallback?: boolean;
   beforeChars?: number;
   afterChars?: number;
   document?: { deliveredArtifactType?: string; redactionCount?: number };
@@ -75,15 +80,26 @@ export function buildAiReadinessReport(files: readonly ReadinessFile[]): AiReadi
       largeFilesReduced += 1;
     } else {
       piiTransformed += Math.max(0, f.maskedValues ?? 0);
-      // A file passed through only because it was too large to inspect.
-      if (f.limitation === "transformation-unavailable" && f.outcome === "included-unverified") {
+      // Only a genuine size/inspection passthrough is a reduced large artifact. A
+      // verification fallback (`rawFallback`) is neither large nor excluded and is
+      // reported through `DeliveryIntegritySummary` instead.
+      if (
+        f.rawFallback !== true &&
+        f.limitation === "transformation-unavailable" &&
+        f.outcome === "included-unverified"
+      ) {
         largeFilesReduced += 1;
       }
     }
   }
 
+  // NO clamp. Pseudonymization can make the prepared context LARGER than the source
+  // (ASCII tokens replacing short multi-byte values), and `Math.max(0, ...)` turned a
+  // real -23.1% into a headline "0%" while the very same run printed -23.1% twelve
+  // lines further down. CLAUDE.md fixes the formula as
+  // (before - after) / before * 100 and permits 0.0% only when `before` is zero.
   const estimatedReductionPercent =
-    beforeTotal > 0 ? Math.max(0, Math.round((1 - afterTotal / beforeTotal) * 1000) / 10) : 0;
+    beforeTotal > 0 ? Math.round((1 - afterTotal / beforeTotal) * 1000) / 10 : 0;
 
   return {
     secretsBlocked,
