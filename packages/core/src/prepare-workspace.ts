@@ -3366,25 +3366,20 @@ export async function prepareWorkspace(
     if (entry.relpath.startsWith(".yuhi/") || entry.relpath === "manifest.json") continue;
     const abs = path.join(outDir, ...entry.relpath.split("/"));
     try {
-      const stats = await stat(abs);
-      if (!stats.isFile()) continue;
-      if (/\.(?:csv|tsv|txt)$/i.test(entry.relpath)) {
-        const text = await readFile(abs, "utf8");
-        familyCandidates.push({
-          relpath: entry.relpath,
-          text,
-          bytes: stats.size,
-          ...(entry.documentId ? { documentId: entry.documentId } : {}),
-        });
-      } else {
-        const buffer = await readFile(abs);
-        familyCandidates.push({
-          relpath: entry.relpath,
-          bytes: stats.size,
-          sha256: createHash("sha256").update(buffer).digest("hex"),
-          ...(entry.documentId ? { documentId: entry.documentId } : {}),
-        });
-      }
+      // NO stat-then-read: checking the path and then opening it by name leaves a
+      // window in which the file can change (CWE-367). The bytes we actually read
+      // are the single source of truth for both content and size, and a directory
+      // or unreadable entry simply throws into the catch below.
+      const buffer = await readFile(abs);
+      const isText = /\.(?:csv|tsv|txt)$/i.test(entry.relpath);
+      familyCandidates.push({
+        relpath: entry.relpath,
+        bytes: buffer.byteLength,
+        ...(isText
+          ? { text: buffer.toString("utf8") }
+          : { sha256: createHash("sha256").update(buffer).digest("hex") }),
+        ...(entry.documentId ? { documentId: entry.documentId } : {}),
+      });
     } catch {
       // A delivered artifact we cannot reopen simply does not participate.
     }

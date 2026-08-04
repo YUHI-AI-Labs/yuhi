@@ -283,3 +283,28 @@ describe("cross-file alias context still links entities", () => {
     expect(tokenA).toBe(tokenB);
   });
 });
+
+describe("shape matching is linear and bounded (CodeQL js/polynomial-redos)", () => {
+  it("matches ordinary emails and rejects near-misses", () => {
+    expect(cellShape("a@b.co")).toBe("email");
+    expect(cellShape("first.last@sub.example.co.jp")).toBe("email");
+    // A trailing dot is not an email; the old pattern also rejected it, but only
+    // after quadratic backtracking.
+    expect(cellShape("a@b.")).not.toBe("email");
+    expect(cellShape("a@b")).not.toBe("email");
+    expect(cellShape("@b.co")).not.toBe("email");
+  });
+
+  it("returns quickly on the adversarial input CodeQL identified", () => {
+    // `a@a.` + many `a.` repetitions was the quadratic case.
+    const attack = "a@a." + "a.".repeat(40_000);
+    const started = process.hrtime.bigint();
+    expect(cellShape(attack)).toBe("text");
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsedMs).toBeLessThan(250);
+  });
+
+  it("treats an oversized cell as free text without pattern matching it", () => {
+    expect(cellShape("x".repeat(5000))).toBe("text");
+  });
+});

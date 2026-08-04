@@ -152,11 +152,26 @@ export const DATETIME_RE =
   /^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?)?$/;
 const TIME_RE = /^\d{1,2}:\d{2}(?::\d{2})?$/;
 const PHONE_RE = /^\+?[0-9][0-9 ()-]{7,}$/;
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+/**
+ * Email SHAPE test, deliberately linear.
+ *
+ * `/^[^@\s]+@[^@\s]+\.[^@\s]+$/` is ambiguous — `.` is also matched by `[^@\s]` — so
+ * the domain part backtracks quadratically on input like `a@a.` followed by many
+ * `a.` repetitions (CodeQL js/polynomial-redos). `cellShape` runs on EVERY cell of
+ * EVERY delivered table, i.e. on fully untrusted input, so the exposure is real.
+ * Excluding `.` from the label class makes each position match exactly one way.
+ */
+const EMAIL_RE = /^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$/;
+
+/** A cell longer than this is never an identifier shape worth pattern-matching. */
+const MAX_SHAPE_INPUT = 512;
 
 export function cellShape(cell: string): CellShape {
   const value = cell.trim();
   if (value.length === 0) return "empty";
+  // Bound the work regardless of pattern shape: a multi-kilobyte cell is free text,
+  // never an email/phone/id, so there is nothing to gain by matching it.
+  if (value.length > MAX_SHAPE_INPUT) return "text";
   if (EMAIL_RE.test(value)) return "email";
   if (DATETIME_RE.test(value)) return "datetime";
   if (TIME_RE.test(value)) return "time";
