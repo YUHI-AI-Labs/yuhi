@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.4.2] — 2026-08-04
+
+Documentation and Marketplace metadata only. **No code changes** — the extension source,
+bundles and behaviour are byte-for-byte the same as 0.4.1.
+
+### Changed
+
+- Marketplace title, description and long description now describe what the extension actually
+  does since 0.4.1: Dynamic Context for the official Claude Code VS Code experience. The 0.4.1
+  listing still described repository preparation and never mentioned Native Claude GUI Mode.
+- Long description gained the Delivery Modes, Bounded Retrieval, Isolated Runtime and Known
+  Limitations sections, so the boundaries are visible before install rather than after.
+- Added the demo animation, referenced by absolute URL so nothing new is bundled into the VSIX.
+
 ## [0.4.1] — 2026-08-04
 
 ### Added

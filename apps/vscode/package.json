@@ -2,7 +2,7 @@
   "name": "yuhi-vscode",
   "displayName": "Yuhi \u2014 Dynamic Context for Claude Code",
   "description": "Dynamic Context for the official Claude Code VS Code experience. Compress eligible tool outputs, retrieve omitted context when needed, and keep the session isolated from your normal VS Code environment.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
