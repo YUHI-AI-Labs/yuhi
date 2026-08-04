@@ -43,6 +43,29 @@ Ready for Claude Code.
 > 这些是 **已准备的初始内容的估算值**——即仓库中有多少被开放给智能体访问——
 > 而 **不是** 对模型 token 用量或成本的测量。你的原始文件永远不会被修改。
 
+## 原生 Claude GUI (v0.4.1)
+
+**在官方 Claude Code GUI 中，直接使用 Yuhi Dynamic Context。**
+
+运行 **Yuhi: Open Claude Code Dynamic Workspace**，官方 Anthropic Claude Code 扩展会在隔离的
+VS Code 环境中启动，该会话通过 Yuhi Dynamic Context。Yuhi 不会用自定义聊天 UI 取代 Claude Code。
+
+- 与常规 VS Code 环境隔离（独立的 `user-data-dir` 与 `extensions-dir`）
+- 不改动你的常规配置
+- Developer Mode / Strict Mode，与 CLI 同一套策略
+- 动态压缩较大的工具输出，被省略的部分仍可按需检索
+- 窗口关闭时自动清理网关、MCP 注册、session lock 与其管理的设置
+
+**Yuhi 不会读取、复制或存储你的 Claude 凭据。** 支持已有的 Claude Code 认证；
+**在隔离环境中的首次登录尚未验证。**
+
+**已知限制**：已在 macOS 验证；Linux 与 Windows 已实现并测试但尚未在真实 GUI 验证；
+Remote SSH、WSL、Dev Containers 与 Codespaces 均 fail closed；Strict Mode 覆盖取决于文件格式与内容；
+Dynamic reduction 不等于 provider token 总量或成本的降幅；绝对 token 数使用回退启发式。
+
+详见: [docs/design/V0_4_1_NATIVE_GUI.md](docs/design/V0_4_1_NATIVE_GUI.md) ·
+[docs/V0_4_1_RELEASE_SCOPE.md](docs/V0_4_1_RELEASE_SCOPE.md)
+
 ## 看看你的仓库里，AI 究竟需要多少
 
 编码智能体从你的工作目录内部启动，能读取那里的一切——`.env` 文件、云凭据、

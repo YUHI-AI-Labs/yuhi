@@ -327,6 +327,7 @@
   <div class="wrap nav">
     <div class="brand"><span class="glyph" aria-hidden="true"></span> yuhi</div>
     <nav class="nav-right">
+      <a class="nav-hide" href="#nativegui" data-i18n="nav_gui">Native GUI</a>
       <a class="nav-hide" href="#start" data-i18n="nav_install">インストール</a>
       <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" aria-label="GitHub repository">GitHub</a>
       <a class="nav-hide" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="nav_docs">ドキュメント</a>
@@ -345,13 +346,14 @@
   <section class="hero">
     <div class="wrap">
       <p class="eyebrow"><b>local-first</b><span class="dot-sep"></span>Apache-2.0<span class="dot-sep"></span><span data-i18n="ey_tel">テレメトリなし</span><span class="dot-sep"></span><span data-i18n="ey_off">オフライン動作</span></p>
-      <h1 data-i18n="hero_h1">Claude Code with <span class="swap">Yuhi</span></h1>
-      <p class="sub" data-i18n="hero_sub">Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。</p>
-      <p class="tag" data-i18n="hero_tag">Prepare your workspace. Let AI agents work better.</p>
+      <h1 data-i18n="hero_h1">公式Claude CodeのGUIを、<br>そのままYuhi Dynamic Context経由で。</h1>
+      <p class="sub" data-i18n="hero_sub"></p>
+      <p class="tag" data-i18n="hero_tag"></p>
       <div class="cta">
-        <a class="btn btn-primary" href="#start" data-i18n="hero_start">使ってみる</a>
+        <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode" data-i18n="hero_vsix">Install for VS Code</a>
+        <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi/releases/tag/v0.4.1" data-i18n="hero_rel">View v0.4.1 Release →</a>
         <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">GitHubを見る →</a>
-        <span class="install"><span class="p">$</span> npx @yuhi-ai-labs/yuhi@beta preview <button class="copy" id="copyHero" title="Copy" data-i18n="copy">コピー</button></span>
+        <span class="install"><span class="p">$</span> npm install -g @yuhi-ai-labs/yuhi <button class="copy" id="copyHero" title="Copy" data-i18n="copy">コピー</button></span>
       </div>
 
       <div class="flow" aria-label="Repository, prepared locally, then the agent">
@@ -466,6 +468,86 @@
   </section>
 
   <!-- CONTEXT SAVINGS -->
+  <!-- NATIVE CLAUDE GUI (v0.4.1) -->
+  <section id="nativegui" class="sec">
+  <h2 data-i18n="ng_h">Native Claude GUI (v0.4.1)</h2>
+  <p data-i18n="ng_p"></p>
+  <ul>
+    <li data-i18n="ng_1"></li>
+    <li data-i18n="ng_2"></li>
+    <li data-i18n="ng_3"></li>
+    <li data-i18n="ng_4"></li>
+    <li data-i18n="ng_5"></li>
+  </ul>
+  <p class="muted" data-i18n="ng_m"></p>
+  <p class="mono" style="font-size:11px;color:var(--ink-faint);margin-top:12px" data-i18n="ng_disc"></p>
+</section>
+  <!-- HONESTY -->
+  <section id="dynamic" class="sec">
+  <h2 data-i18n="dyn_h">Dynamic Context (v0.4.0)</h2>
+  <p data-i18n="dyn_p"></p>
+  <pre class="mono" style="font-size:12px;line-height:1.7;overflow-x:auto" data-i18n="dyn_flow"></pre>
+  <p data-i18n="dyn_pass"></p>
+  <h3 data-i18n="dyn_exh">Measured examples (real Claude Code GUI)</h3>
+  <ul>
+    <li data-i18n="dyn_ex1"></li>
+    <li data-i18n="dyn_ex2"></li>
+  </ul>
+  <p class="mono" style="font-size:11px;color:var(--ink-faint);margin-top:10px" data-i18n="dyn_note"></p>
+  <p class="muted" data-i18n="dyn_m"></p>
+  <h3 data-i18n="dyn_dh">Developer Mode</h3>
+  <ul>
+    <li data-i18n="dyn_d1"></li>
+    <li data-i18n="dyn_d2"></li>
+    <li data-i18n="dyn_d3"></li>
+    <li data-i18n="dyn_d4"></li>
+    <li data-i18n="dyn_d5"></li>
+    <li data-i18n="dyn_d6"></li>
+  </ul>
+</section>
+  <!-- DELIVERY MODES -->
+  <section id="modes" class="sec">
+  <h2 data-i18n="md_h">Delivery Modes</h2>
+  <h3 data-i18n="md_dh">Developer Mode — default</h3>
+  <ul>
+    <li data-i18n="md_d1"></li>
+    <li data-i18n="md_d2"></li>
+    <li data-i18n="md_d3"></li>
+  </ul>
+  <h3 data-i18n="md_sh">Strict Mode</h3>
+  <ul>
+    <li data-i18n="md_s1"></li>
+    <li data-i18n="md_s2"></li>
+  </ul>
+</section>
+  <!-- BOUNDED RETRIEVAL -->
+  <section id="retrieval" class="sec">
+  <h2 data-i18n="rt_h">Bounded Retrieval</h2>
+  <p data-i18n="rt_p"></p>
+  <ul>
+    <li data-i18n="rt_1"></li>
+    <li data-i18n="rt_2"></li>
+    <li data-i18n="rt_3"></li>
+    <li data-i18n="rt_4"></li>
+  </ul>
+  <p class="muted" data-i18n="rt_off"></p>
+</section>
+  <!-- ISOLATED RUNTIME -->
+  <section id="isolated" class="sec">
+  <h2 data-i18n="iso_h">Isolated Runtime</h2>
+  <pre class="mono" style="font-size:12px;line-height:1.7;overflow-x:auto">Normal VS Code
+    |
+    |  Yuhi command
+    v
+Isolated VS Code Window
+    |
+    +- Official Claude Code extension
+    +- Yuhi Gateway
+    +- Developer / Strict Mode
+    +- Dynamic Context</pre>
+  <p data-i18n="iso_p"></p>
+  <p data-i18n="iso_c"></p>
+</section>
   <section id="savings">
     <div class="wrap">
       <div class="sec-head">
@@ -522,35 +604,6 @@
     </div>
   </section>
 
-  <!-- NATIVE CLAUDE GUI (v0.4.1) -->
-  <section id="nativegui" class="sec">
-  <h2 data-i18n="ng_h">Native Claude GUI (v0.4.1)</h2>
-  <p data-i18n="ng_p"></p>
-  <ul>
-    <li data-i18n="ng_1"></li>
-    <li data-i18n="ng_2"></li>
-    <li data-i18n="ng_3"></li>
-    <li data-i18n="ng_4"></li>
-    <li data-i18n="ng_5"></li>
-  </ul>
-  <p class="muted" data-i18n="ng_m"></p>
-  <p class="mono" style="font-size:11px;color:var(--ink-faint);margin-top:12px" data-i18n="ng_disc"></p>
-</section>
-  <!-- HONESTY -->
-  <section id="dynamic" class="sec">
-  <h2 data-i18n="dyn_h">Dynamic Context (v0.4.0)</h2>
-  <p data-i18n="dyn_p"></p>
-  <p class="muted" data-i18n="dyn_m"></p>
-  <h3 data-i18n="dyn_dh">Developer Mode</h3>
-  <ul>
-    <li data-i18n="dyn_d1"></li>
-    <li data-i18n="dyn_d2"></li>
-    <li data-i18n="dyn_d3"></li>
-    <li data-i18n="dyn_d4"></li>
-    <li data-i18n="dyn_d5"></li>
-    <li data-i18n="dyn_d6"></li>
-  </ul>
-</section>
 <section id="honest">
     <div class="wrap">
       <div class="sec-head">
@@ -581,6 +634,20 @@
   </section>
 
   <!-- GET STARTED -->
+  <!-- KNOWN LIMITATIONS -->
+  <section id="limits" class="sec">
+  <h2 data-i18n="lim_h">Known limitations</h2>
+  <ul>
+    <li data-i18n="lim_1"></li>
+    <li data-i18n="lim_2"></li>
+    <li data-i18n="lim_3"></li>
+    <li data-i18n="lim_4"></li>
+    <li data-i18n="lim_5"></li>
+    <li data-i18n="lim_6"></li>
+    <li data-i18n="lim_7"></li>
+    <li data-i18n="lim_8"></li>
+  </ul>
+</section>
   <section id="start">
     <div class="wrap">
       <div class="sec-head">
@@ -635,14 +702,50 @@
      (Sent to Claude / Prepare locally / Runtime only / Keep local). */
   var I18N = {
     en: {
+      nav_gui:"Native GUI",
+      hero_vsix:"Install for VS Code",
+      hero_rel:"View v0.4.1 Release →",
+      dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
+      dyn_pass:"Small outputs, and Reads that compression could break, may pass through unchanged. Yuhi does not compress everything Claude Code sends.",
+      dyn_exh:"Measured examples (real Claude Code GUI)",
+      dyn_ex1:"Developer Mode run — 37 tool results observed, 1 eligible block compressed, 52.7% estimated dynamic tool-output reduction, 121/121 tests passed, one file changed.",
+      dyn_ex2:"Retrieval run — 84 tool results observed, 3 eligible blocks compressed, 85.9% estimated dynamic tool-output reduction, 1 bounded retrieval that returned the correct record.",
+      dyn_note:"Dynamic reduction is the estimated reduction in delivered tool-result blocks that the Gateway transformed. It is not a reduction in session-wide provider input tokens, billing, or wall-clock time. Results vary by task, model, Claude Code behaviour, caching and retrieval configuration.",
+      md_h:"Delivery Modes",
+      md_dh:"Developer Mode — default",
+      md_d1:"Claude Code may use project configuration, including .env files.",
+      md_d2:"Raw values required for delivery may exist inside Yuhi's private object store.",
+      md_d3:"Raw secret values are excluded from Yuhi public logs, statistics, UI, diagnostics and exported evidence.",
+      md_sh:"Strict Mode",
+      md_s1:"Detected secrets and supported identifiers are masked before delivery.",
+      md_s2:"Coverage depends on file format and content. This does not guarantee removal of every secret or identifier.",
+      rt_h:"Bounded Retrieval",
+      rt_p:"Ranges omitted by compression stay in the private store. When Claude Code decides it needs one, it can fetch only what an authorized locator permits.",
+      rt_1:"bounded range",
+      rt_2:"locator authorization",
+      rt_3:"exact-output safety rescan",
+      rt_4:"evidence recording",
+      rt_off:"Retrieval is disabled by default: registering the retrieval tools carries a fixed token overhead and can add turns and cost on tasks that never need it.",
+      iso_h:"Isolated Runtime",
+      iso_p:"Yuhi does not modify your normal VS Code profile. It uses a dedicated user-data-dir and extensions-dir, so the Claude Code gateway settings stay confined to the isolated environment.",
+      iso_c:"When the window closes, Yuhi cleans up the gateway, MCP registration, session lock and the settings it manages.",
+      lim_h:"Known limitations",
+      lim_1:"Native Claude GUI has been validated on macOS. Linux and Windows paths are implemented and tested, but have not completed a real Claude GUI run.",
+      lim_2:"Remote SSH, WSL, Dev Containers and Codespaces currently fail closed for Native GUI Mode.",
+      lim_3:"First-time sign-in inside a fresh isolated profile has not yet been validated.",
+      lim_4:"Strict Mode coverage depends on file format and content; contextless numeric identifiers in plain text may remain.",
+      lim_5:"Developer Mode may retain raw values in the private object store when required for delivery.",
+      lim_6:"Dynamic reduction is not the same as total provider-token or cost reduction.",
+      lim_7:"Absolute token counts currently use a fallback heuristic and can be well off on dense data such as JSON.",
+      lim_8:"Large single-line files and repeated Read behaviour may reduce or reverse session-level savings.",
       ng_h:"Native Claude GUI (v0.4.1)", ng_p:"Use Yuhi Dynamic Context directly from the official Claude Code VS Code interface. One command opens the official Anthropic extension in an isolated window whose Claude process runs through the Yuhi gateway.", ng_1:"Isolated from your normal VS Code environment — its own user data and extensions directory.", ng_2:"Developer Mode and Strict Mode, the same policy the CLI uses.", ng_3:"Dynamic tool-output compression, with everything withheld still retrievable.", ng_4:"Retrieval of only the omitted parts, off by default and available when you turn it on.", ng_5:"Closing the window ends the session and stops its gateway.", ng_m:"Yuhi does not read, copy, or store your Claude credentials. Existing Claude Code authentication is supported; first-time sign-in inside an isolated Yuhi environment has not yet been validated.", ng_disc:"macOS verified. Linux and Windows are implemented but not yet verified on a real GUI; remote environments (SSH, WSL, Dev Containers, Codespaces) are unsupported — use Dynamic Terminal Mode there. The isolated window runs with workspace trust disabled, because VS Code Restricted Mode would otherwise disable both Claude and Yuhi inside it.",
       _title:"Yuhi — Don't send everything to Claude",
       _desc:"Yuhi prepares documents and code locally before they reach AI — sending only the context that matters, reducing input tokens, and keeping sensitive information under your control. Local-first, Apache-2.0.",
       nav_install:"Install", nav_docs:"Documentation", nav_roadmap:"Roadmap",
       ey_tel:"no telemetry", ey_off:"works offline",
-      hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
-      hero_sub:"Yuhi prepares your workspace before AI agents start working — it understands your project locally, builds the right context, and helps Claude Code work more effectively.", vsc_ey:"In your editor", vsc_h2:"Prepare and launch — inside VS Code.", vsc_sub:"Run Yuhi from the extension, review the prepared context, then start Claude Code.", vsc_cap:"The extension is Available — Beta on the VS Code Marketplace.",
-      hero_tag:"Prepare your workspace. Let AI agents work better.",
+      hero_h1:"Use the official Claude Code GUI<br>through Yuhi Dynamic Context.",
+      hero_sub:"Yuhi dynamically optimizes the context used by Claude Code. It compresses eligible tool outputs, retrieves omitted regions only when needed, and runs in an isolated VS Code environment.", vsc_ey:"In your editor", vsc_h2:"Prepare and launch — inside VS Code.", vsc_sub:"Run Yuhi from the extension, review the prepared context, then start Claude Code.", vsc_cap:"The extension is Available — Beta on the VS Code Marketplace.",
+      hero_tag:"Dynamic Context for the official Claude Code VS Code experience.",
       hero_start:"Get started", hero_github:"View on GitHub →", copy:"copy",
       dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code runs through a local Yuhi gateway. Each new tool result is stored privately, scanned, compressed and re-scanned before it reaches the provider — and everything withheld stays retrievable.", dyn_m:"Measured on a real edit-and-verify loop (Claude Code, haiku, n=3, provider-reported): correct patches 3/3, input-side tokens −22%, provider cost −13%, delivered tool output −70%. Results vary by task, model, cache behaviour, and retrieval configuration.", dyn_dh:"Developer Mode", dyn_d1:"Claude Code may use project configuration, including .env.", dyn_d2:"Raw secret values are excluded from Yuhi logs, evidence, statistics, and UI.", dyn_d3:"Private keys, certificates, recovery keys and seed phrases are masked in every mode.", dyn_d4:"Direct re-exposure is detected and audited where possible.", dyn_d5:"Egress detection is a tripwire, not a complete prevention control.", dyn_d6:"Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is not a guarantee that every secret or identifier is removed.",
       flow_n1k:"Your repository", flow_n1v:"files, secrets, data", flow_midv:"prepared locally", flow_n3k:"Your agent", flow_n3v:"a clean context",
@@ -695,15 +798,51 @@
       avail:"Available now — Beta", foot_neutral:"vendor-neutral", foot_demo:"Demo", foot_routes:"Routes", foot_start:"Get started"
     },
     ja: {
+      nav_gui:"Native GUI",
+      hero_vsix:"VS Code にインストール",
+      hero_rel:"v0.4.1 リリースを見る →",
+      dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
+      dyn_pass:"圧縮対象外の小さな出力や、圧縮するとタスクを壊す可能性のあるReadは、そのまま通過する場合があります。すべてを圧縮するわけではありません。",
+      dyn_exh:"実Claude Code GUIでの測定例",
+      dyn_ex1:"Developer Mode run — tool result 37件を観測、適格ブロック1件を圧縮、推定 dynamic tool-output 削減 52.7%、テスト 121/121 合格、変更ファイル1件。",
+      dyn_ex2:"Retrieval run — tool result 84件を観測、適格ブロック3件を圧縮、推定 dynamic tool-output 削減 85.9%、bounded retrieval 1件で正しい対象レコードを取得。",
+      dyn_note:"Dynamic reduction は、Gatewayが変換した tool-result block の推定配信量に対する削減率です。セッション全体の provider input token、請求額、処理時間の削減率ではありません。結果はタスク・モデル・Claude Codeの挙動・キャッシュ・Retrieval設定によって変わります。",
+      md_h:"Delivery Modes",
+      md_dh:"Developer Mode — 既定",
+      md_d1:"Claude Codeは、必要に応じて .env などのプロジェクト設定を利用できます。",
+      md_d2:"配信に必要な原値は、Yuhiのprivate object storeに保持される場合があります。",
+      md_d3:"生のsecret値は、Yuhiの公開ログ・統計・UI・診断・エクスポート可能なEvidenceには出力しません。",
+      md_sh:"Strict Mode",
+      md_s1:"検出されたsecretと対応済みidentifierを、Claude Codeへの配信前にマスクします。",
+      md_s2:"検出範囲はファイル形式と内容に依存します。すべてのsecretや識別子の除去を保証するものではありません。",
+      rt_h:"必要な部分だけ、後から取得",
+      rt_p:"圧縮で省略された範囲はprivate storeに保持されます。Claude Codeが必要と判断した場合、許可されたlocatorの範囲内だけを取得できます。",
+      rt_1:"bounded range",
+      rt_2:"locator authorization",
+      rt_3:"exact-output safety rescan",
+      rt_4:"evidence recording",
+      rt_off:"既定はRetrieval disabledです。Retrieval toolsの登録には固定のtoken overheadがあり、不要なタスクではturnやcostを増やす場合があります。",
+      iso_h:"隔離ランタイム",
+      iso_p:"Yuhiは通常のVS Codeプロファイルを変更しません。専用のuser-data-dirとextensions-dirを使い、Claude CodeのGateway設定を隔離環境へ限定します。",
+      iso_c:"Window終了時には、Gateway、MCP登録、session lock、Yuhi管理の設定をクリーンアップします。",
+      lim_h:"既知の制約",
+      lim_1:"Native Claude GUI は macOS で検証済みです。Linux・Windows の経路は実装・テスト済みですが、実 Claude GUI での通し確認は完了していません。",
+      lim_2:"Remote SSH・WSL・Dev Containers・Codespaces では、Native GUI Mode は現在 fail closed です。",
+      lim_3:"新規の隔離プロファイル内での初回サインインは未検証です。",
+      lim_4:"Strict Mode の検出範囲はファイル形式と内容に依存します。プレーンテキスト中の文脈のない数値識別子は残る場合があります。",
+      lim_5:"Developer Mode では、配信に必要な場合に原値が private object store に保持されることがあります。",
+      lim_6:"Dynamic reduction は、provider token 全体やコストの削減率と同じものではありません。",
+      lim_7:"絶対token数は現在フォールバックのヒューリスティックを使っており、JSONなど密なデータでは大きくずれる場合があります。",
+      lim_8:"巨大な単一行ファイルや Read の繰り返しにより、セッション単位の節約が減る、あるいは逆転する場合があります。",
       ng_h:"ネイティブ Claude GUI (v0.4.1)", ng_p:"公式 Claude Code の GUI を、そのまま Yuhi Dynamic Context 経由で使えます。コマンド1つで、公式 Anthropic 拡張が隔離ウィンドウで開き、その Claude プロセスが Yuhi ゲートウェイを通ります。", ng_1:"通常の VS Code 環境とは分離 — 専用の user-data と extensions ディレクトリで動きます。", ng_2:"Developer Mode と Strict Mode。CLI と同じポリシーです。", ng_3:"tool output を動的に圧縮し、省略した部分は取得可能なまま残ります。", ng_4:"必要な部分だけの retrieval。既定はオフで、必要なときに有効化できます。", ng_5:"ウィンドウを閉じるとセッションが終了し、ゲートウェイも停止します。", ng_m:"Yuhi はあなたの Claude 認証情報を読み取り・複製・保存しません。既存の Claude Code 認証は利用できます。隔離環境内での初回サインインは未検証です。", ng_disc:"macOS で実機確認済み。Linux・Windows は実装済みですが実 GUI 未検証、リモート環境（SSH・WSL・Dev Container・Codespaces）は非対応です — そこでは Dynamic Terminal Mode をお使いください。隔離ウィンドウは workspace trust を無効化して起動します。VS Code の Restricted Mode では Claude と Yuhi の双方が無効化されてしまうためです。",
       dyn_h:"動的コンテキスト (v0.4.0)", dyn_p:"Claude Code をローカル Yuhi ゲートウェイ経由で実行します。新しい tool result は毎回、非公開に保存 → スキャン → 圧縮 → 再スキャンを経てからプロバイダへ送られ、省略した部分は取得可能なまま残ります。", dyn_m:"実測（実 Claude Code・haiku・n=3・プロバイダ報告値）: パッチ正答 3/3、入力側トークン −22%、プロバイダ実費 −13%、配信 tool output −70%。結果はタスク・モデル・キャッシュ挙動・retrieval 設定により変わります。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code は .env を含むプロジェクト設定を利用できます。", dyn_d2:"生のシークレット値は Yuhi のログ・evidence・統計・UI には書かれません。", dyn_d3:"秘密鍵・証明書・リカバリキー・シードフレーズはどのモードでもマスクされます。", dyn_d4:"直接的な再露出は可能な範囲で検知・監査します。", dyn_d5:"Egress 検知はトリップワイヤであり、完全な防止機構ではありません。", dyn_d6:"Strict Mode は、検出されたシークレットとサポート対象の識別子を配信前にマスクします。検出範囲はファイル形式と内容に依存します。 すべてのシークレット・識別子が除去される保証ではありません。",
       _title:"Yuhi — Claudeに、全部を渡さない。",
       _desc:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。",
       nav_install:"インストール", nav_docs:"ドキュメント", nav_roadmap:"ロードマップ",
       ey_tel:"テレメトリなし", ey_off:"オフライン動作",
-      hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
-      hero_sub:"Yuhi は、AI Agent が仕事を始める前に、プロジェクトをローカルで理解し、必要な Context を準備します。より少ない探索で、Claude Code をより賢く、より快適に。", vsc_ey:"エディタの中で", vsc_h2:"準備して起動 — VS Code の中で。", vsc_sub:"拡張から Yuhi を実行し、準備された文脈を確認して、Claude Code を開始。", vsc_cap:"拡張は VS Code Marketplace で Available — Beta。",
-      hero_tag:"Prepare your workspace. Let AI agents work better.",
+      hero_h1:"公式Claude CodeのGUIを、<br>そのままYuhi Dynamic Context経由で。",
+      hero_sub:"Yuhiは、Claude Codeが使うコンテキストをセッション中に動的に最適化します。大きなツール出力を圧縮し、必要な部分だけを取得し、通常のVS Code環境とは分離して実行します。", vsc_ey:"エディタの中で", vsc_h2:"準備して起動 — VS Code の中で。", vsc_sub:"拡張から Yuhi を実行し、準備された文脈を確認して、Claude Code を開始。", vsc_cap:"拡張は VS Code Marketplace で Available — Beta。",
+      hero_tag:"公式Claude Codeを、Yuhi Dynamic Context経由で。",
       hero_start:"使ってみる", hero_github:"GitHubを見る →", copy:"コピー",
       flow_n1k:"あなたのリポジトリ", flow_n1v:"ファイル・秘密情報・データ", flow_midv:"ローカルで準備", flow_n3k:"あなたのエージェント", flow_n3v:"整えられた文脈",
       demo_ey:"30秒デモ",
@@ -755,14 +894,51 @@
       avail:"提供中 — Beta", foot_neutral:"ベンダー非依存", foot_demo:"デモ", foot_routes:"経路", foot_start:"使ってみる"
     },
     "zh-cn": {
+      dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code 通过本地 Yuhi 网关运行。每个新的 tool result 都会先被私密保存、扫描、压缩并再次扫描，然后才到达提供方；被省略的内容仍可检索。", dyn_m:"在真实的编辑-验证循环中测得（Claude Code、haiku、n=3、提供方报告值）：补丁正确 3/3，输入侧 token −22%，提供方费用 −13%，投递的 tool output −70%。结果随任务、模型、缓存行为与 retrieval 配置而变化。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code 可以使用包含 .env 在内的项目配置。", dyn_d2:"原始 secret 值不会写入 Yuhi 的日志、evidence、统计与 UI。", dyn_d3:"私钥、证书、恢复密钥与助记词在所有模式下都会被屏蔽。", dyn_d4:"可检测范围内的直接再暴露会被检测并审计。", dyn_d5:"Egress 检测是一道警戒线，而非完整的阻止机制。", dyn_d6:"Strict Mode 在投递前屏蔽已检出的 secret 与受支持的标识符。覆盖范围取决于文件格式与内容，并不保证移除全部 secret 或标识符。",
+      nav_gui:"Native GUI",
+      hero_vsix:"安装到 VS Code",
+      hero_rel:"查看 v0.4.1 发布 →",
+      dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
+      dyn_pass:"较小的输出，以及压缩后可能破坏任务的 Read，可能会原样通过。Yuhi 并不会压缩 Claude Code 发送的所有内容。",
+      dyn_exh:"真实 Claude Code GUI 的测量示例",
+      dyn_ex1:"Developer Mode — 观测到 37 个 tool result，压缩 1 个符合条件的块，估计 dynamic tool-output 降低 52.7%，测试 121/121 通过，仅改动 1 个文件。",
+      dyn_ex2:"Retrieval — 观测到 84 个 tool result，压缩 3 个符合条件的块，估计 dynamic tool-output 降低 85.9%，1 次 bounded retrieval 取回了正确的记录。",
+      dyn_note:"Dynamic reduction 指网关所转换的 tool-result block 的估计投递量降幅，并不等于整个会话的 provider input token、账单或耗时的降幅。结果随任务、模型、Claude Code 行为、缓存与 retrieval 配置而变化。",
+      md_h:"Delivery Modes",
+      md_dh:"Developer Mode — 默认",
+      md_d1:"Claude Code 可以使用包含 .env 在内的项目配置。",
+      md_d2:"投递所需的原始值可能保存在 Yuhi 的 private object store 中。",
+      md_d3:"原始 secret 值不会出现在 Yuhi 的公开日志、统计、UI、诊断与可导出的 Evidence 中。",
+      md_sh:"Strict Mode",
+      md_s1:"在投递给 Claude Code 之前，屏蔽已检出的 secret 与受支持的标识符。",
+      md_s2:"覆盖范围取决于文件格式与内容，并不保证移除全部 secret 或标识符。",
+      rt_h:"仅在需要时检索被省略的部分",
+      rt_p:"被压缩省略的范围保留在 private store 中。当 Claude Code 判断需要时，只能取回授权 locator 允许的范围。",
+      rt_1:"bounded range",
+      rt_2:"locator authorization",
+      rt_3:"exact-output safety rescan",
+      rt_4:"evidence recording",
+      rt_off:"默认关闭 Retrieval：注册 retrieval 工具会带来固定的 token 开销，在并不需要的任务上可能增加轮次与成本。",
+      iso_h:"隔离运行时",
+      iso_p:"Yuhi 不会修改你的常规 VS Code 配置。它使用专用的 user-data-dir 与 extensions-dir，把 Claude Code 的网关设置限制在隔离环境内。",
+      iso_c:"窗口关闭时，Yuhi 会清理网关、MCP 注册、session lock 以及由它管理的设置。",
+      lim_h:"已知限制",
+      lim_1:"Native Claude GUI 已在 macOS 验证。Linux 与 Windows 路径已实现并测试，但尚未完成真实 Claude GUI 的完整运行。",
+      lim_2:"Remote SSH、WSL、Dev Containers 与 Codespaces 目前对 Native GUI Mode 均 fail closed。",
+      lim_3:"在全新隔离配置中的首次登录尚未验证。",
+      lim_4:"Strict Mode 的覆盖取决于文件格式与内容；纯文本中缺少上下文的数字标识符可能保留。",
+      lim_5:"Developer Mode 在投递需要时，可能在 private object store 中保留原始值。",
+      lim_6:"Dynamic reduction 不等于 provider token 总量或成本的降幅。",
+      lim_7:"绝对 token 数目前使用回退启发式，在 JSON 等密集数据上可能偏差较大。",
+      lim_8:"超大单行文件与反复 Read 可能削弱甚至逆转会话级别的节省。",
       ng_h:"原生 Claude GUI (v0.4.1)", ng_p:"直接在官方 Claude Code 的 VS Code 界面中使用 Yuhi Dynamic Context。一条命令即可在隔离窗口中打开官方 Anthropic 扩展，其 Claude 进程通过 Yuhi 网关运行。", ng_1:"与你的常规 VS Code 环境隔离 — 使用独立的 user-data 与 extensions 目录。", ng_2:"Developer Mode 与 Strict Mode，与 CLI 使用同一套策略。", ng_3:"动态压缩 tool output，被省略的内容仍可检索。", ng_4:"仅检索被省略的部分；默认关闭，可按需开启。", ng_5:"关闭窗口即结束会话并停止其网关。", ng_m:"Yuhi 不会读取、复制或存储你的 Claude 凭据。支持已有的 Claude Code 认证；在隔离环境中首次登录尚未验证。", ng_disc:"已在 macOS 实机验证。Linux 与 Windows 已实现但尚未在真实 GUI 上验证；远程环境（SSH、WSL、Dev Containers、Codespaces）不受支持 — 请在这些环境中使用 Dynamic Terminal Mode。隔离窗口以停用 workspace trust 的方式启动，否则 VS Code 的受限模式会同时停用 Claude 与 Yuhi。",
       _title:"Yuhi — 不要把所有内容都交给 Claude。",
       _desc:"Yuhi 会在本地整理文档和代码，只把真正需要的上下文发送给 AI，同时减少敏感信息暴露和输入 Token 消耗。本地优先，Apache-2.0。",
       nav_install:"安装", nav_docs:"文档", nav_roadmap:"路线图",
       ey_tel:"无遥测", ey_off:"离线可用",
-      hero_h1:'Claude Code with <span class="swap">Yuhi</span>',
-      hero_sub:"Yuhi 在 AI Agent 开始工作前，先在本地理解你的项目并准备好所需的上下文，帮助 Claude Code 更高效地工作。", vsc_ey:"在你的编辑器中", vsc_h2:"在 VS Code 中准备并启动。", vsc_sub:"在扩展中运行 Yuhi，检查准备好的上下文，然后启动 Claude Code。", vsc_cap:"扩展已在 VS Code Marketplace 上线（Available — Beta）。",
-      hero_tag:"Prepare your workspace. Let AI agents work better.",
+      hero_h1:"在官方 Claude Code GUI 中，<br>直接使用 Yuhi Dynamic Context。",
+      hero_sub:"Yuhi 在会话过程中动态优化 Claude Code 使用的上下文：压缩符合条件的工具输出，仅在需要时检索被省略的部分，并在隔离的 VS Code 环境中运行。", vsc_ey:"在你的编辑器中", vsc_h2:"在 VS Code 中准备并启动。", vsc_sub:"在扩展中运行 Yuhi，检查准备好的上下文，然后启动 Claude Code。", vsc_cap:"扩展已在 VS Code Marketplace 上线（Available — Beta）。",
+      hero_tag:"为官方 Claude Code VS Code 体验提供 Dynamic Context。",
       hero_start:"开始使用", hero_github:"在 GitHub 查看 →", copy:"复制",
       flow_n1k:"你的仓库", flow_n1v:"文件、密钥、数据", flow_midv:"本地整理", flow_n3k:"你的 AI 代理", flow_n3v:"干净的上下文",
       demo_ey:"30 秒演示",

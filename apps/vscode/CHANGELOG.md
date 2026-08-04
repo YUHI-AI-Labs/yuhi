@@ -5,6 +5,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.4.1] — 2026-08-04
+
+### Added
+
+- **Native Claude GUI Mode.** `Yuhi: Open Claude Code Dynamic Workspace` launches the official
+  Anthropic Claude Code extension in an isolated VS Code environment whose `claude` process runs
+  through the Yuhi Dynamic Gateway.
+- Session commands: `Yuhi: Show / Focus / Stop / Recover Native Dynamic Sessions` and
+  `Yuhi: Show Native Dynamic Diagnostics`.
+- A broker process that owns each session, so a window reload or close never strands a gateway,
+  and stale sessions can be recovered.
+
+### Notes
+
+- Your normal VS Code profile and windows are unaffected: isolation is a private
+  `--user-data-dir` and `--extensions-dir`.
+- Yuhi does not read, copy, or store Claude credentials. Existing Claude Code authentication is
+  supported; first-time sign-in inside an isolated Yuhi environment has not yet been validated.
+- Developer Mode remains the default and deliberately delivers project configuration; raw secret
+  values are excluded from Yuhi's public logs, statistics, UI, diagnostics and exported evidence.
+- Strict Mode masks detected secrets and supported identifiers before delivery. Coverage depends
+  on file format and content; it is not a guarantee that every secret or identifier is removed.
+- Retrieval stays disabled by default.
+- The isolated window runs with workspace trust disabled, because VS Code's Restricted Mode would
+  otherwise disable both Claude and Yuhi inside it.
+- macOS is verified. Linux and Windows are implemented but not verified on a real GUI; remote
+  environments are unsupported and say so.
+- Dynamic reduction is the estimated reduction in delivered tool-result blocks, not a reduction
+  in provider tokens, billing or wall-clock time. Absolute token figures use a fallback heuristic.
+
 ## [0.3.7]
 
 - Removes identifiers taken from a real export that had been used as illustrative

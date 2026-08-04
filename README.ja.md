@@ -44,6 +44,31 @@ Ready for Claude Code.
 > エージェントからアクセス可能になるか、という指標であり、モデルのトークン使用量やコストを
 > 測定したものでは **ありません**。元のファイルは一切変更されません。
 
+## ネイティブ Claude GUI (v0.4.1)
+
+**公式Claude CodeのGUIを、そのままYuhi Dynamic Context経由で。**
+
+**Yuhi: Open Claude Code Dynamic Workspace** で、Anthropic公式のClaude Code拡張が隔離された
+VS Code環境で起動し、そのセッションが Yuhi Dynamic Context を通ります。Yuhiは独自のチャットUIを
+作りません。
+
+- 通常のVS Code環境とは分離（専用の `user-data-dir` と `extensions-dir`）
+- 通常プロファイルへの影響なし
+- Developer Mode / Strict Mode、CLIと同じポリシー
+- 大きなツール出力を動的に圧縮し、省略部分は後から取得可能
+- Window終了時に Gateway・MCP・session lock・Yuhi管理設定を自動クリーンアップ
+
+**Yuhiはあなたの Claude 認証情報を読み取り・複製・保存しません。** 既存の Claude Code 認証は
+利用できますが、**隔離環境内での初回サインインは未検証**です。
+
+**既知の制約**: macOS で検証済み。Linux・Windows は実装・テスト済みですが実 GUI 未検証。
+Remote SSH・WSL・Dev Containers・Codespaces は fail closed。Strict Mode の検出範囲はファイル形式と
+内容に依存します。Dynamic reduction は provider token 全体やコストの削減率とは異なります。
+絶対token数はフォールバックのヒューリスティックを使用しています。
+
+詳細: [docs/design/V0_4_1_NATIVE_GUI.md](docs/design/V0_4_1_NATIVE_GUI.md) ·
+[docs/V0_4_1_RELEASE_SCOPE.md](docs/V0_4_1_RELEASE_SCOPE.md)
+
 ## リポジトリのうち、AI が本当に必要とする分はどれだけか
 
 コーディングエージェントは作業ツリーの中で起動し、そこにあるものすべてを読み取れます
