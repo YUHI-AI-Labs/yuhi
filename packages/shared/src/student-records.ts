@@ -1,6 +1,10 @@
 export type StudentRecordSensitivity = "none" | "confidential" | "restricted";
 export type DirectIdentifierType =
   | "name"
+  /** Phonetic reading of a personal name (フリガナ / カナ氏名). Personal data in its
+   *  own right, and kept a SEPARATE type so a table carrying both 氏名 and フリガナ
+   *  still resolves to one entity instead of falling back to column-scoped tokens. */
+  | "name-reading"
   | "student-id"
   | "student-card"
   | "employee-id"
@@ -33,6 +37,13 @@ function directIdentifierType(value: string): DirectIdentifierType | undefined {
   const header = normalizedHeader(value);
   const groups: [DirectIdentifierType, string[]][] = [
     ["name", ["fullname", "studentname", "name", "フルネーム", "氏名", "学生氏名", "名前"]],
+    // A name READING is personal data: it identifies the person as directly as the
+    // name does. Leaving it in place also blocks the whole file's transform, because
+    // a surviving 氏名 value in this column fails the post-transform safety check.
+    ["name-reading", [
+      "フリガナ", "ふりがな", "カナ", "カナ氏名", "氏名カナ", "フリガナ氏名",
+      "セイメイカナ", "namekana", "kana", "furigana", "phonetic",
+    ]],
     ["student-card", ["studentcardnumber", "学生証番号"]],
     ["student-id", ["studentid", "studentnumber", "学籍番号", "idナンバ"]],
     ["employee-id", ["employeeid", "employeenumber", "社員番号", "従業員番号"]],
@@ -58,6 +69,7 @@ function directIdentifierType(value: string): DirectIdentifierType | undefined {
   // 受診者番号, 整理番号, 連絡先メール. Match by the trailing morpheme so any
   // X氏名 / X番号 / Xメール is recognized without enumerating every prefix.
   const morphemes: [DirectIdentifierType, string[]][] = [
+    ["name-reading", ["フリガナ", "ふりがな", "氏名カナ", "カナ"]],
     ["name", ["氏名", "名前", "フルネーム", "なまえ"]],
     ["email", ["メールアドレス", "メール"]],
     ["phone", ["電話番号", "電話", "tel"]],
@@ -275,7 +287,7 @@ export function classifyStudentRecordTable(rows: readonly (readonly string[])[])
   // person — pivot count columns ("個数 / フルネーム") land here. Pseudonymizing
   // them buys no privacy and destroys the distribution the table exists to show.
   for (let position = indexes.length - 1; position >= 0; position -= 1) {
-    if (types[position] !== "name") continue;
+    if (types[position] !== "name" && types[position] !== "name-reading") continue;
     const values = sampled.map((row) => (row[indexes[position]!] ?? "").trim()).filter(Boolean);
     if (values.length === 0) continue;
     const numeric = values.filter((value) => /^-?\d+(?:\.\d+)?$/.test(value)).length;
@@ -564,6 +576,7 @@ function identifierKey(type: DirectIdentifierType, value: string): string {
 
 const COLUMN_TOKEN_PREFIX: Record<DirectIdentifierType, string> = {
   name: "PERSON",
+  "name-reading": "READING",
   "student-id": "SID",
   "student-card": "CARD",
   "employee-id": "EID",
@@ -610,6 +623,7 @@ function aliasFor(
   const number = String(entity).padStart(3, "0");
   switch (type) {
     case "name": return `${role === "student" ? "Student" : role === "employee" ? "Employee" : "Person"} ${number}`;
+    case "name-reading": return `Reading ${number}`;
     case "student-id": return `SID-${number}`;
     case "student-card": return `CARD-${number}`;
     case "employee-id": return `EID-${number}`;
@@ -744,6 +758,7 @@ export function pseudonymizeStudentRecords(
     "account-id": 6,
     phone: 7,
     name: 99,
+    "name-reading": 99,
     address: 99,
   };
   for (const row of table.rows.slice(bodyStart)) {
@@ -760,7 +775,10 @@ export function pseudonymizeStudentRecords(
     if (identifiers.length === 0) continue;
     const strong = identifiers
       .filter((item) =>
-        item.type !== "name" && item.type !== "address" && !columnScoped.has(item.type))
+        item.type !== "name" &&
+        item.type !== "name-reading" &&
+        item.type !== "address" &&
+        !columnScoped.has(item.type))
       .sort((a, b) => priority[a.type] - priority[b.type]);
     const linked = strong
       .map((item) => context.identifierToEntity.get(identifierKey(item.type, item.value)))

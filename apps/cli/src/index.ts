@@ -684,11 +684,18 @@ async function main(): Promise<void> {
         else if (result.status === "Success") {
           // Blue "Yuhi Mode" banner mirroring the VS Code accent; file-level
           // exclusions never downgrade a launchable workspace.
-          const excluded = result.filesKeptLocal + result.unsupportedOrUnverifiedFiles;
-          const detail =
-            excluded > 0
-              ? `${result.filesIncluded} files available · ${excluded} excluded by recommendation`
-              : `${result.filesIncluded} files available`;
+          // #12: "excluded by recommendation" may ONLY count files actually withheld
+          // from the agent-visible tree. It used to add
+          // `unsupportedOrUnverifiedFiles`, which are DELIVERED (often as raw
+          // originals) — so the banner claimed a file had been withheld for the
+          // user's protection at the moment the sensitive one was shipped whole.
+          const excluded =
+            result.deliveryIntegrity?.excludedByRecommendation ?? result.filesKeptLocal;
+          const warned = result.deliveryIntegrity?.deliveredWithWarning ?? 0;
+          const parts = [`${result.filesIncluded} files available`];
+          if (excluded > 0) parts.push(`${excluded} excluded by recommendation`);
+          if (warned > 0) parts.push(`${warned} delivered with a warning`);
+          const detail = parts.join(" · ");
           console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
           console.log(formatCliPrepareResult(result));
           // v0.3.3: when compression ran, follow the summary with the compression block.

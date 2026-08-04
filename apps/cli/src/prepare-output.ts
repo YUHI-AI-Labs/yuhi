@@ -1,6 +1,8 @@
 import {
   buildSafePreparedRunSummary,
+  deliveryIntegrityWarnings,
   formatPreparationReport,
+  postTransformScanLabel,
   type SafePreparedRunSummary,
 } from "@yuhi/core";
 
@@ -118,8 +120,18 @@ export function formatCliPrepareResult(result: CliPrepareResult): string {
     `Entities pseudonymized: ${result.entitiesPseudonymized}`,
     `Identifier columns transformed: ${result.identifierColumnsTransformed}`,
     `Analytical columns preserved: ${result.analyticalColumnsPreserved}`,
-    `Post-transformation scan: ${result.postTransformScanPassed ? "Passed" : "Not applicable"}`,
-    "Raw fallback used: No",
+    // #12: read the delivery facts; never hardcode and never re-derive them. A FAILED
+    // privacy scan must not render as "Not applicable", and a raw fallback that
+    // actually happened must not render as "No".
+    `Post-transformation scan: ${
+      result.deliveryIntegrity
+        ? postTransformScanLabel(result.deliveryIntegrity)
+        : result.postTransformScanPassed
+          ? "Passed"
+          : "Not run — nothing required transformation"
+    }`,
+    `Raw fallback used: ${result.rawFallbackUsed ? "Yes" : "No"}`,
+    ...(result.deliveryIntegrity ? deliveryIntegrityWarnings(result.deliveryIntegrity) : []),
     `Launch allowed: ${result.launchAllowed ? "Yes" : "No"}`,
     `Original source modified: ${result.originalSourceFilesModified === 0 ? "No" : "Yes"}`,
     `Yuhi local processing requests: ${result.localModelRequests}`,

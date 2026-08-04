@@ -38,6 +38,10 @@ import {
 } from "@yuhi/shared";
 import { isArchivePath, zipEncryptionFromHeader } from "@yuhi/shared";
 import { computeContextId, type ContextIdSourceFile } from "./context-id.js";
+import {
+  buildDeliveryIntegritySummary,
+  type DeliveryIntegritySummary,
+} from "./delivery-integrity.js";
 import { runDetectors, redactText } from "@yuhi/scanner";
 import type { YuhiConfig } from "@yuhi/config";
 import { computePlan } from "./plan.js";
@@ -366,6 +370,19 @@ export interface PreparedFileEntry {
    * must never be reported as de-identified/verified. `undefined` = not applicable.
    */
   finalRescanVerified?: boolean;
+  /**
+   * TRUE when the UNTRANSFORMED original was delivered because a safe transformation
+   * could not be produced or verified. This is the fact behind "Raw fallback used";
+   * it must never be hardcoded or re-derived by a render layer.
+   */
+  rawFallback?: boolean;
+  /**
+   * Tri-state result of the post-transformation privacy scan for THIS file.
+   * `not-applicable` means the scan was never run (nothing was transformed);
+   * `failed` means residue was found. A failed scan must never be presented as
+   * "not applicable" — that reads as "this check does not apply here".
+   */
+  postTransformScan?: "passed" | "failed" | "not-applicable";
   /** Privacy-safe aggregate finding categories persisted in manifest schema v2. */
   findingCategoryCounts?: Record<string, number>;
   /** Privacy-safe aggregate finding severities persisted in manifest schema v2. */
@@ -653,7 +670,14 @@ export interface PrepareReport {
     postTransformScanPassed: boolean;
     malformedTables: number;
     unverifiedTransformations: number;
-    rawFallbackUsed: false;
+    /**
+     * TRUE when at least one untransformed original was delivered as a fallback.
+     * Was typed as the literal `false`, so no surface could ever report a raw
+     * fallback that actually happened (#12).
+     */
+    rawFallbackUsed: boolean;
+    /** Per-surface delivery facts; the single source of truth for render layers. */
+    deliveryIntegrity?: DeliveryIntegritySummary;
     launchAllowed: boolean;
     claudeCodeStarted: false;
     unsupportedOrUnverifiedFiles?: number;
@@ -2374,6 +2398,10 @@ export async function prepareWorkspace(
           entry.outcome = "included-unverified";
           entry.limitation = "transformation-unavailable";
           entry.failureCategory = firstFail.leak ? "reidentification-risk" : "structural";
+          // The TRANSFORMED output was delivered here (best effort), so this is not a
+          // raw fallback — but the scan genuinely FAILED and must say so.
+          entry.rawFallback = false;
+          entry.postTransformScan = "failed";
           entry.error = `Transformed, but verification did not fully pass (first failure: ${firstFail.stage}). Delivered best-effort with a warning.`;
           unverifiedTransformations += 1;
           unsupportedOrUnverifiedFiles += 1;
@@ -2448,24 +2476,47 @@ export async function prepareWorkspace(
         // excluded. The ONLY thing kept local is an unresolved SECRET/credential,
         // which must never leave the machine.
         if (!blockingSecret) {
-          // Include the original verbatim, clearly marked unverified with the reason
-          // and the concrete failure category (so the UI can explain WHY it wasn't
-          // transformed: structural / conflicting-identifiers / reidentification-risk).
-          await writeMirrored(outDir, relpath, content);
+          // PREFER THE PARTIALLY DE-IDENTIFIED OUTPUT over the raw original.
+          //
+          // The pipeline can block on a single residual cell — e.g. one person's
+          // 氏名 value also appearing in an unclassified フリガナ column — while the
+          // rest of the table was fully pseudonymized. Shipping `content` there
+          // delivered EVERY raw identifier in the file because of that one cell, and
+          // `CLAUDE.md` is explicit: raw unsafe content must never be included as an
+          // implicit fallback. A strictly-better artifact always wins; the raw
+          // original is used only when the pipeline produced nothing better.
+          const changedValues = prep.audits
+            .filter(
+              (audit) =>
+                audit.processorId === "pseudonymize" ||
+                audit.processorId === "pseudonymize-student-records",
+            )
+            .reduce((total, audit) => total + audit.itemsChanged, 0);
+          const partiallyDeIdentified = prep.output !== content && changedValues > 0;
+          const delivered = partiallyDeIdentified ? prep.output : content;
+          await writeMirrored(outDir, relpath, delivered);
           provenance.push({ relpath, source: relpath, action: decision.action });
-          const tok = tokenEstimate(content);
-          beforeTokens += tok.tokens;
+          const tok = tokenEstimate(delivered);
+          beforeTokens += tokenEstimate(content).tokens;
           afterTokens += tok.tokens;
           approx = approx || tok.approx;
           entry.status = "ok";
           entry.action = "allow";
           entry.transmission = "approved";
           entry.omitted = false;
-          entry.transformed = false;
+          entry.transformed = partiallyDeIdentified;
           entry.outcome = "included-unverified";
           entry.limitation = "transformation-unavailable";
           entry.failureCategory = category;
-          entry.error = failureReason;
+          // Size accounting must describe the bytes actually delivered, not a buffer
+          // that was discarded.
+          entry.afterChars = delivered.length;
+          entry.rawFallback = !partiallyDeIdentified;
+          entry.postTransformScan = partiallyDeIdentified ? "failed" : "not-applicable";
+          entry.error = partiallyDeIdentified
+            ? `${failureReason} Delivered the partially de-identified output (${changedValues} ` +
+              "value(s) replaced) instead of the raw original; NOT fully verified."
+            : failureReason;
           unsupportedOrUnverifiedFiles += 1;
         } else {
           // Unresolved credential/secret: the one case we keep local (never sent).
@@ -3003,12 +3054,17 @@ export async function prepareWorkspace(
       entry.failureCategory = "reidentification-risk";
       entry.transformed = false;
       entry.finalRescanVerified = false;
+      // Residue was FOUND. Never "not applicable".
+      entry.postTransformScan = "failed";
       entry.error =
         `Final artifact still contains ${surviving.length} source identifier value(s); ` +
         "delivered with a warning — NOT de-identified.";
       finalIdentifierLeaks += 1;
     } else {
       entry.finalRescanVerified = true;
+      // A file delivered as its raw original was never transformed, so a clean byte
+      // scan does not make it "passed" — the scan simply had nothing to verify.
+      entry.postTransformScan = entry.rawFallback === true ? "not-applicable" : "passed";
     }
     } catch {
       // The final gate must never fail the whole run: if verifying one delivered
@@ -3530,6 +3586,11 @@ export async function prepareWorkspace(
     publicSurface(JSON.stringify(yuhiModeSummary, null, 2) + "\n"),
   );
 
+  // ONE derivation of the delivery facts, shared by the manifest, the report, the
+  // CLI and the VS Code panel. No surface may recompute or hardcode these (#12).
+  const deliveryIntegrity = buildDeliveryIntegritySummary(files);
+  const rawFallbackUsed = deliveryIntegrity.rawFallbackFiles > 0;
+
   const manifest = {
     schemaVersion: manifestSchemaVersion,
     // Deterministic Context ID — the agent-independent identity of this prepared
@@ -3574,6 +3635,11 @@ export async function prepareWorkspace(
         ...(f.transformations !== undefined ? { transformations: f.transformations } : {}),
         ...(f.maskedValues !== undefined ? { maskedValues: f.maskedValues } : {}),
         ...(f.transformed !== undefined ? { transformed: f.transformed } : {}),
+        ...(f.rawFallback !== undefined ? { rawFallback: f.rawFallback } : {}),
+        ...(f.postTransformScan !== undefined ? { postTransformScan: f.postTransformScan } : {}),
+        ...(f.finalRescanVerified !== undefined
+          ? { finalRescanVerified: f.finalRescanVerified }
+          : {}),
         ...(f.availabilityStatus ? { availabilityStatus: f.availabilityStatus } : {}),
         ...(f.inspectionStatus ? { inspectionStatus: f.inspectionStatus } : {}),
         ...(f.backgroundStatus ? { backgroundStatus: f.backgroundStatus } : {}),
@@ -3641,10 +3707,14 @@ export async function prepareWorkspace(
       identifierColumnsTransformed,
       analyticalColumnsPreserved,
       postTransformScanPassed:
-        transformedSensitiveTables > 0 && malformedTables === 0 && unverifiedTransformations === 0,
+        deliveryIntegrity.postTransformScanFailed === 0 &&
+        transformedSensitiveTables > 0 &&
+        malformedTables === 0 &&
+        unverifiedTransformations === 0,
       malformedTables,
       unverifiedTransformations,
-      rawFallbackUsed: false,
+      rawFallbackUsed,
+      deliveryIntegrity,
       launchAllowed,
       claudeCodeStarted: false,
       unsupportedOrUnverifiedFiles,
@@ -3789,10 +3859,14 @@ export async function prepareWorkspace(
       identifierColumnsTransformed,
       analyticalColumnsPreserved,
       postTransformScanPassed:
-        transformedSensitiveTables > 0 && malformedTables === 0 && unverifiedTransformations === 0,
+        deliveryIntegrity.postTransformScanFailed === 0 &&
+        transformedSensitiveTables > 0 &&
+        malformedTables === 0 &&
+        unverifiedTransformations === 0,
       malformedTables,
       unverifiedTransformations,
-      rawFallbackUsed: false,
+      rawFallbackUsed,
+      deliveryIntegrity,
       launchAllowed,
       claudeCodeStarted: false,
       unsupportedOrUnverifiedFiles,

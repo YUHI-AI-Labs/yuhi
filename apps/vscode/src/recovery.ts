@@ -100,7 +100,16 @@ export async function validatePreparedWorkspace(input: {
     !Array.isArray(manifest.files)
   ) return recovery("manifest-invalid");
   const acceptance = manifest.tabularAcceptance as Record<string, unknown> | undefined;
-  if (!acceptance || acceptance.launchAllowed !== true || acceptance.rawFallbackUsed !== false) {
+  // `rawFallbackUsed` must be PRESENT and boolean, but `true` is a legitimate,
+  // launchable outcome (a tabular original delivered with a warning) — per
+  // CLAUDE.md, `file blocked ≠ launch blocked`. Requiring it to be `false` would
+  // send every raw-fallback run into recovery once the field stopped being a
+  // hardcoded literal (#12).
+  if (
+    !acceptance ||
+    acceptance.launchAllowed !== true ||
+    typeof acceptance.rawFallbackUsed !== "boolean"
+  ) {
     return recovery("preparation-incomplete");
   }
 

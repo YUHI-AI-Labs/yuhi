@@ -14,6 +14,7 @@ export * from "./inject.js";
 export * from "./route-executor.js";
 export * from "./prepare-workspace.js";
 export * from "./prepared-run.js";
+export * from "./delivery-integrity.js";
 export * from "./prepared-metrics.js";
 export * from "./public-prepared-summary.js";
 export * from "./yuhi-mode-summary.js";
