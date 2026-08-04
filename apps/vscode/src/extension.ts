@@ -299,7 +299,13 @@ async function resolveDynamicPreparedRoot(): Promise<string | undefined> {
 
   const source = firstWorkspaceRoot();
   if (!source) return undefined;
-  await commandPrepare();
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Yuhi", cancellable: false },
+    async (progress) => {
+      progress.report({ message: "Preparing this folder, then starting Claude Code with dynamic context" });
+      await commandPrepare(undefined, false);
+    },
+  );
   return lastReport?.outDir;
 }
 
@@ -1613,7 +1619,16 @@ async function commandRefreshContext(): Promise<void> {
   await progressiveController?.refresh();
 }
 
-async function commandPrepare(target?: vscode.Uri): Promise<void> {
+async function commandPrepare(
+  target?: vscode.Uri,
+  /**
+   * false = this prepare is a STEP inside another flow. The summary is still shown, but as a
+   * fire-and-forget notification instead of a four-button prompt that blocks the caller.
+   * The dynamic launch used to await that prompt, so the session silently waited for a click
+   * the user had no reason to expect.
+   */
+  promptNext = true,
+): Promise<void> {
   if (currentIsPreparedWorkspace || reviewingOpenedPreparedWorkspace) {
     const root = firstWorkspaceRoot();
     if (root) await showPreparedWorkspaceRecovery(root);
@@ -1668,6 +1683,11 @@ async function commandPrepare(target?: vscode.Uri): Promise<void> {
       (errs > 0 ? ` · ${errs} failed` : "") + (blocked > 0 ? ` · ${blocked} kept back by safety check` : "");
     const summary = `Yuhi: ${outcome} · Estimated Claude input avoided ~${avoided} tokens (${pct}%) · source files modified: 0${warn}.`;
     const NEXT = ["Review Prepared Context", "Open Prepared Workspace", "Copy Prepared Path", "Run Again"];
+    if (!promptNext) {
+      if (outcome === "Partial") void vscode.window.showWarningMessage(summary);
+      else void vscode.window.showInformationMessage(summary);
+      return;
+    }
     const choice =
       outcome === "Partial"
         ? await vscode.window.showWarningMessage(summary, ...NEXT)
