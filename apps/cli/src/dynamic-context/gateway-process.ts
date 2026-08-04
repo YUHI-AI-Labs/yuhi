@@ -15,6 +15,7 @@ import { mcpConfig } from "./environment.js";
 export const GATEWAY_STARTUP_TIMEOUT_MS = 15_000;
 
 export interface DynamicGatewayOptions extends GatewayOptions {
+  /** Retrieval mode is part of GatewayOptions; re-exported here for call-site clarity. */
   readonly startupTimeoutMs?: number;
   readonly startImpl?: typeof startGateway;
   readonly fetchProbe?: (url: string) => Promise<{ ok: boolean }>;

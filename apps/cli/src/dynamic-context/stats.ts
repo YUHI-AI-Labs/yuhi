@@ -36,6 +36,10 @@ export function formatSnapshot(s: MetricsSnapshot): string[] {
   const usageKnown = usage.inputTokens > 0 || usage.outputTokens > 0;
   return [
     `Session ${s.sessionId}`,
+    // The three measurements are printed apart, always, and an unknown is printed as
+    // unknown rather than as zero.
+    "  Static repository reduction: reported by `yuhi status` for the prepared run — not a session measurement",
+    `  Retrieval mode: ${s.retrievalMode ?? "disabled"}`,
     `  Tool results observed: ${s.toolResultBlocksObserved}`,
     `    compressed: ${s.toolResultBlocksCompressed} · reused unchanged: ${s.toolResultBlocksReused} · passthrough: ${s.toolResultBlocksPassedThrough}`,
     `    availability fallbacks: ${s.fallbacks} · withheld for safety: ${s.withheld}`,
@@ -46,8 +50,12 @@ export function formatSnapshot(s: MetricsSnapshot): string[] {
     `  Gateway peak RSS: ${(s.peakRssBytes / 1024 / 1024).toFixed(1)} MB · upstream errors: ${s.upstreamErrors}`,
     `  Live-zone violations (prefix bytes changed outside the live zone): ${s.liveZoneViolations}`,
     usageKnown
-      ? `  Provider usage observed: input ${usage.inputTokens} · cache creation ${usage.cacheCreationInputTokens} · cache read ${usage.cacheReadInputTokens} · output ${usage.outputTokens}`
-      : "  Provider usage observed: Not measured (no usage frames seen)",
+      ? `  Actual provider input tokens: ${usage.inputTokens}`
+      : "  Actual provider input tokens: Not measured (no usage frames seen)",
+    usageKnown
+      ? `  Cache creation tokens: ${usage.cacheCreationInputTokens} · cache read tokens: ${usage.cacheReadInputTokens} · output tokens: ${usage.outputTokens}`
+      : "  Cache creation / cache read tokens: Not measured",
+    "  Provider cost change vs baseline: Not measured in a single session — run packages/context-benchmark/scripts/matrix.mts",
     usage.costUsd === undefined
       ? "  Actual cost: Not measured (provider did not report a billed cost)"
       : `  Actual cost: ${usage.costUsd} USD (provider-reported)`,

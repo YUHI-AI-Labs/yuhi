@@ -22,7 +22,7 @@ import {
 } from "@yuhi/context-runtime";
 import type { Compressor } from "@yuhi/context-compression";
 
-import { transformRequest, type TransformDeps } from "./anthropic/transform.js";
+import { transformRequest, type RetrievalMode, type TransformDeps } from "./anthropic/transform.js";
 import { copyResponseHeaders, forwardRequest, pipeWithUsageCapture, type FetchLike } from "./anthropic/upstream.js";
 import { GatewayMetrics, type MetricsSnapshot } from "./session/metrics.js";
 import { PrefixState } from "./session/prefix-state.js";
@@ -47,6 +47,8 @@ export interface GatewayOptions {
   readonly sessionOverride?: string;
   /** Compressor set override (benchmarks/tests). Defaults to the built-in kernel. */
   readonly compressors?: readonly Compressor[];
+  /** How much retrieval capability to advertise. Defaults to `disabled` (measured cheapest). */
+  readonly retrievalMode?: RetrievalMode;
   readonly log?: (line: string) => void;
 }
 
@@ -90,6 +92,7 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
 
   const deps: TransformDeps = {
     runtime,
+    retrievalMode: opts.retrievalMode ?? "disabled",
     prefixFor: async (sessionId) => {
       const existing = prefixes.get(sessionId);
       if (existing) return existing;
@@ -102,6 +105,7 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
       const existing = metrics.get(sessionId);
       if (existing) return existing;
       const created = new GatewayMetrics(sessionId);
+      created.retrievalMode = opts.retrievalMode ?? "disabled";
       metrics.set(sessionId, created);
       return created;
     },

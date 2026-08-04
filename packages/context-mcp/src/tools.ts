@@ -97,6 +97,18 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   },
 ];
 
+/**
+ * Estimated tokens the tool definitions add to EVERY request once registered.
+ *
+ * This is the fixed half of the cost measurement: registering retrieval put the
+ * definitions into the cached system prompt on every turn. The variable half (extra
+ * agent turns) is what made the test-failure task 31% dearer. Keep this small, and keep
+ * retrieval off by default.
+ */
+export function toolDefinitionTokens(): number {
+  return Math.ceil(JSON.stringify(TOOL_DEFINITIONS).length / 4);
+}
+
 export interface ToolOutcome {
   readonly text: string;
   readonly isError?: boolean;

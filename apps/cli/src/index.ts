@@ -916,9 +916,9 @@ async function main(): Promise<void> {
         false,
       )
       .option(
-        "--with-retrieval",
-        "also register Yuhi's MCP retrieval tools (measured to cost extra agent turns)",
-        false,
+        "--retrieval <mode>",
+        "retrieval capability shown to the agent: disabled | conditional | required (measured: registering the tools costs agent turns)",
+        "disabled",
       )
       .action(
         action(async (cmd) => {
@@ -936,7 +936,9 @@ async function main(): Promise<void> {
               spawn: !opts.dryRun,
               json: g.json,
               cliEntry: process.argv[1] ?? "",
-              withRetrieval: Boolean(opts.withRetrieval),
+              retrieval: (["disabled", "conditional", "required"] as const).includes(opts.retrieval)
+                ? (opts.retrieval as "disabled" | "conditional" | "required")
+                : "disabled",
             });
             return result.exitCode;
           }

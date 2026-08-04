@@ -14,16 +14,17 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { startGateway } from "../../context-gateway/src/index.js";
 import { tallyRetrievals } from "../../context-runtime/src/index.js";
 import { ContextStore, asSessionId } from "../../context-store/src/index.js";
-import { createFixture, TASK_ORACLE, TASK_PROMPTS, type TaskId } from "./fixtures.mts";
+import { createFixture, FIXTURE_MARKER, PATCH_TASKS, TASK_ORACLE, TASK_PROMPTS, type TaskId } from "./fixtures.mts";
+import { resolveRunForLaunch } from "../../../apps/cli/src/launch.js";
 
-type Condition = "baseline" | "static-yuhi" | "dynamic-yuhi";
+type Condition = "baseline" | "static-yuhi" | "dynamic-yuhi" | "static+dynamic-yuhi";
 
 interface RunRecord {
   task: TaskId;
@@ -31,7 +32,11 @@ interface RunRecord {
   model: string;
   run: number;
   ok: boolean;
+  /** Set when the harness could not set up a valid condition; the run is not evidence. */
+  harnessError?: string;
   taskSuccess: boolean;
+  /** For patch tasks: the fixture's own suite re-run after the agent finished. */
+  patchCorrect?: boolean;
   answer: string;
   turns: number;
   durationMs: number;
@@ -100,9 +105,17 @@ async function runClaude(opts: {
   model: string;
   env: Record<string, string>;
   mcpConfig?: string;
+  allowEdits?: boolean;
   timeoutMs: number;
 }): Promise<ClaudeOutcome> {
-  const tools = ["Read", "Bash", "Glob", "Grep", ...(opts.mcpConfig ? RETRIEVAL_TOOLS : [])];
+  const tools = [
+    "Read",
+    "Bash",
+    "Glob",
+    "Grep",
+    ...(opts.allowEdits ? ["Edit", "Write"] : []),
+    ...(opts.mcpConfig ? RETRIEVAL_TOOLS : []),
+  ];
   const argv = [
     "-p",
     opts.prompt,
@@ -160,21 +173,79 @@ async function runOne(
    * retrieval capability has a token cost even in a session that never retrieves.
    */
   withMcp = true,
+  retrievalMode: string = "disabled",
 ): Promise<RunRecord> {
-  const workspace = await mkdtemp(join(tmpdir(), `yuhi-bench-${task}-`));
-  await createFixture(workspace, task);
+  const fixtureDir = await mkdtemp(join(tmpdir(), `yuhi-bench-${task}-`));
+  await createFixture(fixtureDir, task);
   const prompt = TASK_PROMPTS[task];
+  const allowEdits = PATCH_TASKS.includes(task);
+
+  // Static Yuhi: run `yuhi prepare` and work in the Prepared Repository, so the static
+  // contribution can be separated from the dynamic one.
+  let workspace = fixtureDir;
+  let harnessError: string | undefined;
+  if (condition === "static-yuhi" || condition === "static+dynamic-yuhi") {
+    // `prepare` needs a yuhi.yaml in the target directory; without `init` it fails and the
+    // resolver below happily returns an UNRELATED prepared workspace. That mistake made an
+    // entire condition report 0/3 against a fixture it had never seen.
+    for (const argv of [
+      [CLI_ENTRY, "init", "-C", fixtureDir, "-y"],
+      [CLI_ENTRY, "prepare", fixtureDir, "--compress", "--json"],
+    ]) {
+      await new Promise<void>((done) => {
+        const child = spawn(process.execPath, argv, { stdio: "ignore" });
+        child.on("close", () => done());
+      });
+    }
+    const resolved = await resolveRunForLaunch(undefined);
+    if (!resolved.ok) {
+      harnessError = `prepared-run-unresolved:${resolved.category}`;
+    } else {
+      workspace = resolved.run.workspace;
+      // Prove the resolved workspace is THIS fixture before spending a Claude run on it.
+      try {
+        await access(join(workspace, FIXTURE_MARKER[task]));
+      } catch {
+        harnessError = "prepared-workspace-mismatch";
+      }
+    }
+  }
+  if (harnessError) {
+    return {
+      task,
+      condition,
+      model,
+      run,
+      ok: false,
+      harnessError,
+      taskSuccess: false,
+      answer: "",
+      turns: 0,
+      durationMs: 0,
+      inputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      inputSideTotal: 0,
+    };
+  }
 
   let outcome: ClaudeOutcome;
   let gatewayStats: Record<string, number> | undefined;
   let retrievalTally = { delivered: 0, withheld: 0 };
 
-  if (condition === "dynamic-yuhi") {
+  if (condition === "dynamic-yuhi" || condition === "static+dynamic-yuhi") {
     const contextRoot = join(workspace, ".yuhi", "context");
     await mkdir(contextRoot, { recursive: true });
     const sessionId = `bench-${task}-${run}`;
-    const gateway = await startGateway({ storeRoot: contextRoot, sessionOverride: sessionId });
-    const mcpConfig = withMcp ? await writeMcpConfig(workspace, contextRoot, sessionId) : undefined;
+    const gateway = await startGateway({
+      storeRoot: contextRoot,
+      sessionOverride: sessionId,
+      // Default-off, matching the shipped default; --retrieval overrides it.
+      retrievalMode: retrievalMode as "disabled" | "conditional" | "required",
+    });
+    const mcpConfig =
+      withMcp && retrievalMode !== "disabled" ? await writeMcpConfig(workspace, contextRoot, sessionId) : undefined;
     try {
       outcome = await runClaude({
         workspace,
@@ -182,6 +253,7 @@ async function runOne(
         model,
         env: { ANTHROPIC_BASE_URL: gateway.url },
         ...(mcpConfig ? { mcpConfig } : {}),
+        allowEdits,
         timeoutMs,
       });
       gatewayStats = gateway.stats().sessions[0] as unknown as Record<string, number>;
@@ -193,7 +265,16 @@ async function runOne(
       await gateway.close();
     }
   } else {
-    outcome = await runClaude({ workspace, prompt, model, env: {}, timeoutMs });
+    outcome = await runClaude({ workspace, prompt, model, env: {}, allowEdits, timeoutMs });
+  }
+
+  // Patch correctness is decided by the fixture's own suite, not by the agent's prose.
+  let patchCorrect: boolean | undefined;
+  if (allowEdits) {
+    patchCorrect = await new Promise<boolean>((done) => {
+      const child = spawn("bash", ["run-tests.sh"], { cwd: workspace, stdio: "ignore" });
+      child.on("close", (code) => done(code === 0));
+    });
   }
 
   const usage = outcome.usage;
@@ -207,7 +288,8 @@ async function runOne(
     model,
     run,
     ok: outcome.exitCode === 0,
-    taskSuccess: TASK_ORACLE[task](outcome.answer),
+    taskSuccess: patchCorrect ?? TASK_ORACLE[task](outcome.answer),
+    ...(patchCorrect === undefined ? {} : { patchCorrect }),
     answer: outcome.answer.slice(0, 300),
     turns: outcome.turns,
     durationMs: outcome.durationMs,
@@ -288,6 +370,7 @@ function report(records: readonly RunRecord[]): string {
       const conditions = [...new Set(records.map((r) => r.condition))];
       const rows: [string, (r: RunRecord) => number][] = [
         ["task success rate", (r) => (r.taskSuccess ? 1 : 0)],
+        ["patch correctness", (r) => (r.patchCorrect ? 1 : 0)],
         ["turns", (r) => r.turns],
         ["provider input tokens", (r) => r.inputTokens],
         ["cache creation tokens", (r) => r.cacheCreationTokens],
@@ -306,7 +389,9 @@ function report(records: readonly RunRecord[]): string {
       ];
       for (const [label, pick] of rows) {
         const cells = conditions.map((condition) => {
-          const subset = records.filter((r) => r.task === task && r.model === model && r.condition === condition);
+          const subset = records.filter(
+            (r) => r.task === task && r.model === model && r.condition === condition && !r.harnessError,
+          );
           if (subset.length === 0) return "—";
           return fmt(spread(subset.map(pick)));
         });
@@ -337,6 +422,7 @@ const runs = Number(arg("runs", "3"));
 const timeoutMs = Number(arg("timeout", "240000"));
 const out = arg("out", "");
 const withMcp = process.argv.indexOf("--no-mcp") === -1;
+const retrievalMode = arg("retrieval", "disabled");
 
 const records: RunRecord[] = [];
 // Interleave conditions per run index so drift in service latency hits both equally.
@@ -344,10 +430,10 @@ for (let run = 1; run <= runs; run++) {
   for (const task of tasks) {
     for (const model of models) {
       for (const condition of conditions) {
-        const record = await runOne(task, condition, model, run, timeoutMs, withMcp);
+        const record = await runOne(task, condition, model, run, timeoutMs, withMcp, retrievalMode);
         records.push(record);
         console.error(
-          `[${task}/${condition}/${model}/run${run}] success=${record.taskSuccess} turns=${record.turns} cost=${record.costUsd ?? "?"} inputSide=${record.inputSideTotal} dynRed=${record.dynamicReduction ?? "-"}`,
+          `[${task}/${condition}/${model}/run${run}]${record.harnessError ? ` HARNESS-ERROR=${record.harnessError}` : ""} success=${record.taskSuccess} turns=${record.turns} cost=${record.costUsd ?? "?"} inputSide=${record.inputSideTotal} dynRed=${record.dynamicReduction ?? "-"}`,
         );
       }
     }

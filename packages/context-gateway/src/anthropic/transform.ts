@@ -27,8 +27,23 @@ import {
   type ToolResultRef,
 } from "./request.js";
 
+/**
+ * How much retrieval capability the agent is shown (product contract, v0.4.0).
+ *
+ *   disabled    — originals are stored privately, no MCP tools, no hints. DEFAULT.
+ *   conditional — tools registered; a hint appears only when the compressor cannot prove
+ *                 it kept every load-bearing piece of evidence.
+ *   required    — tools registered and hints always shown; for tasks that need omitted detail.
+ *
+ * Reversibility is unchanged in all three: the private store and the ledger always hold
+ * the original. What varies is whether the agent is INVITED to spend a turn on it, which
+ * measurement showed is the expensive part.
+ */
+export type RetrievalMode = "disabled" | "conditional" | "required";
+
 export interface TransformDeps {
   readonly runtime: ContextRuntime;
+  readonly retrievalMode?: RetrievalMode;
   readonly prefixFor: (sessionId: SessionId) => Promise<PrefixState>;
   readonly metricsFor: (sessionId: SessionId) => GatewayMetrics;
   /** Above this request size the structural live-zone proof is skipped (cost guard). */
@@ -95,6 +110,35 @@ export async function transformRequest(
   let hinted = 0;
 
   for (const ref of refs) {
+    // 0. Scan guard. A `Read` of a log or prose file is the agent paging through content;
+    //    restructuring it breaks its own scan and it compensates by reading MORE. Measured
+    //    on the forced log-read task: 120 blocks with 1 compressible, turns 7 → 9-16, cost
+    //    +75%. Those bytes still go through the SAFETY pipeline — only compression is
+    //    skipped — so the secret/PII/metadata guarantees are unchanged.
+    if (isScanRead(ref)) {
+      const scanned = await deps.runtime.deliver({
+        sessionId,
+        tool: "read",
+        kind: ref.kind,
+        content: ref.text,
+        privateMetadata: ref.privateMetadata,
+        toolUseId: ref.toolUseId,
+        compress: false,
+      });
+      if (scanned.status === "delivered") {
+        applyToolResultText(body, ref, scanned.text);
+        metrics.block("passthrough");
+        metrics.tokens(deps.runtime.estimateTokens(ref.text), deps.runtime.estimateTokens(scanned.text), 0);
+        continue;
+      }
+      // A security failure still withholds, exactly as anywhere else.
+      const notice = renderWithheldNotice(scanned.reason, scanned.publicMetadata.bytes, scanned.publicMetadata.kind);
+      applyToolResultText(body, ref, notice);
+      metrics.block("withheld");
+      withheld++;
+      continue;
+    }
+
     // 1. Live zone: an unchanged block that was already delivered must be re-emitted
     //    with the SAME bytes, so the provider's cached prefix stays valid.
     const known = await prefix.lookup(ref.toolUseId, ref.rawHash);
@@ -135,10 +179,12 @@ export async function transformRequest(
       continue;
     }
 
+    const mode = deps.retrievalMode ?? "disabled";
+    const hintAllowed =
+      mode === "required" ? true : mode === "conditional" ? delivery.hintPolicy === "offer-retrieval" : false;
     const rendered = renderCompactToolResult(delivery, {
       estimateTokens: (t) => deps.runtime.estimateTokens(t),
-      withRetrieveHint:
-        delivery.hintPolicy === "offer-retrieval" && delivery.retrievable.length > 0 && hinted < hintLimit,
+      withRetrieveHint: hintAllowed && delivery.retrievable.length > 0 && hinted < hintLimit,
     });
     const compactTokens = delivery.tokensAfter + rendered.markerTokens;
 
@@ -151,7 +197,7 @@ export async function transformRequest(
       finalText = rendered.text;
       strategy = delivery.strategy;
       markerTokens = rendered.markerTokens;
-      if (delivery.hintPolicy === "offer-retrieval" && delivery.retrievable.length > 0) hinted++;
+      if (hintAllowed && delivery.retrievable.length > 0) hinted++;
       metrics.block(delivery.fallback ? "fallback" : "compressed");
       transformed++;
     } else {
@@ -226,4 +272,15 @@ function toolNameFor(ref: ToolResultRef): ToolName {
   if (name.startsWith("mcp__")) return "mcp";
   if (ref.kind === "test-output") return "test";
   return "search";
+}
+
+/**
+ * True when this block is a file scan rather than command output. `Read` of structured
+ * data (JSON, CSV, a diff) is still a compression target — the win there is proven; it is
+ * line-oriented log/prose paging that must be left alone.
+ */
+function isScanRead(ref: ToolResultRef): boolean {
+  const tool = (ref.toolName ?? "").toLowerCase();
+  if (tool !== "read") return false;
+  return ref.kind === "log" || ref.kind === "text" || ref.kind === "markdown";
 }

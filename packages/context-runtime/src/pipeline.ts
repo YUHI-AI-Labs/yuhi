@@ -91,6 +91,11 @@ export interface DeliverRequest {
   readonly tokenBudget?: number;
   /** The agent's tool_use_id, when the caller is the gateway. */
   readonly toolUseId?: string;
+  /**
+   * false = scan and deliver, do not compress. For content the agent is paging through,
+   * where a restructured view costs more turns than it saves (gateway scan guard).
+   */
+  readonly compress?: boolean;
 }
 
 export interface RetrievableRegion {
@@ -252,6 +257,11 @@ export class ContextRuntime {
     // 4. Compression, over the already-safe text so the view carries placeholders.
     const budget = req.tokenBudget ?? this.tokenBudget;
     let outcome: CompressionOutcome;
+    if (req.compress === false) {
+      // Skipping compression is not skipping safety: the exact-output scan below still runs
+      // on these bytes, and the delivery is recorded as `delivered-original`.
+      outcome = { status: "failed", reason: "compression-not-requested", attempts: [{ compressorId: "none", ok: false, reason: "no-reduction" }] };
+    } else {
     try {
       outcome = await compressWithFallback(
         {
@@ -266,6 +276,7 @@ export class ContextRuntime {
       );
     } catch {
       outcome = { status: "failed", reason: "compression-error", attempts: [] };
+    }
     }
 
     let candidate: string;

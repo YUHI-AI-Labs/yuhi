@@ -15,7 +15,7 @@ import { ContextStore, asObjectId, asSessionId, type ObjectId } from "@yuhi/cont
 import { describe, expect, it } from "vitest";
 
 import { handleMcpMessage, MCP_PROTOCOL_VERSION } from "./server.js";
-import { TOOL_DEFINITIONS, callTool, type ToolDeps } from "./tools.js";
+import { TOOL_DEFINITIONS, callTool, toolDefinitionTokens, type ToolDeps } from "./tools.js";
 
 const SESSION = asSessionId("mcp-session");
 const SECRET = "-----BEGIN RSA PRIVATE KEY-----";
@@ -60,6 +60,14 @@ describe("MCP protocol surface", () => {
       "yuhi_explain_context",
     ]);
     expect(TOOL_DEFINITIONS).toHaveLength(6);
+  });
+
+  it("keeps the fixed per-request definition cost inside its budget", () => {
+    // Registered tools sit in the cached prefix of every request. Measurement showed the
+    // capability is not free, so the definitions carry an explicit budget rather than
+    // growing unnoticed; retrieval also stays off by default.
+    expect(toolDefinitionTokens()).toBeLessThan(600);
+    expect(TOOL_DEFINITIONS.every((d) => d.description.length < 400)).toBe(true);
   });
 
   it("returns nothing for a notification and an error for an unknown method", async () => {

@@ -156,12 +156,16 @@ describe("launch orchestration", () => {
     expect(lines.join("\n")).toContain("Dynamic tool-output reduction: 85.0%");
   });
 
-  it("leaves the MCP retrieval tools off by default and says so", async () => {
+  it("defaults to retrieval disabled and never registers MCP in that mode", async () => {
     const lines: string[] = [];
+    let gatewayOptions: Record<string, unknown> | undefined;
     await launchClaudeWithDynamicContext({
       upstream: { mode: "anthropic-api", baseUrl: "https://api.anthropic.com", supportsDynamicContext: true },
       resolveWorkspace: async () => "/prepared/workspace",
-      startGatewayImpl: async () => fakeGateway().handle,
+      startGatewayImpl: async (o) => {
+        gatewayOptions = o as unknown as Record<string, unknown>;
+        return fakeGateway().handle;
+      },
       fetchProbe: async () => ({ ok: true }),
       performLaunchImpl: async () => 0,
       cliEntry: "/usr/local/bin/yuhi",
@@ -169,8 +173,33 @@ describe("launch orchestration", () => {
       err: (l) => lines.push(l),
     });
     // Measured: registering the tools cost turns and money on tasks that never needed them.
-    expect(lines.join("\n")).toContain("Retrieval tools: off");
-    expect(lines.join("\n")).toContain("--with-retrieval");
+    expect(gatewayOptions?.["retrievalMode"]).toBe("disabled");
+    expect(lines.join("\n")).toContain("Retrieval mode: disabled");
+    expect(lines.join("\n")).toContain("not registered");
+    // Reversibility is unaffected: the originals are still stored privately.
+    expect(lines.join("\n")).toContain("stored privately");
+  });
+
+  it("registers MCP and propagates the mode when retrieval is requested", async () => {
+    const lines: string[] = [];
+    let gatewayOptions: Record<string, unknown> | undefined;
+    await launchClaudeWithDynamicContext({
+      retrieval: "conditional",
+      upstream: { mode: "anthropic-api", baseUrl: "https://api.anthropic.com", supportsDynamicContext: true },
+      resolveWorkspace: async () => join(await mkdtemp(join(tmpdir(), "yuhi-ws-")), "prepared"),
+      startGatewayImpl: async (o) => {
+        gatewayOptions = o as unknown as Record<string, unknown>;
+        return fakeGateway().handle;
+      },
+      fetchProbe: async () => ({ ok: true }),
+      performLaunchImpl: async () => 0,
+      cliEntry: "/usr/local/bin/yuhi",
+      out: (l) => lines.push(l),
+      err: (l) => lines.push(l),
+    });
+    expect(gatewayOptions?.["retrievalMode"]).toBe("conditional");
+    expect(lines.join("\n")).toContain("Retrieval mode: conditional");
+    expect(lines.join("\n")).toContain("Retrieval tools registered (MCP)");
   });
 
   it("refuses to launch — clearly — when the provider cannot be proxied", async () => {

@@ -19,6 +19,8 @@ export interface ProviderUsageObserved {
 
 export interface MetricsSnapshot {
   readonly sessionId: string;
+  /** Which retrieval capability the agent was shown in this session. */
+  readonly retrievalMode?: string;
   readonly requests: number;
   readonly toolResultBlocksObserved: number;
   readonly toolResultBlocksCompressed: number;
@@ -40,6 +42,7 @@ export interface MetricsSnapshot {
 }
 
 export class GatewayMetrics {
+  retrievalMode = "disabled";
   private requests = 0;
   private observed = 0;
   private compressed = 0;
@@ -119,6 +122,7 @@ export class GatewayMetrics {
   snapshot(): MetricsSnapshot {
     return {
       sessionId: this.sessionId,
+      retrievalMode: this.retrievalMode,
       requests: this.requests,
       toolResultBlocksObserved: this.observed,
       toolResultBlocksCompressed: this.compressed,

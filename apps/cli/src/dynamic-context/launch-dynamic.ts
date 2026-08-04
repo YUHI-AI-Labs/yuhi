@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
-import type { GatewayStats } from "@yuhi/context-gateway";
+import type { GatewayStats, RetrievalMode } from "@yuhi/context-gateway";
 
 import { performLaunch, resolveRunForLaunch, type PerformLaunchOptions } from "../launch.js";
 import { detectUpstream, dynamicContextEnv, type UpstreamConfig } from "./environment.js";
@@ -30,13 +30,13 @@ export interface DynamicLaunchOptions {
   /** Absolute path to the CLI entry the MCP server should be started from. */
   readonly cliEntry?: string;
   /**
-   * Register the MCP retrieval tools. OFF by default, from measurement: on the
-   * test-failure task, registering them took the run from 2 turns to 4 and from 20%
-   * cheaper than baseline to 31% dearer, while compression itself was unchanged. Turn it
-   * on for work where the agent genuinely needs withheld detail — the retrieval-required
-   * benchmark succeeds 3/3 with it and records real retrievals in the ledger.
+   * Retrieval mode (default `disabled`), from measurement: on the test-failure task,
+   * registering the tools took the run from 2 turns to 4 and from 20% cheaper than
+   * baseline to 31% dearer, while compression itself was unchanged. `conditional` and
+   * `required` are for work that genuinely needs omitted detail — the retrieval-required
+   * benchmark scores 3/3 with them and records real retrievals in the ledger.
    */
-  readonly withRetrieval?: boolean;
+  readonly retrieval?: RetrievalMode;
   readonly env?: NodeJS.ProcessEnv;
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
@@ -96,10 +96,12 @@ export async function launchClaudeWithDynamicContext(
   }
   const contextRoot = join(workspace, ".yuhi", "context");
 
+  const retrieval: RetrievalMode = opts.retrieval ?? "disabled";
   const ready = await startAndWaitForReady({
     storeRoot: contextRoot,
     upstreamBaseUrl: upstream.baseUrl,
     sessionOverride: sessionId,
+    retrievalMode: retrieval,
     ...(opts.startGatewayImpl ? { startImpl: opts.startGatewayImpl } : {}),
     ...(opts.fetchProbe ? { fetchProbe: opts.fetchProbe } : {}),
   }).catch(() => undefined);
@@ -110,7 +112,7 @@ export async function launchClaudeWithDynamicContext(
   }
 
   const mcpConfigPath =
-    opts.withRetrieval === true && opts.cliEntry
+    retrieval !== "disabled" && opts.cliEntry
       ? await writeMcpConfig({ workspace, contextRoot, sessionId, cliEntry: opts.cliEntry }).catch(() => undefined)
       : undefined;
 
@@ -124,8 +126,9 @@ export async function launchClaudeWithDynamicContext(
   if (!opts.json) {
     out(`Yuhi dynamic context: ON — gateway ${ready.handle.url} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
+    out(`Retrieval mode: ${retrieval}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);
-    else out("Retrieval tools: off (add --with-retrieval; it costs agent turns — see docs/design/V0_4_0_DYNAMIC_RUNTIME.md §5)");
+    else out("Retrieval tools: not registered — originals are still stored privately and stay retrievable via `yuhi dynamic stats`.");
   }
 
   const runner = createDynamicRunner(extraEnv, opts.runCommandImpl ?? ((command) => runCommand(command)));

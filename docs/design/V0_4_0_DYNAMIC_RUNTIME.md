@@ -288,3 +288,141 @@ npx tsx packages/context-benchmark/scripts/matrix.mts \
   --conditions baseline,dynamic-yuhi --models claude-haiku-4-5-20251001 \
   --runs 3 --out /tmp/matrix          # add --no-mcp for the retrieval-off variant
 ```
+
+---
+
+# Slice 4 — release validation (2026-08-04)
+
+All rows: real `claude -p --output-format json`, fixed fixtures and prompts, n=3, provider
+usage and cost from Claude Code itself. Retrieval `disabled` unless stated. Raw records in
+`evidence/`.
+
+## 4.1 Mixed development task — the most realistic case (haiku)
+
+Run tests → diagnose → read source → patch → re-run. Success is scored by **re-running the
+fixture's own suite**, not by the agent's prose.
+
+| | baseline | dynamic (retrieval off) |
+|---|---|---|
+| patch correct (suite passes) | 3/3 | **3/3** |
+| turns | 7, 8, 9 | 9, 8, 8 |
+| cache creation tokens (median) | 19,554 | **7,894 (−60%)** |
+| cache read tokens (median) | 116,210 | 97,738 |
+| input-side total (median) | 135,825 | **105,693 (−22%)** |
+| provider cost (median) | $0.01035 | **$0.00902 (−13%)** |
+| dynamic tool-output reduction | — | 70% |
+
+This is the strongest result in the project: a real edit-and-verify loop, correct patches,
+and a measured cost win.
+
+## 4.2 Static vs dynamic (test-failure, haiku)
+
+| | baseline | static only | dynamic only | static + dynamic |
+|---|---|---|---|---|
+| task success | 2/3¹ | 3/3 | 3/3 | 3/3 |
+| turns | 2 | 2 | 2 | 2 |
+| input-side total (median) | 36,176 | 36,160 | **30,654 (−15%)** | **30,641 (−15%)** |
+| provider cost (median) | $0.00418 | $0.00330 | $0.00391 | $0.00405 |
+| dynamic tool-output reduction | — | 0% | 89% | 89% |
+
+¹ One baseline run phrased the answer outside the oracle's pattern; the failure is the
+oracle's, not the agent's.
+
+**The input-side reduction comes entirely from the dynamic layer.** Static preparation moved
+input-side tokens by 16 tokens on this fixture — it has two files, so there is nothing to
+statically remove. Cost differences at this scale are noise-dominated and are not claimed.
+
+> A harness bug was found and fixed here first. `yuhi prepare` needs a `yuhi.yaml`, and
+> without `yuhi init` it failed silently while the resolver returned an **unrelated**
+> prepared workspace — so the first static run scored 0/3 against a fixture it had never
+> seen. The matrix now runs `init`, then verifies a task-specific marker file exists in the
+> resolved workspace, and records `harnessError` runs as non-evidence excluded from every
+> aggregate. The invalid numbers were discarded, not published.
+
+## 4.3 Sonnet validation
+
+`claude-sonnet-4-5-20250929`, n=3.
+
+| task | condition | success | turns | input-side (med) | cost (med) | dyn. reduction | retrievals |
+|---|---|---|---|---|---|---|---|
+| test-failure | baseline | 3/3 | 2,2,2 | 36,192 | $0.00660 | — | — |
+| test-failure | dynamic, retrieval off | 3/3 | 2,2,2 | **30,679 (−15%)** | $0.00669 (**+1.4%, parity**) | 89% | — |
+| retrieval-required | baseline | 3/3 | 4,5,4 | 73,196 | $0.01157 | — | — |
+| retrieval-required | dynamic, retrieval **conditional** | 3/3 | 6,6,8 | 104,460 (+43%) | $0.01628 (**+41%**) | 78–86% | **0** |
+
+Two findings:
+
+* **The token reduction reproduces across models (−15% input-side, 89% tool output); the
+  cost win does not.** On haiku the same reduction was −20% cost; on Sonnet it is parity,
+  because the mix of cache-read versus output pricing differs. Any cost claim must name the
+  model.
+* **On Sonnet, `conditional` retrieval cost 41% and delivered nothing** — the ledger records
+  **zero** retrievals; the model simply re-read the file itself and paid for the extra turns.
+  The haiku run on the same task used retrieval 1–4 times and scored 3/3. Retrieval value is
+  model-dependent, which is another argument for the `disabled` default.
+
+## 4.4 Large log — NOT release-ready
+
+Natural phrasing ("diagnose server.log"), n=3: the agent **greps**. 3 turns in both
+conditions, dynamic reduction **0%** — a 4,000-line log never reaches the model, so there is
+nothing to compress. Same structural finding as grep.
+
+Forced phrasing ("read the entire file"), n=3: **120 tool_result blocks with 1 compressible**
+— the agent pages the file in small chunks. Dynamic went to 9–16 turns against baseline's
+7,7,7 and cost **+75%**.
+
+That produced a policy, not a tuning change: **a `Read` of a log or prose file is the agent
+scanning, and restructuring it breaks its own scan.** The gateway now skips compression for
+`Read` of `log`/`text`/`markdown` — those bytes still pass the full safety pipeline, only
+compression is skipped. Re-measured after the guard: turns 7/10/18, cost median +23% — one
+run at parity, the rest still noisy.
+
+**Verdict: logs move to the same status as grep — implemented, opportunistic, not a release
+headline, not a gate.** Compression targets *command output* and *structured data*; a file
+scan is not a compression target on this agent.
+
+## 4.5 Linux
+
+Container: `node:22-bookworm`, Linux aarch64, repo mounted read-only, fresh
+`pnpm install --frozen-lockfile`.
+
+* **98/98 tests pass** across all five new packages plus the CLI dynamic-context suite.
+* `yuhi dynamic doctor --offline`: gateway loopback bind ✓ (ephemeral 35989) · context store
+  writable ✓ · prefix-state round-trip ✓ · compression modules ✓ (2825→129) · safety scanner ✓.
+  `claude` executable ✗ as expected — the container has no agent CLI.
+* **A real Claude task on Linux was NOT run**: it needs the agent CLI and the user's
+  credentials inside the container, and copying credentials into a container is not something
+  to do for a benchmark. Windows is deferred to v0.4.1.
+
+## 4.6 MCP fixed overhead
+
+Yuhi's six tool definitions are **507 estimated tokens** in the cached prefix of every
+request once registered (`toolDefinitionTokens()`, budget-tested < 600). That is the fixed
+half of the retrieval cost; the behavioural half (extra turns) is larger and is why the
+default is `disabled`.
+
+## 4.7 Gate status after slice 4
+
+| Gate | Status |
+|---|---|
+| Real Claude gateway | **PASS** |
+| test-output compressor | **PASS** (89% tool output, −15% input-side on both models) |
+| JSON / partial-JSON | **PASS** |
+| mixed development loop (patch + re-run) | **PASS** (3/3 patches correct, −22% input-side, −13% cost) |
+| large-log compressor | **FAIL → descoped** (see 4.4) |
+| grep compressor | **FAIL → descoped** |
+| retrieval opt-in | **PASS**, with three modes |
+| Haiku validation | **PASS** |
+| Sonnet validation | **PASS for tokens; cost is parity, not a win** |
+| static vs dynamic separation | **PASS** — the reduction is dynamic; static contributes ~0 on these fixtures |
+| Linux | **PARTIAL** — full unit suite + doctor pass; no real Claude task |
+| Windows | **DEFERRED to v0.4.1** |
+| task success within −2pt | **PASS** on every valid cell |
+| no cost regression in the default configuration | **PASS** on test-failure and mixed-dev; **FAIL** on forced log read |
+| live-zone violations 0 · secrets 0 · PII 0 · metadata 0 · broken anchors 0 · gateway crashes 0 · Safe Apply regressions 0 | **PASS** |
+
+**Recommendation: release v0.4.0 with the scope narrowed to command output and structured
+data.** Logs and search stay in the code as opportunistic paths with no claim attached. The
+remaining true blocker is a real Claude task on Linux; everything else is either measured or
+explicitly descoped. The honest headline is 4.1 — a real patch loop, correct patches, −22%
+input-side tokens and −13% cost on haiku — with the model named and the qualifier attached.
