@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@yuhi-ai-labs/yuhi"><img alt="npm" src="https://img.shields.io/npm/v/@yuhi-ai-labs/yuhi?label=npm&color=cb3837&logo=npm&logoColor=white"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-vscode?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-code"><img alt="VS Code Marketplace" src="https://img.shields.io/visual-studio-marketplace/v/yuhi-ai-labs.yuhi-code?label=VS%20Code&color=007ACC&logo=visualstudiocode&logoColor=white"></a>
   <a href="https://github.com/YUHI-AI-Labs/yuhi/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/YUHI-AI-Labs/yuhi/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
@@ -232,7 +232,7 @@ writes a **Repository Report** to every run's Job Summary (report-only; no PR ga
 ## Open Claude Code
 
 **In VS Code** — install the
-[Yuhi extension](https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-vscode)
+[Yuhi extension](https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-code)
 and run **`Yuhi: Prepare and Start Claude Code`**. Yuhi prepares and reviews the workspace,
 then opens the Prepared Workspace in a new window marked **Prepared by Yuhi** for the official
 `anthropic.claude-code` extension.

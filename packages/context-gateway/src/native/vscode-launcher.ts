@@ -209,7 +209,16 @@ export async function readVsCodeVersion(runner: ProcessRunner, executable: strin
 }
 
 /** Marketplace identity of the Yuhi extension itself. */
-export const YUHI_EXTENSION_ID = "yuhi-ai-labs.yuhi-vscode";
+/**
+ * Marketplace identity of the Yuhi extension.
+ *
+ * Was `yuhi-ai-labs.yuhi-vscode` through 0.4.3. That listing was removed from the
+ * Marketplace, and a removed extension name is permanently reserved — "cannot be
+ * reused, even by the original publisher" — so the old id can never serve a release
+ * again. 0.4.4 moves to a new id; every consumer must read it from HERE rather than
+ * hardcoding a literal, which is what made this a three-site change.
+ */
+export const YUHI_EXTENSION_ID = "yuhi-ai-labs.yuhi-code";
 
 /**
  * Install Yuhi into the isolated directory as well as Claude.

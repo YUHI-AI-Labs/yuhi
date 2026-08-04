@@ -12,6 +12,7 @@ import { join } from "node:path";
 import * as vscode from "vscode";
 
 import {
+  YUHI_EXTENSION_ID,
   discoverSessions,
   recoverStaleSessions,
   sessionLayout,
@@ -89,7 +90,7 @@ export function isolatedYuhiRef(context: vscode.ExtensionContext): string {
   const override = vscode.workspace.getConfiguration("yuhi").get<string>("nativeGui.extensionRef");
   if (override && override.trim() !== "") return override.trim();
   const version = (context.extension.packageJSON as { version?: string }).version ?? "";
-  return version ? `yuhi-ai-labs.yuhi-vscode@${version}` : "yuhi-ai-labs.yuhi-vscode";
+  return version ? `${YUHI_EXTENSION_ID}@${version}` : YUHI_EXTENSION_ID;
 }
 
 /** The `yuhi.nativeSession` setting is the only way an isolated window knows its session. */
