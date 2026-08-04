@@ -23,6 +23,13 @@ export interface DeliveryIntegritySummary {
   excludedByRecommendation: number;
   /** Delivered files carrying an explicit warning (unverified / inspection-pending). */
   deliveredWithWarning: number;
+  /**
+   * Delivered files whose bytes were checked and still hold a source identifier —
+   * whether they were shipped raw OR as a partially de-identified transform.
+   * `rawFallbackWithFindings` covers only the raw case, so a surface that reads it
+   * alone reports "residue: 0" for a partially-transformed file whose scan FAILED.
+   */
+  identifierResidueFiles: number;
 }
 
 /** True when this entry is present in the agent-visible tree. */
@@ -41,6 +48,7 @@ export function buildDeliveryIntegritySummary(
   let postTransformScanNotApplicable = 0;
   let excludedByRecommendation = 0;
   let deliveredWithWarning = 0;
+  let identifierResidueFiles = 0;
 
   for (const file of files) {
     if (!isDelivered(file)) {
@@ -54,6 +62,9 @@ export function buildDeliveryIntegritySummary(
       if (file.finalRescanVerified === false || file.failureCategory === "reidentification-risk") {
         rawFallbackWithFindings += 1;
       }
+    }
+    if (file.finalRescanVerified === false || file.postTransformScan === "failed") {
+      identifierResidueFiles += 1;
     }
     switch (file.postTransformScan) {
       case "passed":
@@ -87,6 +98,7 @@ export function buildDeliveryIntegritySummary(
     postTransformScanNotApplicable,
     excludedByRecommendation,
     deliveredWithWarning,
+    identifierResidueFiles,
   };
 }
 
@@ -105,17 +117,25 @@ export function postTransformScanLabel(summary: DeliveryIntegritySummary): strin
 /** Human-readable warnings a surface must show when raw originals were delivered. */
 export function deliveryIntegrityWarnings(summary: DeliveryIntegritySummary): string[] {
   const lines: string[] = [];
+  if (summary.rawFallbackFiles === 0 && summary.identifierResidueFiles > 0) {
+    lines.push(
+      `Delivered with a warning: Yes — ${summary.identifierResidueFiles} file(s) delivered as a ` +
+        "partially de-identified transform that could not be fully verified",
+    );
+  }
   if (summary.rawFallbackFiles > 0) {
     lines.push(
       `Delivered with a warning: Yes — ${summary.rawFallbackFiles} file(s) delivered as the ` +
         "original because a safe transformation could not be verified",
     );
   }
-  if (summary.rawFallbackWithFindings > 0) {
+  if (summary.identifierResidueFiles > 0) {
+    lines.push(`Detected identifier residue: ${summary.identifierResidueFiles} file(s)`);
     lines.push(
-      `Detected identifier residue: ${summary.rawFallbackWithFindings} file(s)`,
+      summary.rawFallbackWithFindings > 0
+        ? "Known identifier findings remain in the delivered raw representation"
+        : "Known identifier findings remain in the delivered partially de-identified representation",
     );
-    lines.push("Known identifier findings remain in the delivered raw representation");
   }
   return lines;
 }

@@ -85,7 +85,10 @@ describe("a verification fallback is not a large file", () => {
       1,
     );
     expect(report.largeArtifactsReduced).toBe(0);
-    expect(report).not.toHaveProperty("largeFilesExcluded");
+    // The old name is still emitted as a DEPRECATED alias so an existing
+    // `yuhi report --format json` consumer does not break on a patch release; it must
+    // carry the same value, never a separate count.
+    expect(report.largeFilesExcluded).toBe(report.largeArtifactsReduced);
   });
 });
 

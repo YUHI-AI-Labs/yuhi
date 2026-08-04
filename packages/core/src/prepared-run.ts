@@ -194,6 +194,7 @@ function buildPreparationReportSafely(report: PrepareReport, warning: boolean): 
       secretsBlocked: 0,
       identifiersTransformed: 0,
       largeArtifactsReduced: 0,
+      largeFilesExcluded: 0,
       estimatedReductionPercent: 0,
       status: warning ? "ready-with-warning" : "ready",
     };

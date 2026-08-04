@@ -1071,7 +1071,10 @@ describe("prepareWorkspace", () => {
       for (const secret of RAW) {
         expect(text, `${entry.relpath} leaked ${secret}`).not.toContain(secret);
       }
-      if (entry.duplicateOfFamily) {
+      // A duplicate is only REWRITTEN when the alias is smaller than the content it
+      // replaces; otherwise it keeps its full body and is merely recorded as a family
+      // member. Only the rewritten ones carry an alias body.
+      if (entry.duplicateOfFamily && entry.contextRepresentation === "compressed") {
         // An alias names its canonical representation and holds nothing else.
         expect(text).toContain("Duplicate of dataset");
         expect(text).toContain(entry.canonicalRelpath!);

@@ -389,6 +389,8 @@ export interface PreparedFileEntry {
    *  and was replaced by a short alias pointing at the canonical one (#15/P1-B). */
   duplicateOfFamily?: string;
   canonicalRelpath?: string;
+  /** Public document id of the canonical representation, for alias traceability. */
+  canonicalDocumentId?: string;
   /**
    * Tri-state result of the post-transformation privacy scan for THIS file.
    * `not-applicable` means the scan was never run (nothing was transformed);
@@ -675,6 +677,8 @@ export interface PrepareReport {
   publicSummary?: PublicPreparedContextSummary;
   /** Canonical user-facing Yuhi Mode projection shared by all product surfaces. */
   yuhiModeSummary?: YuhiModeSummary;
+  /** Duplicate-content families over the delivered artifacts (#15/P1-B). */
+  contentFamilies?: ContentFamilyMetrics;
   /** Privacy-safe tabular acceptance metadata shared by CLI and VS Code. */
   tabularAcceptance?: {
     entitiesPseudonymized: number;
@@ -3348,6 +3352,105 @@ export async function prepareWorkspace(
     (file) => file.status === "ok" && !file.omitted && file.transformed,
   ).length;
   const localOnlyProjectFiles = files.filter((file) => file.omitted).length;
+  // ONE derivation of the delivery facts, shared by the manifest, the report, the
+  // CLI and the VS Code panel. No surface may recompute or hardcode these (#12).
+  const deliveryIntegrity = buildDeliveryIntegritySummary(files);
+  const rawFallbackUsed = deliveryIntegrity.rawFallbackFiles > 0;
+
+  // Duplicate-content families over the artifacts actually delivered (#15/P1-B).
+  // Yuhi's own transform normalizes BOM and line endings away, so distinct source
+  // files can become byte-identical deliveries; nothing used to record that.
+  const familyCandidates: FamilyCandidate[] = [];
+  for (const entry of files) {
+    if (entry.omitted) continue;
+    if (entry.relpath.startsWith(".yuhi/") || entry.relpath === "manifest.json") continue;
+    const abs = path.join(outDir, ...entry.relpath.split("/"));
+    try {
+      const stats = await stat(abs);
+      if (!stats.isFile()) continue;
+      if (/\.(?:csv|tsv|txt)$/i.test(entry.relpath)) {
+        const text = await readFile(abs, "utf8");
+        familyCandidates.push({
+          relpath: entry.relpath,
+          text,
+          bytes: stats.size,
+          ...(entry.documentId ? { documentId: entry.documentId } : {}),
+        });
+      } else {
+        const buffer = await readFile(abs);
+        familyCandidates.push({
+          relpath: entry.relpath,
+          bytes: stats.size,
+          sha256: createHash("sha256").update(buffer).digest("hex"),
+          ...(entry.documentId ? { documentId: entry.documentId } : {}),
+        });
+      }
+    } catch {
+      // A delivered artifact we cannot reopen simply does not participate.
+    }
+  }
+  const contentFamilies: ContentFamilyMetrics = buildContentFamilies(
+    familyCandidates,
+    files.reduce((total, f) => total + (f.omitted ? 0 : Math.max(0, f.beforeChars)), 0),
+  );
+
+  // Deliver ONE canonical representation per family and replace the redundant TEXT
+  // copies with a short alias that names it. The content stays available (at the
+  // canonical path), the agent is told which representation to analyse, and the same
+  // bytes stop being counted as extra context. Binary artifacts are only recorded,
+  // never rewritten — an alias written into an .xlsx would corrupt it.
+  let duplicateAliasesWritten = 0;
+  for (const family of contentFamilies.families) {
+    const canonical = family.members.find((member) => member.canonical);
+    if (!canonical) continue;
+    for (const member of family.members) {
+      if (member.canonical) continue;
+      if (!/\.(?:csv|tsv|txt)$/i.test(member.relpath)) continue;
+      const entry = files.find((file) => file.relpath === member.relpath);
+      if (!entry || entry.omitted) continue;
+      const alias = duplicateAliasText(family);
+      // The bytes this artifact contributed BEFORE aliasing, so the saving reported
+      // is the real one. Estimating the token cost of the byte COUNT (`"195"`) was a
+      // meaningless subtraction of ~1 token per file.
+      const replacedText = familyCandidates.find(
+        (candidate) => candidate.relpath === member.relpath,
+      )?.text;
+      // ONLY alias when it actually shrinks the agent-visible context. The alias body
+      // carries a family id, a canonical path, a public document id and (for a
+      // normalized family) a format-loss note, so for a SMALL table the stub is
+      // larger than the table it replaces — aliasing there would increase delivered
+      // bytes, which is the opposite of the point. The duplicate is still recorded in
+      // the family metrics either way.
+      if (replacedText !== undefined && alias.length >= replacedText.length) {
+        entry.duplicateOfFamily = family.familyId;
+        entry.canonicalRelpath = family.canonicalRelpath;
+        if (family.canonicalDocumentId) entry.canonicalDocumentId = family.canonicalDocumentId;
+        continue;
+      }
+      await writeMirrored(outDir, member.relpath, alias);
+      entry.afterChars = alias.length;
+      // `compressed` is what Safe Apply refuses to write back to source
+      // (`patch-compressed-source`), which is exactly right for a stub: an agent
+      // edit to an alias must never overwrite the real table.
+      entry.contextRepresentation = "compressed";
+      entry.duplicateOfFamily = family.familyId;
+      entry.canonicalRelpath = family.canonicalRelpath;
+      if (family.canonicalDocumentId) entry.canonicalDocumentId = family.canonicalDocumentId;
+      if (replacedText !== undefined) {
+        const saved = tokenEstimate(replacedText).tokens - tokenEstimate(alias).tokens;
+        afterTokens -= Math.max(0, saved);
+      }
+      duplicateAliasesWritten += 1;
+    }
+  }
+  if (duplicateAliasesWritten > 0) {
+    progress(
+      `Duplicate content: ${duplicateAliasesWritten} redundant representation(s) replaced ` +
+        `with a canonical alias across ${contentFamilies.families.length} family(ies).`,
+    );
+  }
+
+
   refreshPublicAvailability(files);
   let publicSummary = buildPublicPreparedContextSummary({
     files,
@@ -3579,6 +3682,10 @@ export async function prepareWorkspace(
     largeArtifactsRepresented: largeCompactEntries.length,
     reductionByStructuralCompression: Math.max(0, structuralReduction),
     reductionByLargeArtifactRepresentation: largeArtifactReduction,
+    delivery: {
+      rawFallbackFiles: deliveryIntegrity.rawFallbackFiles,
+      identifierResidueFiles: deliveryIntegrity.identifierResidueFiles,
+    },
   });
   let finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
   yuhiModeSummary = buildYuhiModeSummary({
@@ -3590,6 +3697,10 @@ export async function prepareWorkspace(
     largeArtifactsRepresented: largeCompactEntries.length,
     reductionByStructuralCompression: Math.max(0, structuralReduction),
     reductionByLargeArtifactRepresentation: largeArtifactReduction,
+    delivery: {
+      rawFallbackFiles: deliveryIntegrity.rawFallbackFiles,
+      identifierResidueFiles: deliveryIntegrity.identifierResidueFiles,
+    },
   });
   finalHandoff = renderYuhiModeHandoff(yuhiModeSummary);
   await writeMirrored(outDir, ".yuhi/context/AGENT_HANDOFF.md", publicSurface(finalHandoff));
@@ -3598,73 +3709,6 @@ export async function prepareWorkspace(
     ".yuhi/yuhi-mode-summary.json",
     publicSurface(JSON.stringify(yuhiModeSummary, null, 2) + "\n"),
   );
-
-  // ONE derivation of the delivery facts, shared by the manifest, the report, the
-  // CLI and the VS Code panel. No surface may recompute or hardcode these (#12).
-  const deliveryIntegrity = buildDeliveryIntegritySummary(files);
-  const rawFallbackUsed = deliveryIntegrity.rawFallbackFiles > 0;
-
-  // Duplicate-content families over the artifacts actually delivered (#15/P1-B).
-  // Yuhi's own transform normalizes BOM and line endings away, so distinct source
-  // files can become byte-identical deliveries; nothing used to record that.
-  const familyCandidates: FamilyCandidate[] = [];
-  for (const entry of files) {
-    if (entry.omitted) continue;
-    if (entry.relpath.startsWith(".yuhi/") || entry.relpath === "manifest.json") continue;
-    const abs = path.join(outDir, ...entry.relpath.split("/"));
-    try {
-      const stats = await stat(abs);
-      if (!stats.isFile()) continue;
-      if (/\.(?:csv|tsv|txt)$/i.test(entry.relpath)) {
-        const text = await readFile(abs, "utf8");
-        familyCandidates.push({ relpath: entry.relpath, text, bytes: stats.size });
-      } else {
-        const buffer = await readFile(abs);
-        familyCandidates.push({
-          relpath: entry.relpath,
-          bytes: stats.size,
-          sha256: createHash("sha256").update(buffer).digest("hex"),
-        });
-      }
-    } catch {
-      // A delivered artifact we cannot reopen simply does not participate.
-    }
-  }
-  const contentFamilies: ContentFamilyMetrics = buildContentFamilies(
-    familyCandidates,
-    files.reduce((total, f) => total + (f.omitted ? 0 : Math.max(0, f.beforeChars)), 0),
-  );
-
-  // Deliver ONE canonical representation per family and replace the redundant TEXT
-  // copies with a short alias that names it. The content stays available (at the
-  // canonical path), the agent is told which representation to analyse, and the same
-  // bytes stop being counted as extra context. Binary artifacts are only recorded,
-  // never rewritten — an alias written into an .xlsx would corrupt it.
-  let duplicateAliasesWritten = 0;
-  for (const family of contentFamilies.families) {
-    const canonical = family.members.find((member) => member.canonical);
-    if (!canonical) continue;
-    for (const member of family.members) {
-      if (member.canonical) continue;
-      if (!/\.(?:csv|tsv|txt)$/i.test(member.relpath)) continue;
-      const entry = files.find((file) => file.relpath === member.relpath);
-      if (!entry || entry.omitted) continue;
-      const alias = duplicateAliasText(family.familyId, canonical.relpath);
-      await writeMirrored(outDir, member.relpath, alias);
-      entry.afterChars = alias.length;
-      entry.contextRepresentation = "compressed";
-      entry.duplicateOfFamily = family.familyId;
-      entry.canonicalRelpath = canonical.relpath;
-      afterTokens -= Math.max(0, tokenEstimate(String(member.bytes)).tokens);
-      duplicateAliasesWritten += 1;
-    }
-  }
-  if (duplicateAliasesWritten > 0) {
-    progress(
-      `Duplicate content: ${duplicateAliasesWritten} redundant representation(s) replaced ` +
-        `with a canonical alias across ${contentFamilies.families.length} family(ies).`,
-    );
-  }
 
   const manifest = {
     schemaVersion: manifestSchemaVersion,
@@ -3713,6 +3757,7 @@ export async function prepareWorkspace(
         ...(f.rawFallback !== undefined ? { rawFallback: f.rawFallback } : {}),
         ...(f.duplicateOfFamily ? { duplicateOfFamily: f.duplicateOfFamily } : {}),
         ...(f.canonicalRelpath ? { canonicalRelpath: f.canonicalRelpath } : {}),
+        ...(f.canonicalDocumentId ? { canonicalDocumentId: f.canonicalDocumentId } : {}),
         ...(f.postTransformScan !== undefined ? { postTransformScan: f.postTransformScan } : {}),
         ...(f.finalRescanVerified !== undefined
           ? { finalRescanVerified: f.finalRescanVerified }
@@ -3939,6 +3984,7 @@ export async function prepareWorkspace(
     ...(compressionReport ? { compression: compressionReport } : {}),
     publicSummary,
     yuhiModeSummary,
+    contentFamilies,
     tabularAcceptance: {
       entitiesPseudonymized: studentAliases.nextEntity - 1,
       identifierColumnsTransformed,

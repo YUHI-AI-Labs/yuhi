@@ -158,10 +158,111 @@ describe("buildContentFamilies", () => {
 });
 
 describe("duplicateAliasText", () => {
-  it("names the family and points at the canonical representation", () => {
-    const text = duplicateAliasText("family-abc123", "roster.csv");
+  it("names the family, the canonical path AND its public document id", () => {
+    const text = duplicateAliasText({
+      familyId: "family-abc123",
+      canonicalRelpath: "roster.csv",
+      canonicalDocumentId: "doc-9f1c2b",
+      kind: "exact",
+      formatDetailLost: false,
+    });
     expect(text).toContain("Duplicate of dataset family-abc123");
     expect(text).toContain("Use the canonical representation for analysis.");
     expect(text).toContain("roster.csv");
+    // Traceable by stable public identity, not only by a (possibly pseudonymized) name.
+    expect(text).toContain("Canonical document id: doc-9f1c2b");
+    expect(text).toContain("Duplicate kind: identical bytes");
+  });
+
+  it("distinguishes a normalized family from an exact one in the alias body", () => {
+    const text = duplicateAliasText({
+      familyId: "family-abc123",
+      canonicalRelpath: "roster.csv",
+      kind: "normalized",
+      formatDetailLost: false,
+    });
+    expect(text).toContain("identical table, different encoding or format");
+  });
+
+  it("discloses format-specific loss when members differ in encoding or format", () => {
+    const text = duplicateAliasText({
+      familyId: "family-abc123",
+      canonicalRelpath: "roster.csv",
+      kind: "normalized",
+      formatDetailLost: true,
+    });
+    expect(text).toMatch(/differ in encoding or format/);
+    expect(text).toMatch(/preserves the DATA but/);
+  });
+
+  it("says nothing about format loss for a byte-identical family", () => {
+    const text = duplicateAliasText({
+      familyId: "family-abc123",
+      canonicalRelpath: "roster.csv",
+      kind: "exact",
+      formatDetailLost: false,
+    });
+    expect(text).not.toMatch(/differ in encoding or format/);
+  });
+});
+
+describe("canonical selection keeps the agent's context readable", () => {
+  it("never makes a binary artifact canonical for a family containing text", () => {
+    // Two reinforcing reasons. Structurally, a binary only ever joins an EXACT family
+    // and cannot be byte-identical to a text file, so a mixed family does not arise
+    // today. Behaviourally, the sort puts text first regardless — defence in depth if
+    // normalized matching is ever extended to spreadsheet contents.
+    const table = [["学籍番号", "氏名"], ["SID_CANARY_001", "STUDENT_CANARY_001"]];
+    const csv = candidate("roster.csv", join(table));
+    const xlsx: FamilyCandidate = { relpath: "roster.xlsx", bytes: 60_000, sha256: "aa" };
+    const metrics = buildContentFamilies([xlsx, csv, candidate("copy.csv", join(table))], 0);
+
+    // The binary is not grouped with the text representations at all.
+    for (const family of metrics.families) {
+      const paths = family.members.map((m) => m.relpath);
+      if (paths.some((path) => path.endsWith(".csv"))) {
+        expect(paths).not.toContain("roster.xlsx");
+      }
+      // Whatever the family, a canonical is never a binary while text is present.
+      const hasText = paths.some((path) => /\.(?:csv|tsv|txt)$/.test(path));
+      if (hasText) expect(family.canonicalRelpath).not.toMatch(/\.xlsx$/);
+    }
+    // And the text pair did form a family with a text canonical.
+    const textFamily = metrics.families.find((f) =>
+      f.members.every((m) => m.relpath.endsWith(".csv")),
+    );
+    expect(textFamily).toBeDefined();
+    expect(textFamily!.canonicalRelpath).toMatch(/\.csv$/);
+  });
+
+  it("exposes the canonical relpath and document id on the family", () => {
+    const table = [["学籍番号", "氏名"], ["SID_CANARY_001", "STUDENT_CANARY_001"]];
+    const metrics = buildContentFamilies(
+      [
+        { ...candidate("a.csv", join(table)), documentId: "doc-aaa" },
+        { ...candidate("b.csv", join(table)), documentId: "doc-bbb" },
+      ],
+      0,
+    );
+    const family = metrics.families[0]!;
+    expect(family.canonicalRelpath).toBeTruthy();
+    expect(family.canonicalDocumentId).toBeTruthy();
+    // Every member carries its own id too, so a consumer can map both directions.
+    expect(family.members.every((m) => Boolean(m.documentId))).toBe(true);
+  });
+
+  it("flags format loss across BOM/CRLF/delimiter variants, not within identical bytes", () => {
+    const table = [["学籍番号", "氏名"], ["SID_CANARY_001", "STUDENT_CANARY_001"]];
+    const mixed = buildContentFamilies(
+      [candidate("a.csv", join(table)), candidate("b.tsv", join(table, "\t"))],
+      0,
+    ).families[0]!;
+    expect(mixed.formatDetailLost).toBe(true);
+
+    const identical = buildContentFamilies(
+      [candidate("a.csv", join(table)), candidate("b.csv", join(table))],
+      0,
+    ).families[0]!;
+    expect(identical.formatDetailLost).toBe(false);
   });
 });

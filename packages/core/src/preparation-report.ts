@@ -33,6 +33,12 @@ export interface PreparationReport {
    *  Named for what it counts: these are REDUCED, not excluded, and a file delivered
    *  with an unverified-transformation warning is not counted here at all. */
   largeArtifactsReduced: number;
+  /**
+   * @deprecated Renamed to `largeArtifactsReduced` (it counts artifacts REDUCED, not
+   * excluded). Still emitted so an existing `yuhi report --format json` consumer does
+   * not break on a patch release; remove at the next minor.
+   */
+  largeFilesExcluded?: number;
   /** Explicitly an estimate of agent-accessible content reduction, not token savings. */
   estimatedReductionPercent: number;
   status: "ready" | "ready-with-warning";
@@ -55,6 +61,7 @@ export function buildPreparationReport(
     secretsBlocked: readiness.secretsBlocked,
     identifiersTransformed: readiness.piiTransformed,
     largeArtifactsReduced: readiness.largeFilesReduced,
+    largeFilesExcluded: readiness.largeFilesReduced,
     estimatedReductionPercent: readiness.estimatedReductionPercent,
     status: opts.warning ? "ready-with-warning" : "ready",
     ...(opts.context ? { context: opts.context } : {}),

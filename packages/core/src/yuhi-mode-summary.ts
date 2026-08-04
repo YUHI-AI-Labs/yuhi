@@ -40,6 +40,11 @@ export interface YuhiModeSummary {
     reductionByLargeArtifactRepresentation: number;
     reductionBySafetyTransformation: number;
   };
+  /** Delivery integrity, mirrored here so the HANDOFF can state it (#12). */
+  delivery?: {
+    rawFallbackFiles: number;
+    identifierResidueFiles: number;
+  };
   background: {
     status: "idle" | "running" | "completed" | "completed-with-limitations";
     pending: number;
@@ -69,6 +74,8 @@ export interface BuildYuhiModeSummaryInput {
   files: readonly PreparedFileEntry[];
   prepared: PublicPreparedContextSummary;
   background?: PublicBackgroundStatus;
+  /** Delivery facts from `buildDeliveryIntegritySummary`, when available. */
+  delivery?: { rawFallbackFiles: number; identifierResidueFiles: number };
   launchAllowed: boolean;
   selectedAgent?: string;
   autoModeAvailable?: boolean;
@@ -220,6 +227,7 @@ export function buildYuhiModeSummary(input: BuildYuhiModeSummaryInput): YuhiMode
       companionUnavailable,
       contextUnavailable,
     },
+    ...(input.delivery ? { delivery: input.delivery } : {}),
     protection: {
       originalWorkspaceModified: input.prepared.originalWorkspaceModified,
       knownSecretsBlocked: input.prepared.excludedForSafetyFiles,
@@ -254,6 +262,19 @@ export function renderYuhiModeHandoff(summary: YuhiModeSummary): string {
     "",
     "Some documents are available in their original format before local inspection completes.",
     "Treat files marked inspection-pending as unverified, but use them when needed.",
+    ...(summary.delivery && summary.delivery.identifierResidueFiles > 0
+      ? [
+          "",
+          "## Not fully de-identified",
+          "",
+          `- Files still containing identifier residue: ${summary.delivery.identifierResidueFiles}`,
+          `- Files delivered as the unmodified original: ${summary.delivery.rawFallbackFiles}`,
+          "",
+          "These files were delivered so you still have the data, but Yuhi could NOT verify",
+          "that every direct identifier was removed. Treat their identifier columns as real",
+          "personal data: do not quote them, and do not copy them into new files.",
+        ]
+      : []),
     "Verified companions may appear as background processing completes.",
     "",
     "## Context efficiency",
