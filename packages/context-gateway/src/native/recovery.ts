@@ -12,7 +12,7 @@
  * still be using.
  */
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { cleanupSession, purgeSessionDirectory } from "./cleanup.js";
@@ -117,6 +117,21 @@ export async function discoverSessions(env: RecoveryEnvironment = defaultLockEnv
   return found;
 }
 
+/**
+ * Mark a swept session terminal in its PUBLIC record.
+ *
+ * Cleanup releases the lock, but the record is written by the in-process LifecycleRecorder,
+ * which no longer exists for a session recovered from disk. Without this the session keeps
+ * reading as `active` forever: every later sweep "recovers" it again and the session list
+ * misreports a dead session as merely stale.
+ */
+export async function markRecovered(layout: SessionLayout, reason: string): Promise<void> {
+  const record = await readRecord(layout.sessionRecord);
+  if (!record || isTerminal(record.state)) return;
+  const next = { ...record, state: "orphaned" as NativeSessionState, closeReason: "recovery-sweep", updatedAt: new Date().toISOString(), recoveredReason: reason };
+  await writeFile(layout.sessionRecord, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
+
 export interface RecoverySweepResult {
   readonly inspected: number;
   readonly recovered: readonly string[];
@@ -152,8 +167,12 @@ export async function recoverStaleSessions(
     // Stale or unreadable: finish the shutdown that never completed. No signal is sent to
     // any process — we only release our own artefacts.
     const result = await cleanupSession(session.layout, {});
-    if (result.ok) recovered.push(session.sessionId);
-    else failed.push(session.sessionId);
+    if (result.ok) {
+      await markRecovered(session.layout, session.staleReason ?? "unreadable").catch(() => {});
+      recovered.push(session.sessionId);
+    } else {
+      failed.push(session.sessionId);
+    }
   }
 
   return { inspected: sessions.length, recovered, failed, skippedLive };

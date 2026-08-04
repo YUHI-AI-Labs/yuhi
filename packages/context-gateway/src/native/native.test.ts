@@ -269,6 +269,11 @@ describe("recovery", () => {
     await createSessionTree(dead);
     await createSessionTree(live);
     const now = new Date().toISOString();
+    await writeFile(dead.sessionRecord, JSON.stringify({
+      schemaVersion: 1, sessionId: "dead", state: "active", clientSurface: "native-gui",
+      workspaceHash: "w", sourceWorkspaceId: "w", createdAt: now, updatedAt: now,
+      deliveryMode: "developer", retrievalMode: "disabled",
+    }), "utf8");
     await writeLock(dead.lockFile, {
       schemaVersion: 1, sessionId: "dead", workspaceHash: "w", ownerPid: 999_999,
       createdAt: now, heartbeatAt: new Date(Date.now() - 120_000).toISOString(), state: "active",
@@ -286,6 +291,12 @@ describe("recovery", () => {
     const swept = await recoverStaleSessions({ env });
     expect(swept.recovered).toContain("dead");
     expect(swept.skippedLive).toContain("live");
+
+    // A second sweep must not "recover" the same corpse again — the public record has to
+    // become terminal, or the session list reports a dead session as merely stale forever.
+    const again = await recoverStaleSessions({ env });
+    expect(again.recovered).not.toContain("dead");
+    expect((await discoverSessions(env)).find((s) => s.sessionId === "dead")?.health).toBe("finished");
   });
 });
 

@@ -135,10 +135,36 @@ and then prepares exactly that:
 - **Reduces the repository to what matters.** Oversized and irrelevant files are kept local; files Yuhi can't safely inspect are either kept local or included with an explicit *unverified* warning.
 - **Prepares your workspace in one command.** Then start Claude Code from the VS Code extension.
 
+## Native Claude GUI (v0.4.1)
+
+**Yuhi: Open Claude Code Dynamic Workspace** opens the **official** Anthropic Claude Code
+extension in an isolated VS Code window whose `claude` process talks through the Yuhi
+gateway. You get the normal Claude Code GUI, with tool output compressed, recorded and
+policy-checked on the way past.
+
+- Your **normal VS Code profile and windows are untouched**. The session runs in its own
+  `--user-data-dir` and `--extensions-dir`.
+- The endpoint is set through the official, documented `claudeCode.environmentVariables`
+  setting, merged with whatever is already there.
+- **Yuhi never reads, copies, or stores your Claude credentials.** If the isolated window
+  needs a sign-in, you sign in through the official extension's own UI.
+- Closing the window ends the session and stops its gateway. `yuhi dynamic sessions`,
+  `yuhi dynamic stop <id>` and `yuhi dynamic recover` handle anything left behind.
+
+**macOS only, verified.** Linux and Windows are implemented but not verified on real GUIs;
+remote environments (SSH, WSL, Dev Containers, Codespaces) are not supported and say so —
+use Dynamic Terminal Mode there. The isolated window runs with workspace trust disabled,
+because VS Code's Restricted Mode would otherwise disable both Claude and Yuhi in it; this
+applies only to the window Yuhi opens on a workspace Yuhi prepared.
+
+Details: [docs/design/V0_4_1_NATIVE_GUI.md](docs/design/V0_4_1_NATIVE_GUI.md) ·
+[docs/V0_4_1_RELEASE_SCOPE.md](docs/V0_4_1_RELEASE_SCOPE.md).
+
 ## Dynamic context (v0.4.0)
 
 `yuhi launch claude --dynamic-context` — or **Yuhi: Start Claude Code with Dynamic Context**
-in VS Code — routes Claude Code through a local gateway. Each new tool result is stored
+in VS Code, which uses a dedicated terminal rather than the GUI above — routes Claude Code
+through a local gateway. Each new tool result is stored
 privately, scanned, compressed and re-scanned before it reaches the provider, and everything
 withheld stays retrievable.
 
