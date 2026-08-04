@@ -281,7 +281,7 @@ export function preflight(input: {
       ok: false,
       reason: "not-in-prepared-workspace",
       message:
-        "Dynamic context runs inside a Prepared Workspace. Run “Yuhi: Prepare and Start Claude Code” first, then start a dynamic session.",
+        "Open the folder you want to work on first. Dynamic context prepares it (or reuses an existing Prepared Workspace) and then starts Claude Code there.",
     };
   }
   if (!input.sandboxVerified) {

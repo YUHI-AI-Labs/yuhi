@@ -250,12 +250,47 @@ function dynamicHost(): DynamicContextHost {
   };
 }
 
+/**
+ * Resolve the Prepared Workspace to run the dynamic session in.
+ *
+ * The point of this indirection is that the user picks a FOLDER, not a prepared-run path.
+ * Three cases, in order of preference:
+ *   1. this window IS a Prepared Workspace → use it;
+ *   2. this window prepared one earlier in the session → reuse it;
+ *   3. otherwise prepare the open folder now, then use the result.
+ *
+ * The terminal's cwd is independent of the window's folder, so a source-folder window can
+ * host the session without opening a second window or asking which agent again.
+ */
+async function resolveDynamicPreparedRoot(): Promise<string | undefined> {
+  if (reviewingOpenedPreparedWorkspace) return firstWorkspaceRoot();
+  if (lastReport?.outDir) return lastReport.outDir;
+
+  const source = firstWorkspaceRoot();
+  if (!source) return undefined;
+  await commandPrepare();
+  return lastReport?.outDir;
+}
+
 async function commandLaunchClaudeDynamic(): Promise<void> {
-  const root = firstWorkspaceRoot();
+  const preparedRoot = await resolveDynamicPreparedRoot();
+  const insidePrepared = reviewingOpenedPreparedWorkspace || preparedRoot !== undefined;
+  // The sandbox policy lives in the Prepared Workspace; write and verify it for the root we
+  // are about to launch into, rather than trusting a flag set for a different window.
+  let sandboxVerified = preparedSandboxVerified;
+  if (preparedRoot && !sandboxVerified) {
+    try {
+      await writeAndVerifyClaudeSandboxPolicy(preparedRoot, preparedRoot);
+      sandboxVerified = true;
+    } catch {
+      sandboxVerified = (await claudeSandboxPolicyDiagnostic(preparedRoot)).valid;
+    }
+  }
+
   const check = dynamicPreflight({
-    preparedRoot: root,
-    insidePreparedWorkspace: reviewingOpenedPreparedWorkspace,
-    sandboxVerified: preparedSandboxVerified,
+    preparedRoot,
+    insidePreparedWorkspace: insidePrepared,
+    sandboxVerified,
     claudeAvailable: await claudeCliAvailable(),
   });
   if (!check.ok) {

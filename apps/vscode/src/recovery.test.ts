@@ -190,3 +190,50 @@ describe("RecoverableCommandRunner", () => {
     expect(await runner.run(async () => ({ kind: "success" }))).toEqual({ kind: "success" });
   });
 });
+
+describe("CLI-prepared workspaces", () => {
+  it("accepts a session written by `yuhi prepare`, which has no preparationResult", async () => {
+    const f = await fixture();
+    // Exactly what packages/core writes: its own vocabulary, no extension-only field.
+    // Requiring `preparationResult` made every CLI-prepared workspace look incomplete and
+    // blocked the launch, with a valid manifest and no failed files.
+    await writeFile(
+      path.join(f.workspace, ".yuhi", "session.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        preparedBy: "Yuhi",
+        runId: "new",
+        status: "Success",
+        launchAllowed: true,
+      }),
+    );
+
+    const state = await validatePreparedWorkspace({
+      workspace: f.workspace,
+      managedBase: f.managedBase,
+      quarantineBase: f.quarantineBase,
+    });
+    expect(state.kind).toBe("valid");
+  });
+
+  it("still refuses a CLI session that says the launch is not allowed", async () => {
+    const f = await fixture();
+    await writeFile(
+      path.join(f.workspace, ".yuhi", "session.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        preparedBy: "Yuhi",
+        runId: "new",
+        status: "Failed",
+        launchAllowed: false,
+      }),
+    );
+
+    const state = await validatePreparedWorkspace({
+      workspace: f.workspace,
+      managedBase: f.managedBase,
+      quarantineBase: f.quarantineBase,
+    });
+    expect(state).toMatchObject({ kind: "recovery-required", reason: "preparation-incomplete" });
+  });
+});
