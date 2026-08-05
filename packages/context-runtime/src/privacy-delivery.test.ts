@@ -92,9 +92,12 @@ describe("prose tool result", () => {
 });
 
 describe("JSON tool result", () => {
-  it("masks a shape-detectable email value, preserves an ordinary name-shaped field, keeps valid JSON", async () => {
+  it("masks a shape-detectable email value regardless of key, preserves an ordinary name-shaped field with NO operational sibling key, keeps valid JSON", async () => {
     const rt = await runtime("balanced");
-    const content = JSON.stringify({ student_id: "L001", name: "user-500", email: "user-500@example.com" });
+    // No operational-identifier-shaped key here ("id" alone is deliberately NOT
+    // treated as one -- see text-deidentify.ts's GENERIC_OPERATIONAL_TYPES) -- an
+    // ordinary API/test-fixture shape, not a student record.
+    const content = JSON.stringify({ id: 1, name: "user-500", email: "user-500@example.com" });
     const delivery = await rt.deliver({
       sessionId: SESSION,
       tool: "read",
@@ -104,10 +107,27 @@ describe("JSON tool result", () => {
       compress: false,
     });
     if (delivery.status !== "delivered") throw new Error("expected delivery");
-    const parsed = JSON.parse(delivery.text) as { student_id: string; name: string; email: string };
-    expect(parsed.student_id).toBe("L001");
+    const parsed = JSON.parse(delivery.text) as { id: number; name: string; email: string };
     expect(parsed.name).toBe("user-500");
     expect(parsed.email).not.toContain("@example.com");
+  });
+
+  it("masks a name field by key when a sibling operational key makes the object record-shaped (student_id + name)", async () => {
+    const rt = await runtime("balanced");
+    const content = JSON.stringify({ student_id: "L001", name: "山田太郎", score: 90 });
+    const delivery = await rt.deliver({
+      sessionId: SESSION,
+      tool: "read",
+      kind: "json",
+      content,
+      privateMetadata: privateMetadata(),
+      compress: false,
+    });
+    if (delivery.status !== "delivered") throw new Error("expected delivery");
+    const parsed = JSON.parse(delivery.text) as { student_id: string; name: string; score: number };
+    expect(parsed.student_id).toBe("L001");
+    expect(parsed.name).toMatch(/^PERSON-\d+$/);
+    expect(parsed.score).toBe(90);
   });
 });
 

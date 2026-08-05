@@ -1,14 +1,17 @@
 import {
   DEFAULT_PRIVACY_MODE,
+  identifierCategory,
   modeTransformsDirectIdentifiers,
   type PrivacyMode,
 } from "./identifier-taxonomy.js";
 import {
+  classifyStudentRecordHeaders,
   createStudentAliasContext,
   directPersonalValueTokensForEntities,
   entitiesReachableInText,
   mintUnlinkedPersonalToken,
   normalizeIdentifierValue,
+  type DirectIdentifierType,
   type StudentAliasContext,
 } from "./student-records.js";
 
@@ -169,7 +172,13 @@ function applyShapePatterns(
       const key = `${kind}:${normalizeIdentifierValue(match)}`;
       let assigned = minted.get(key);
       if (!assigned) {
-        assigned = `${token}-${String(minted.size + 1).padStart(3, "0")}`;
+        // PER-KIND ordinal (v0.4.8 release audit fix): `minted` is shared across
+        // every pattern kind in one call so token IDENTITY stays consistent
+        // document-wide, but the NUMBERING must not be a single counter shared
+        // across kinds — an email minted first must not push the first phone number
+        // to "PHONE-002". Count only this kind's own prior mints.
+        const priorForKind = [...minted.keys()].filter((k) => k.startsWith(`${kind}:`)).length;
+        assigned = `${token}-${String(priorForKind + 1).padStart(3, "0")}`;
         minted.set(key, assigned);
       }
       replaced[kind] += 1;
@@ -259,14 +268,23 @@ export function deidentifyText(
 
 /**
  * De-identify every string value in a JSON payload — a live tool result's shape, not a
- * document's. Deliberately NOT key-name based (a JSON `"name"` field in an arbitrary
- * repository's API response or test fixture is far more likely to be a product/package
- * name than a person's — see `docs/design/0.4.8_privacy_mode.md`, Phase 3 JSON
- * precision decision): every string value gets the SAME shape-pattern and
- * registry-reuse treatment `deidentifyText` gives prose (steps 1–2 only — no CJK name
- * heuristic, for the same over-masking reason `DeidentifyTextOptions` documents), with
+ * document's. Every string value gets the SAME shape-pattern and registry-reuse
+ * treatment `deidentifyText` gives prose (email/phone/my-number/passport/credit-card,
+ * plus reuse of a value another source in this run already linked to an entity), with
  * one shared token registry across the whole payload so the same value gets the same
- * token wherever it recurs in the document, not just within one field.
+ * token wherever it recurs.
+ *
+ * Key-name masking is applied ONLY for a NARROW, evidence-based shape: an object whose
+ * OWN keys classify as containing both an operational identifier (student id, course
+ * code, …) and a direct-personal identifier (name, address, …) — the same
+ * classification `classifyStudentRecordHeaders` already uses to call a CSV/XLSX table
+ * "restricted" (sensitive). A `{"name": "..."}` field in an arbitrary repository's API
+ * response or test fixture, with no such sibling key, is far more likely to be a
+ * product/package name than a person's, and is left to shape-pattern/registry
+ * detection only — see `docs/design/0.4.8_privacy_mode.md`'s Phase 3 JSON precision
+ * decision. `{"student_id": "L001", "name": "山田太郎"}` IS this shape (student_id is
+ * operational, name is direct-personal, in the SAME object) and gets masked by key,
+ * exactly as the equivalent CSV row already would.
  *
  * Returns `null` when `input` is not valid JSON, so the caller can fall back to prose
  * handling instead of silently delivering the text untransformed.
@@ -291,19 +309,60 @@ export function deidentifyJsonFields(
     .filter(([value]) => value.length >= 2)
     .sort((a, b) => b[0].length - a[0].length);
   const minted = new Map<string, string>();
+  // Fresh, unlinked tokens for a key-classified direct-personal field that neither the
+  // registry nor a shape pattern already masked (e.g. a CJK name) — scoped to THIS
+  // JSON payload only, mirroring prose's "no strong key -> fresh token per call" rule.
+  const unlinkedTokens = new Map<string, string>();
   let replacedFields = 0;
 
-  const walk = (value: unknown): unknown => {
+  const walk = (value: unknown, personalType?: DirectIdentifierType): unknown => {
     if (typeof value === "string") {
       const step1 = applyKnownValueTokens(value, known);
       const step2 = applyShapePatterns(step1.text, minted);
-      if (step2.text !== value) replacedFields += 1;
-      return step2.text;
+      let result = step2.text;
+      if (personalType && result === value) {
+        const normalized = normalizeIdentifierValue(value);
+        const unlinkedKey = `${personalType}:${normalized}`;
+        let token = unlinkedTokens.get(unlinkedKey);
+        if (!token) {
+          token = mintUnlinkedPersonalToken(context, personalType);
+          unlinkedTokens.set(unlinkedKey, token);
+        }
+        result = token;
+      }
+      if (result !== value) replacedFields += 1;
+      return result;
     }
-    if (Array.isArray(value)) return value.map(walk);
+    if (Array.isArray(value)) return value.map((v) => walk(v));
     if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const keys = Object.keys(record);
+      const classification = classifyStudentRecordHeaders(keys);
+      const typeByKey = new Map<string, DirectIdentifierType>();
+      classification.directIdentifierIndexes.forEach((idx, i) => {
+        typeByKey.set(keys[idx]!, classification.directIdentifierTypes[i]!);
+      });
+      // "account-id"/"record-id" are matched by `directIdentifierType`'s generic
+      // trailing-morpheme fallback (bare "id", "番号", "コード" — see
+      // student-records.ts) and fire on almost any ordinary API object (`{id, name}`
+      // is one of the most common JSON shapes there is). Excluded from the
+      // record-shaped signal so they cannot manufacture false evidence that an
+      // arbitrary object is a student/business record; the more specific operational
+      // types below only match a deliberate, narrower alias.
+      const GENERIC_OPERATIONAL_TYPES = new Set<DirectIdentifierType>(["account-id", "record-id"]);
+      const hasOperationalKey = [...typeByKey.values()].some(
+        (t) => identifierCategory(t) === "operational-identifier" && !GENERIC_OPERATIONAL_TYPES.has(t),
+      );
+      const hasPersonalKey = [...typeByKey.values()].some(
+        (t) => identifierCategory(t) === "direct-personal-identifier",
+      );
+      const recordShaped = hasOperationalKey && hasPersonalKey;
       const out: Record<string, unknown> = {};
-      for (const [key, v] of Object.entries(value as Record<string, unknown>)) out[key] = walk(v);
+      for (const [key, v] of Object.entries(record)) {
+        const type = typeByKey.get(key);
+        const isPersonalKey = recordShaped && type !== undefined && identifierCategory(type) === "direct-personal-identifier";
+        out[key] = walk(v, isPersonalKey ? type : undefined);
+      }
       return out;
     }
     return value;
