@@ -80,6 +80,27 @@ export interface EvidenceRecord {
   readonly prefixStable: boolean;
   /** True when recomputation diverged and the earlier bytes were kept (see §2). */
   readonly recomputeDiverged?: boolean;
+  /**
+   * v0.5.0 Planner evidence (docs/design/0.5.0_planner_contract.md §7): a safe,
+   * closed-enum summary of what the Planner decided and why. NEVER a reason to
+   * distrust `strategy`/`deliveryPath` above — in `"observe"` mode `executed` is
+   * always `false`, meaning this plan was computed for evidence only and did not
+   * influence the bytes actually delivered.
+   */
+  readonly plan?: PlanEvidence;
+}
+
+export interface PlanEvidence {
+  readonly generationMode: "observe" | "active";
+  readonly intent: string;
+  readonly role: string;
+  readonly kind: string;
+  readonly reason: string;
+  readonly rule: string;
+  readonly strategyId?: string;
+  readonly confidence: "high" | "medium" | "low";
+  /** True only when `generationMode` is `"active"` AND this plan drove delivery. */
+  readonly executed: boolean;
 }
 
 export interface LedgerOmission {

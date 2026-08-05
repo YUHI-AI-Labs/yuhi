@@ -5,3 +5,4 @@ export * from "./ledger.js";
 export * from "./locator.js";
 export * from "./privacy-pipeline.js";
 export * from "./pipeline.js";
+export * from "./planner/index.js";

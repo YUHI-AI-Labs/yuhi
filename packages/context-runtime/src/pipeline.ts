@@ -19,6 +19,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  BUILTIN_COMPRESSORS,
   compressWithFallback,
   defaultCompressContext,
   type CompressContext,
@@ -36,6 +37,8 @@ import {
 } from "@yuhi/context-store";
 import type { DetectorOptions } from "@yuhi/scanner";
 import {
+  byteCount,
+  codePointCount,
   createStudentAliasContext,
   DEFAULT_PRIVACY_MODE,
   directPersonalValueTokens,
@@ -72,6 +75,21 @@ import {
   scanMetadata,
 } from "./safety.js";
 import { DEVELOPER_MODE_POLICY, type DeliveryPolicy } from "./delivery-policy.js";
+import {
+  classifyIntent,
+  classifyRole,
+  capabilitiesOf,
+  defaultPlanner,
+  hasTestFailureMarkers,
+} from "./planner/index.js";
+import type {
+  ContextIntent,
+  ContextPlan,
+  ContextRole,
+  DynamicContextPlanner,
+  GenerationMode,
+  PriorDelivery,
+} from "./planner/index.js";
 
 export interface FallbackPolicy {
   /** Behaviour when compression is UNAVAILABLE. Security failures ignore this. */
@@ -215,6 +233,24 @@ export interface ContextRuntimeOptions {
    * Defaults to a fresh, empty registry (a new Dynamic session with no prior linkage).
    */
   readonly aliasContext?: StudentAliasContext;
+  /**
+   * v0.5.0 Task-Aware Dynamic Context Generation. Defaults to `"off"` — a
+   * zero-overhead escape hatch, no `PlannerInput` is even constructed (see
+   * docs/design/0.5.0_dynamic_generation.md §2). `"observe"` computes a
+   * counterfactual `ContextPlan` and records it in evidence WITHOUT changing what
+   * is actually delivered — this is the mechanism, not a promise: the executed
+   * path in observe mode is byte-identical to `"off"`. `"active"` is not yet
+   * wired to change delivery (see Phase 2+); it currently behaves like
+   * `"observe"` and is reserved for incremental rollout.
+   */
+  readonly generationMode?: GenerationMode;
+  /** Planner override, primarily for tests. Defaults to the v1 deterministic planner. */
+  readonly planner?: DynamicContextPlanner;
+  /**
+   * Whether retrieval tools are registered for this session (Rule 5/8). Defaults
+   * to false, matching v0.4.0's measured-cheapest default (retrieval is opt-in).
+   */
+  readonly retrievalAvailable?: boolean;
 }
 
 interface DeliveredBytes {
@@ -244,6 +280,16 @@ export class ContextRuntime {
   private readonly delivered = new Map<string, DeliveredBytes>();
   /** Same guarantee for retrievals: the same range always returns the same bytes. */
   private readonly retrieved = new Map<string, string>();
+  private readonly generationMode: GenerationMode;
+  private readonly planner: DynamicContextPlanner;
+  private readonly retrievalAvailable: boolean;
+  /**
+   * v0.5.0 Prior Delivery Ledger (planner_contract.md §4) — a superset of `delivered`
+   * used for the PLANNER's own Rule 2 decision. Instance-scoped like `delivered`,
+   * for the same reason: content is addressed by (objectId, revision), which is
+   * already effectively content-identity, not session identity.
+   */
+  private readonly priorDeliveries = new Map<string, PriorDelivery>();
 
   constructor(opts: ContextRuntimeOptions) {
     this.store = opts.store;
@@ -257,6 +303,9 @@ export class ContextRuntime {
     this.privacyMode = opts.privacyMode ?? DEFAULT_PRIVACY_MODE;
     this.aliasContext = opts.aliasContext ?? createStudentAliasContext();
     this.limits = opts.retrievalLimits ?? DEFAULT_RETRIEVAL_LIMITS;
+    this.generationMode = opts.generationMode ?? "off";
+    this.planner = opts.planner ?? defaultPlanner;
+    this.retrievalAvailable = opts.retrievalAvailable ?? false;
     this.ctx = defaultCompressContext({
       now: this.now,
       ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
@@ -476,6 +525,59 @@ export class ContextRuntime {
         ? "delivered-original"
         : "delivered";
 
+    // v0.5.0 Planner — OBSERVE ONLY (docs/design/0.5.0_dynamic_generation.md §2).
+    // `"off"` never builds a PlannerInput: zero overhead, not a flag check in the
+    // hot path. `"observe"`/`"active"` compute a counterfactual plan and record it
+    // in evidence; the bytes already chosen above (`candidate`/`strategy`) are
+    // NEVER changed by this block in Phase 1 — that is the guarantee, not a TODO.
+    let plan: ContextPlan | undefined;
+    let planIntent: ContextIntent | undefined;
+    let planRole: ContextRole | undefined;
+    if (this.generationMode !== "off") {
+      const failureMarkers = hasTestFailureMarkers(req.kind, req.content);
+      planIntent = classifyIntent({
+        tool: req.tool,
+        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
+        kind: req.kind,
+        hasFailureMarkers: failureMarkers,
+      });
+      planRole = classifyRole({
+        tool: req.tool,
+        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
+        kind: req.kind,
+        hasFailureMarkers: failureMarkers,
+        activeEditTargets: [],
+        isRepeatedContent: this.priorDeliveries.has(key),
+        confidenceHint: req.privateMetadata.absolutePath ? "high" : "low",
+      });
+      plan = this.planner.plan({
+        intent: planIntent,
+        role: planRole,
+        contentType: req.kind,
+        objectId: stored.objectId,
+        revision: stored.revision,
+        measurement: { estimatedTokens: tokensBefore, exactCharacters: codePointCount(req.content) },
+        priorDeliveries: [...this.priorDeliveries.values()],
+        retrievalAvailable: this.retrievalAvailable,
+        compressors: capabilitiesOf(this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]),
+        privacyMode: this.privacyMode,
+        secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+        privacyOrSecurityFailure: false,
+        tool: req.tool,
+      });
+      this.priorDeliveries.set(key, {
+        objectId: stored.objectId,
+        revision: stored.revision,
+        representationId: strategy,
+        deliveredHash: sha256(candidate),
+        planKind: plan.kind,
+        ...(plan.strategyId ? { strategyId: plan.strategyId } : {}),
+        estimatedTokens: tokensAfter,
+        exactCharacters: byteCount(candidate),
+        deliveredAtTurn: seq,
+      });
+    }
+
     // 6. Evidence, then delivery.
     const record: EvidenceRecord = {
       type: "delivery",
@@ -515,6 +617,24 @@ export class ContextRuntime {
       ...(fallback ? { fallback, failureClass: "availability" as const } : {}),
       ...(recomputeDiverged ? { recomputeDiverged: true } : {}),
       ...(req.toolUseId ? { toolUseId: req.toolUseId } : {}),
+      ...(plan
+        ? {
+            plan: {
+              // Phase 1 scope: "active" never drives delivery yet (see the block
+              // above), so `executed` is unconditionally false until a later phase
+              // wires Rule 2+ into the actual compression call.
+              generationMode: this.generationMode === "active" ? "active" : "observe",
+              intent: planIntent ?? "unknown",
+              role: planRole ?? "unknown",
+              kind: plan.kind,
+              reason: plan.reason,
+              rule: plan.rule,
+              ...(plan.strategyId ? { strategyId: plan.strategyId } : {}),
+              confidence: plan.confidence,
+              executed: false,
+            },
+          }
+        : {}),
     };
     await this.ledger.record(record);
 
