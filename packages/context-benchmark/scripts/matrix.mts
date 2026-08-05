@@ -24,7 +24,34 @@ import { ContextStore, asSessionId } from "../../context-store/src/index.js";
 import { createFixture, FIXTURE_MARKER, PATCH_TASKS, TASK_ORACLE, TASK_PROMPTS, type TaskId } from "./fixtures.mts";
 import { resolveRunForLaunch } from "../../../apps/cli/src/launch.js";
 
-type Condition = "baseline" | "static-yuhi" | "dynamic-yuhi" | "static+dynamic-yuhi";
+/**
+ * v0.5.0 adds two conditions to the v0.4.0 four (docs/design/0.5.0_benchmark.md
+ * §2, conditions D/E): `dynamic-yuhi-v05-observe` MUST be measurement-identical
+ * to `dynamic-yuhi` on every metric except the new evidence fields, because the
+ * Planner never changes what is delivered in observe mode (see
+ * packages/context-runtime/src/planner/observe-mode.test.ts for the unit-level
+ * proof) -- any real-run delta between them is a harness bug, not a result.
+ */
+type Condition =
+  | "baseline"
+  | "static-yuhi"
+  | "dynamic-yuhi"
+  | "static+dynamic-yuhi"
+  | "dynamic-yuhi-v05-observe"
+  | "dynamic-yuhi-v05-active";
+
+function generationModeFor(condition: Condition): "off" | "observe" | "active" {
+  if (condition === "dynamic-yuhi-v05-observe") return "observe";
+  if (condition === "dynamic-yuhi-v05-active") return "active";
+  return "off"; // v0.4.0 conditions: byte-identical to before the Planner existed.
+}
+
+const DYNAMIC_CONDITIONS: readonly Condition[] = [
+  "dynamic-yuhi",
+  "static+dynamic-yuhi",
+  "dynamic-yuhi-v05-observe",
+  "dynamic-yuhi-v05-active",
+];
 
 interface RunRecord {
   task: TaskId;
@@ -234,7 +261,7 @@ async function runOne(
   let gatewayStats: Record<string, number> | undefined;
   let retrievalTally = { delivered: 0, withheld: 0 };
 
-  if (condition === "dynamic-yuhi" || condition === "static+dynamic-yuhi") {
+  if (DYNAMIC_CONDITIONS.includes(condition)) {
     const contextRoot = join(workspace, ".yuhi", "context");
     await mkdir(contextRoot, { recursive: true });
     const sessionId = `bench-${task}-${run}`;
@@ -243,6 +270,7 @@ async function runOne(
       sessionOverride: sessionId,
       // Default-off, matching the shipped default; --retrieval overrides it.
       retrievalMode: retrievalMode as "disabled" | "conditional" | "required",
+      generationMode: generationModeFor(condition),
     });
     const mcpConfig =
       withMcp && retrievalMode !== "disabled" ? await writeMcpConfig(workspace, contextRoot, sessionId) : undefined;
