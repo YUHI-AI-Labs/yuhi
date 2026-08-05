@@ -350,7 +350,7 @@
       <p class="sub" data-i18n="hero_sub"></p>
       <p class="tag" data-i18n="hero_tag"></p>
       <div class="cta">
-        <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-code" data-i18n="hero_vsix">Install for VS Code</a>
+        <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=yuhi-ai-labs.yuhi-code" data-i18n="hero_vsix">Install Yuhi Code</a>
         <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi/releases/tag/v0.4.6" data-i18n="hero_rel">View v0.4.6 Release →</a>
         <a class="btn btn-ghost" href="https://github.com/YUHI-AI-Labs/yuhi" data-i18n="hero_github">GitHubを見る →</a>
         <span class="install"><span class="p">$</span> npm install -g @yuhi-ai-labs/yuhi <button class="copy" id="copyHero" title="Copy" data-i18n="copy">コピー</button></span>
@@ -703,7 +703,7 @@ Isolated VS Code Window
   var I18N = {
     en: {
       nav_gui:"Native GUI",
-      hero_vsix:"Install for VS Code",
+      hero_vsix:"Install Yuhi Code",
       hero_rel:"View v0.4.6 Release →",
       dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
       dyn_pass:"Small outputs, and Reads that compression could break, may pass through unchanged. Yuhi does not compress everything Claude Code sends.",
@@ -799,7 +799,7 @@ Isolated VS Code Window
     },
     ja: {
       nav_gui:"Native GUI",
-      hero_vsix:"VS Code拡張をインストール",
+      hero_vsix:"Yuhi Code をインストール",
       hero_rel:"v0.4.6 リリースを見る →",
       dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
       dyn_pass:"圧縮対象外の小さな出力や、圧縮するとタスクを壊す可能性のあるReadは、そのまま通過する場合があります。すべてを圧縮するわけではありません。",
@@ -896,7 +896,7 @@ Isolated VS Code Window
     "zh-cn": {
       dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code 通过本地 Yuhi 网关运行。每个新的 tool result 都会先被私密保存、扫描、压缩并再次扫描，然后才到达提供方；被省略的内容仍可检索。", dyn_m:"在真实的编辑-验证循环中测得（Claude Code、haiku、n=3、提供方报告值）：补丁正确 3/3，输入侧 token −22%，提供方费用 −13%，投递的 tool output −70%。结果随任务、模型、缓存行为与 retrieval 配置而变化。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code 可以使用包含 .env 在内的项目配置。", dyn_d2:"原始 secret 值不会写入 Yuhi 的日志、evidence、统计与 UI。", dyn_d3:"私钥、证书、恢复密钥与助记词在所有模式下都会被屏蔽。", dyn_d4:"可检测范围内的直接再暴露会被检测并审计。", dyn_d5:"Egress 检测是一道警戒线，而非完整的阻止机制。", dyn_d6:"Strict Mode 在投递前屏蔽已检出的 secret 与受支持的标识符。覆盖范围取决于文件格式与内容，并不保证移除全部 secret 或标识符。",
       nav_gui:"Native GUI",
-      hero_vsix:"安装到 VS Code",
+      hero_vsix:"安装 Yuhi Code",
       hero_rel:"查看 v0.4.6 发布 →",
       dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
       dyn_pass:"较小的输出，以及压缩后可能破坏任务的 Read，可能会原样通过。Yuhi 并不会压缩 Claude Code 发送的所有内容。",
