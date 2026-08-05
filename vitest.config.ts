@@ -2,6 +2,11 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Builds apps/cli ONCE before any test file starts — several CLI tests spawn the
+    // built binary as a real subprocess; each used to build in its own `beforeAll`,
+    // which raced across vitest's parallel per-file workers (see the file's own doc
+    // comment).
+    globalSetup: ["./vitest.global-setup.ts"],
     include: [
       "packages/*/src/**/*.test.ts",
       "packages/*/test/**/*.test.ts",

@@ -1,23 +1,16 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// Built once for the whole run by vitest.global-setup.ts.
 const cli = path.join(process.cwd(), "apps/cli/dist/index.js");
-
-beforeAll(() => {
-  execFileSync(
-    process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-    ["--filter", "@yuhi-ai-labs/yuhi", "build"],
-    { cwd: process.cwd(), stdio: "ignore" },
-  );
-}, 60_000);
 
 interface CliResult {
   code: number | null;
