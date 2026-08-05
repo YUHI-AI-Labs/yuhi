@@ -1,9 +1,10 @@
 /**
- * v0.4.8 Phase 3B — Privacy Mode propagation into `launch --dynamic-context`.
+ * v0.4.8 Phase 3B/4 — Privacy Mode resolution shared by every dynamic-launch surface
+ * (CLI `yuhi launch --dynamic-context`, VS Code Dynamic Terminal, Native GUI Mode).
  *
  * `resolveLaunchPrivacyMode` is pure and carries the safety-critical mode-mismatch
  * refusal, so it gets direct unit tests here rather than only being reachable through
- * a spawned CLI subprocess.
+ * a spawned CLI subprocess or a running editor.
  */
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { readPreparedPrivacyMode, resolveLaunchPrivacyMode } from "./launch-dynamic.js";
+import { readPreparedPrivacyMode, resolveLaunchPrivacyMode } from "./launch-session.js";
 
 describe("readPreparedPrivacyMode", () => {
   it("reads a v0.4.8 manifest's recorded mode", async () => {
@@ -53,7 +54,7 @@ describe("resolveLaunchPrivacyMode", () => {
     expect(result).toEqual({ ok: true, privacyMode: "balanced" });
   });
 
-  it("an explicit --privacy-mode flag wins over everything else", () => {
+  it("an explicit privacy-mode selection wins over everything else", () => {
     const result = resolveLaunchPrivacyMode({
       rawPrivacyMode: "strict",
       legacyDeliveryMode: "developer",
@@ -63,7 +64,7 @@ describe("resolveLaunchPrivacyMode", () => {
     expect(result).toEqual({ ok: true, privacyMode: "strict" });
   });
 
-  it("inherits the prepared run's mode when no --privacy-mode flag is given", () => {
+  it("inherits the prepared run's mode when no explicit privacy-mode is given", () => {
     const result = resolveLaunchPrivacyMode({
       rawPrivacyMode: "",
       legacyDeliveryMode: "developer",
@@ -73,7 +74,7 @@ describe("resolveLaunchPrivacyMode", () => {
     expect(result).toEqual({ ok: true, privacyMode: "strict" });
   });
 
-  it("legacy --delivery-mode strict maps to Privacy Mode strict when nothing else is set", () => {
+  it("legacy delivery-mode strict maps to Privacy Mode strict when nothing else is set", () => {
     const result = resolveLaunchPrivacyMode({
       rawPrivacyMode: "",
       legacyDeliveryMode: "strict",
@@ -83,7 +84,7 @@ describe("resolveLaunchPrivacyMode", () => {
     expect(result).toEqual({ ok: true, privacyMode: "strict" });
   });
 
-  it("an invalid --privacy-mode value fails closed", () => {
+  it("an invalid privacy-mode value fails closed", () => {
     const result = resolveLaunchPrivacyMode({
       rawPrivacyMode: "paranoid",
       legacyDeliveryMode: "developer",
@@ -122,7 +123,7 @@ describe("resolveLaunchPrivacyMode", () => {
     expect(result.message).toMatch(/Trusted Local/);
   });
 
-  it("does NOT refuse when no explicit flag is given, even against a Trusted-Local-prepared run (inherits instead)", () => {
+  it("does NOT refuse when no explicit selection is given, even against a Trusted-Local-prepared run (inherits instead)", () => {
     const result = resolveLaunchPrivacyMode({
       rawPrivacyMode: "",
       legacyDeliveryMode: "developer",

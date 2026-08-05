@@ -362,7 +362,24 @@
             "Developer Mode: project configuration, including .env, may be read by Claude Code. Raw values are never written to Yuhi logs, evidence or UI.",
             "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content — it is not a guarantee that every secret or identifier is removed."
           ],
-          "description": "How detected secrets are handled during a dynamic context session."
+          "description": "LEGACY, superseded by yuhi.dynamicContext.privacyMode: how detected secrets are handled during a dynamic context session. Ignored once privacyMode is set."
+        },
+        "yuhi.dynamicContext.privacyMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "balanced",
+            "strict",
+            "trusted-local"
+          ],
+          "default": "",
+          "enumDescriptions": [
+            "Inherit the mode the prepared run used, or Balanced if unknown.",
+            "Direct personal identifiers are transformed. Development secrets may be delivered to Claude when required, but are not written to Yuhi logs or evidence.",
+            "Direct personal identifiers and detected secrets are both transformed before delivery.",
+            "Personal identifiers and development secrets may be delivered unchanged. Requires confirmation; use only with a trusted local model or private infrastructure."
+          ],
+          "description": "What happens to direct personal identifiers (and, composed with this, detected secrets) during a dynamic context session. Supersedes yuhi.dynamicContext.deliveryMode. Empty inherits the prepared run's own recorded mode."
         },
         "yuhi.nativeSession": {
           "type": "object",

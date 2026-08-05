@@ -18,16 +18,7 @@
  *    {@link DynamicContextHost}, so this is unit-testable without an editor.
  */
 
-import { DEVELOPER_MODE_NOTICE, STRICT_MODE_POLICY } from "@yuhi/context-runtime";
-
-/** Shown instead of the Developer Mode notice when strict delivery is selected. */
-export const STRICT_MODE_NOTICE = [
-  "Strict Mode",
-  "",
-  "Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content.",
-  "It is not a guarantee that every secret or identifier is removed.",
-].join("\n");
-void STRICT_MODE_POLICY;
+import { privacyModeCopyFor, type PrivacyMode, type StudentAliasContext } from "@yuhi/shared";
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -82,8 +73,18 @@ export interface StartDynamicSessionInput {
   readonly preparedWorkspace: string;
   readonly claudeCommand: string;
   readonly retrievalMode?: RetrievalMode;
-  /** `strict` masks detected secrets before delivery — the right choice for document folders. */
+  /** LEGACY. `strict` masks detected secrets before delivery. Superseded by
+   *  `privacyMode` (v0.4.8) — ignored when `privacyMode` is given. */
   readonly deliveryMode?: "developer" | "strict";
+  /** What happens to DIRECT PERSONAL IDENTIFIERS (v0.4.8). Takes precedence over the
+   *  legacy `deliveryMode`. The caller resolves this via `resolveLaunchPrivacyMode`
+   *  before calling in, so it arrives here already-valid. */
+  readonly privacyMode?: PrivacyMode;
+  /** Carried through to the gateway; not re-validated (the caller already ran the
+   *  Trusted Local acknowledgement gate). */
+  readonly privacyModeAcknowledged?: boolean;
+  /** The session's de-identification registry, when the caller has one to restore. */
+  readonly aliasContext?: StudentAliasContext;
   readonly upstreamBaseUrl?: string;
   readonly sessionId?: string;
 }
@@ -108,7 +109,10 @@ export async function startDynamicSession(
   const session: DynamicClaudeSession = await start({
     preparedWorkspace: input.preparedWorkspace,
     retrievalMode: input.retrievalMode ?? "disabled",
-    deliveryMode: input.deliveryMode ?? "developer",
+    ...(input.privacyMode
+      ? { privacyMode: input.privacyMode, privacyModeAcknowledged: input.privacyModeAcknowledged ?? true }
+      : { deliveryMode: input.deliveryMode ?? "developer" }),
+    ...(input.aliasContext ? { aliasContext: input.aliasContext } : {}),
     claudeCommand: input.claudeCommand,
     ...(input.upstreamBaseUrl ? { upstreamBaseUrl: input.upstreamBaseUrl } : {}),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -143,8 +147,10 @@ export async function startDynamicSession(
     }
   };
 
-  // The notice must describe the mode actually in force, not the default.
-  const notice = session.deliveryMode === "strict" ? STRICT_MODE_NOTICE : DEVELOPER_MODE_NOTICE;
+  // The notice must describe the mode actually in force (`session.privacyMode`), not
+  // the raw input — printed only after the gateway/pipeline started successfully.
+  const copy = privacyModeCopyFor(session.privacyMode, "dynamic-terminal");
+  const notice = `${copy.title}\n\n${copy.en}`;
   host.log(`[dynamic] ${notice.replace(/\n+/g, " ")}`);
   host.showMessage(notice);
 
@@ -183,13 +189,6 @@ function defaultInterval(fn: () => void, ms: number): { dispose(): void } {
 }
 
 /** The notice that makes the terminal's scope explicit (spec §5). */
-/**
- * Shown when a session starts. Deliberately does NOT say secrets are withheld — Developer
- * Mode delivers them on purpose, and a user who believed otherwise would make a worse
- * decision than one who knows.
- */
-export const DEVELOPER_MODE_NOTICE_TEXT = DEVELOPER_MODE_NOTICE;
-
 export const DYNAMIC_SCOPE_NOTICE =
   "Dynamic Context is active in this terminal only. Commands run here may use the Yuhi local gateway; other terminals and windows are unaffected.";
 

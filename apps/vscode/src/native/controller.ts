@@ -12,6 +12,8 @@
  * nothing that must outlive it, so a window reload cannot strand a gateway.
  */
 
+import type { PrivacyMode } from "@yuhi/shared";
+
 import { createAttachClient, createControlClient, type ControlClient, type NativeSessionSettingValue } from "./attach-client.js";
 import { openOfficialClaudePanel, type ClaudeAdapterHost, type ClaudeOpenOutcome } from "./claude-adapter.js";
 
@@ -49,7 +51,10 @@ export const BROKER_HANDSHAKE_TIMEOUT_MS = 180_000;
 export interface StartNativeInput {
   readonly sourceWorkspace: string;
   readonly preparedWorkspace: string;
+  /** LEGACY, superseded by `privacyMode` (v0.4.8) — ignored when `privacyMode` is given. */
   readonly deliveryMode: "developer" | "strict";
+  readonly privacyMode?: PrivacyMode;
+  readonly privacyModeAcknowledged?: boolean;
   readonly retrievalMode: "disabled" | "conditional" | "required";
   readonly configPath: string;
   readonly handshakePath: string;
@@ -74,6 +79,8 @@ export async function startNativeSessionViaBroker(
     sourceWorkspace: input.sourceWorkspace,
     preparedWorkspace: input.preparedWorkspace,
     deliveryMode: input.deliveryMode,
+    ...(input.privacyMode ? { privacyMode: input.privacyMode } : {}),
+    ...(input.privacyModeAcknowledged === undefined ? {} : { privacyModeAcknowledged: input.privacyModeAcknowledged }),
     retrievalMode: input.retrievalMode,
     handshakeFile: input.handshakePath,
     ...(input.vscodeExecutable ? { vscodeExecutable: input.vscodeExecutable } : {}),

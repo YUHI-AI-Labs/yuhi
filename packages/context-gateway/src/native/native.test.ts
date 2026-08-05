@@ -21,6 +21,7 @@ const ENV = nativeGuiEnvironment({
   sessionId: "ngui_test",
   contextRoot: "/ctx",
   deliveryMode: "developer",
+  privacyMode: "balanced",
   retrievalMode: "disabled",
 });
 

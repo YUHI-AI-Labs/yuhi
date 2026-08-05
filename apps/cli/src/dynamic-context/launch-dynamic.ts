@@ -12,17 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import { readFile } from "node:fs/promises";
-
-import {
-  isPrivacyMode,
-  privacyModeCopyFor,
-  privacyModeFromLegacyDeliveryMode,
-  resolvePrivacyPolicy,
-  PrivacyModeResolutionError,
-  type PrivacyMode,
-  type StudentAliasContext,
-} from "@yuhi/shared";
+import { privacyModeCopyFor, type PrivacyMode, type StudentAliasContext } from "@yuhi/shared";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
@@ -39,98 +29,10 @@ import { detectUpstream, type UpstreamConfig } from "./environment.js";
 import { writeMcpConfig } from "./gateway-process.js";
 import { formatStatsReport } from "./stats.js";
 
-/**
- * The Privacy Mode Static Prepare recorded for this run (v0.4.8 Phase 1's
- * `manifest.json` `privacyPolicy.mode` field), when the run was prepared under 0.4.8
- * or later. `undefined` for an older run or a manifest that never recorded it —
- * callers treat that as "unknown", not as a mismatch.
- */
-export async function readPreparedPrivacyMode(workspace: string): Promise<PrivacyMode | undefined> {
-  try {
-    const raw = JSON.parse(await readFile(join(workspace, "manifest.json"), "utf8")) as {
-      privacyPolicy?: { mode?: unknown };
-    };
-    const mode = raw.privacyPolicy?.mode;
-    return isPrivacyMode(mode) ? mode : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export interface ResolveLaunchPrivacyModeInput {
-  /** Raw `--privacy-mode` CLI value, `""` when the flag was not given. */
-  readonly rawPrivacyMode: string;
-  /** Raw `--delivery-mode` CLI value (has a static commander default of `"developer"`). */
-  readonly legacyDeliveryMode: "developer" | "strict";
-  /** `readPreparedPrivacyMode(workspace)`'s result — `undefined` when unknown/older run. */
-  readonly preparedPrivacyMode: PrivacyMode | undefined;
-  readonly trustedLocalAcknowledged: boolean;
-}
-
-export type ResolveLaunchPrivacyModeResult =
-  | { readonly ok: true; readonly privacyMode: PrivacyMode }
-  | { readonly ok: false; readonly exitCode: 3; readonly message: string };
-
-/**
- * Privacy Mode precedence for `launch --dynamic-context` (Section 5/8), pulled out of
- * the CLI action as a pure function so the mode-mismatch refusal — a safety-critical
- * branch — has direct unit tests rather than only being reachable through a spawned
- * subprocess.
- *
- * Precedence: `--privacy-mode` > the PREPARED RUN's own recorded mode (so a plain
- * `yuhi launch claude --dynamic-context` inherits what `yuhi prepare` already used,
- * rather than silently defaulting away from it) > legacy `--delivery-mode` mapping >
- * balanced.
- *
- * Mode-mismatch guard: a prepared run's files on disk were protected under ITS OWN
- * recorded mode. Trusted Local preparation leaves direct personal identifiers
- * unmasked AT REST — launching under an EXPLICIT `--privacy-mode balanced|strict`
- * would claim protection the files on disk do not have. Every other combination is
- * safe: Balanced/Strict-prepared files are already masked at rest regardless of the
- * Dynamic session's own mode, and Dynamic Context applies its own live transform to
- * whatever it reads either way (v0.4.8 Phase 3A) — so a mismatch there is not a real
- * confusion, only Trusted Local's "unmasked at rest" case is.
- */
-export function resolveLaunchPrivacyMode(input: ResolveLaunchPrivacyModeInput): ResolveLaunchPrivacyModeResult {
-  const { rawPrivacyMode, legacyDeliveryMode, preparedPrivacyMode, trustedLocalAcknowledged } = input;
-  let privacyMode: PrivacyMode;
-  try {
-    privacyMode = resolvePrivacyPolicy({
-      candidates: [
-        { mode: rawPrivacyMode, source: "cli" },
-        { mode: preparedPrivacyMode ?? "", source: "workspace-config" },
-        { mode: rawPrivacyMode ? "" : privacyModeFromLegacyDeliveryMode(legacyDeliveryMode), source: "legacy-mapping" },
-      ],
-      trustedLocalAcknowledged,
-    }).mode;
-  } catch (err) {
-    if (err instanceof PrivacyModeResolutionError) {
-      const hint =
-        err.code === "trusted-local-not-acknowledged"
-          ? "Re-run with --acknowledge-unmasked-data to proceed non-interactively."
-          : "Use: balanced, strict, trusted-local.";
-      return { ok: false, exitCode: 3, message: `${err.message}\n${hint}` };
-    }
-    throw err;
-  }
-
-  if (rawPrivacyMode && preparedPrivacyMode === "trusted-local" && privacyMode !== "trusted-local") {
-    return {
-      ok: false,
-      exitCode: 3,
-      message:
-        `Privacy Mode mismatch: this run was prepared under Trusted Local — direct personal ` +
-        `identifiers are unmasked in the prepared files on disk. Launching Dynamic Context under ` +
-        `"${privacyMode}" does not retransform files already on disk; it only affects what THIS session ` +
-        `delivers live.\n\n` +
-        `Re-run \`yuhi prepare --privacy-mode ${privacyMode}\` to prepare a run whose files on disk match, ` +
-        `or launch with \`--privacy-mode trusted-local\` to acknowledge the existing files.\n\n` +
-        `Safe error category: privacy-mode-mismatch`,
-    };
-  }
-
-  return { ok: true, privacyMode };
-}
+// Privacy Mode resolution/mismatch logic lives in `@yuhi/context-gateway` (one
+// implementation shared by the CLI, VS Code's Dynamic Terminal command, and Native GUI
+// Mode) — re-exported here so existing CLI call sites/imports are unaffected.
+export { readPreparedPrivacyMode, resolveLaunchPrivacyMode } from "@yuhi/context-gateway";
 
 export interface DynamicLaunchOptions {
   readonly runRef?: string;

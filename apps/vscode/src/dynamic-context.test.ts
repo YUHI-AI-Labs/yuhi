@@ -199,6 +199,38 @@ describe("shared launch contract", () => {
     expect(RETRIEVAL_CHOICES[0]?.label).toContain("Recommended");
     expect(RETRIEVAL_CHOICES[0]?.detail).toContain("507 tokens");
   });
+
+  it("v0.4.8: propagates privacyMode into the shared launch contract and shows the resolved banner", async () => {
+    const h = harness({ session: { privacyMode: "strict" } });
+    const captured: Record<string, unknown>[] = [];
+    const messages: string[] = [];
+    const host: DynamicContextHost = {
+      ...h.host,
+      showMessage: (m) => messages.push(m),
+      startSession: async (options) => {
+        captured.push(options as unknown as Record<string, unknown>);
+        return h.host.startSession!(options);
+      },
+    };
+    await startDynamicSession(host, {
+      preparedWorkspace: "/prepared",
+      claudeCommand: "claude",
+      privacyMode: "strict",
+      privacyModeAcknowledged: true,
+    });
+    expect(captured[0]?.["privacyMode"]).toBe("strict");
+    expect(captured[0]?.["privacyModeAcknowledged"]).toBe(true);
+    expect(messages.join("\n")).toContain("Strict");
+    expect(messages.join("\n")).toMatch(/personal identifiers and detected secrets/i);
+  });
+
+  it("v0.4.8: legacy deliveryMode still resolves to the equivalent Privacy Mode banner when privacyMode is not given", async () => {
+    const h = harness({ session: { privacyMode: "balanced" } });
+    const messages: string[] = [];
+    const host: DynamicContextHost = { ...h.host, showMessage: (m) => messages.push(m) };
+    await startDynamicSession(host, { preparedWorkspace: "/prepared", claudeCommand: "claude", deliveryMode: "developer" });
+    expect(messages.join("\n")).toContain("Balanced");
+  });
 });
 
 describe("lifecycle", () => {

@@ -19,6 +19,7 @@
 import { writeFile } from "node:fs/promises";
 
 import type { DeliveryMode } from "@yuhi/context-runtime";
+import { privacyModeFromLegacyDeliveryMode, type PrivacyMode } from "@yuhi/shared";
 
 import { startDynamicClaudeSession, type DynamicClaudeSession, type DynamicContextStats } from "../launch-session.js";
 import { startAttachServer, type AttachPayload, type AttachServerHandle } from "./attach-server.js";
@@ -130,6 +131,11 @@ export async function startNativeClaudeGuiSession(
   const layout = sessionLayout(sessionId, deps.sessionsRoot);
   await createSessionTree(layout);
 
+  // Privacy Mode wins when given; otherwise the legacy deliveryMode maps onto it, so
+  // an unmigrated caller's SECRET behavior is byte-identical to today (v0.4.8 Phase 4;
+  // same composition `startDynamicClaudeSession` itself applies).
+  const privacyMode: PrivacyMode = options.privacyMode ?? privacyModeFromLegacyDeliveryMode(options.deliveryMode);
+
   const wsHash = workspaceHash(options.sourceWorkspace);
   const recorder = new LifecycleRecorder({
     sessionId,
@@ -138,6 +144,7 @@ export async function startNativeClaudeGuiSession(
     workspaceHash: wsHash,
     sourceWorkspaceId: workspaceHash(preparedWorkspace),
     deliveryMode: options.deliveryMode,
+    privacyMode,
     retrievalMode: options.retrievalMode,
     now: iso,
     onIllegalTransition: (from, to) => log(`[native] illegal transition ${from} -> ${to}`),
@@ -165,7 +172,8 @@ export async function startNativeClaudeGuiSession(
     gateway = await startSession({
       preparedWorkspace,
       retrievalMode: options.retrievalMode,
-      deliveryMode: options.deliveryMode,
+      privacyMode,
+      privacyModeAcknowledged: options.privacyModeAcknowledged ?? true,
       sessionId,
       log,
     });
@@ -187,6 +195,7 @@ export async function startNativeClaudeGuiSession(
     sessionId,
     contextRoot: gateway.contextRoot,
     deliveryMode: options.deliveryMode,
+    privacyMode,
     retrievalMode: options.retrievalMode,
   });
 
@@ -433,6 +442,7 @@ export async function startNativeClaudeGuiSession(
     extensionsDir: layout.extensionsDir,
     profileName: YUHI_PROFILE_NAME,
     deliveryMode: options.deliveryMode,
+    privacyMode,
     retrievalMode: options.retrievalMode,
     claudeExtension: { id: "Anthropic.claude-code", version: contract.version ?? "unknown" },
     attached,
@@ -478,6 +488,7 @@ export async function startNativeClaudeGuiSession(
       vscodeAttached: attachServer.attached(),
       claudeExtensionVersion: contract.version,
       deliveryMode: options.deliveryMode,
+      privacyMode,
       retrievalMode: options.retrievalMode,
       lastHeartbeatAt: heartbeat?.lastBeatAt() ? new Date(heartbeat.lastBeatAt() as number).toISOString() : undefined,
       requests: stats?.requests ?? 0,

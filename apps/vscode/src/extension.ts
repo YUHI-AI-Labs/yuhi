@@ -5,6 +5,7 @@ import {
   registerNativeCommands,
 } from "./native/commands.js";
 import type { RetrievalMode } from "@yuhi/context-gateway";
+import { readPreparedPrivacyMode, resolveLaunchPrivacyMode } from "@yuhi/context-gateway";
 import {
   DYNAMIC_COMMAND_ID,
   DYNAMIC_SCOPE_NOTICE,
@@ -349,12 +350,35 @@ async function commandLaunchClaudeDynamic(): Promise<void> {
 
   const host = dynamicHost();
   const mode = dynamicRetrievalModeSetting();
+
+  // Privacy Mode precedence + mode-mismatch guard (v0.4.8 Phase 4), sharing the SAME
+  // pure resolver `yuhi launch --dynamic-context` uses (`@yuhi/context-gateway`).
+  const rawPrivacyMode = dynamicPrivacyModeSetting();
+  const legacyDeliveryMode = dynamicDeliveryModeSetting();
+  const preparedPrivacyMode = await readPreparedPrivacyMode(check.preparedRoot);
+  const candidateMode = rawPrivacyMode || preparedPrivacyMode || "";
+  const trustedLocalAcknowledged =
+    candidateMode === "trusted-local"
+      ? await confirmTrustedLocalForWorkspace("yuhi.dynamicContext.trustedLocalAcknowledged")
+      : false;
+  const resolvedPrivacy = resolveLaunchPrivacyMode({
+    rawPrivacyMode,
+    legacyDeliveryMode,
+    preparedPrivacyMode,
+    trustedLocalAcknowledged,
+  });
+  if (!resolvedPrivacy.ok) {
+    void vscode.window.showWarningMessage(`Yuhi: ${resolvedPrivacy.message}`);
+    return;
+  }
+
   try {
     dynamicSession = await startDynamicSession(host, {
       preparedWorkspace: check.preparedRoot,
       claudeCommand: "claude",
       retrievalMode: mode,
-      deliveryMode: dynamicDeliveryModeSetting(),
+      privacyMode: resolvedPrivacy.privacyMode,
+      privacyModeAcknowledged: trustedLocalAcknowledged,
     });
   } catch (err) {
     // NEVER downgrade silently: the user asked for dynamic context.
@@ -392,6 +416,29 @@ function watchDynamicTerminalClose(): vscode.Disposable {
 function dynamicDeliveryModeSetting(): "developer" | "strict" {
   const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.deliveryMode");
   return configured === "strict" ? "strict" : "developer";
+}
+
+/** Raw `yuhi.dynamicContext.privacyMode` setting value, `""` when unset (inherit). */
+function dynamicPrivacyModeSetting(): string {
+  return vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.privacyMode") ?? "";
+}
+
+/**
+ * Trusted Local acknowledgement, persisted per workspace (`context.workspaceState` is
+ * already workspace-scoped) so the modal prompt does not reappear on every launch in
+ * the same window. Shared by Dynamic Terminal and Native GUI Mode — same gate, same
+ * wording, one place to keep them from drifting.
+ */
+async function confirmTrustedLocalForWorkspace(key: string): Promise<boolean> {
+  if (extensionContext?.workspaceState.get<boolean>(key)) return true;
+  const choice = await vscode.window.showWarningMessage(
+    "Trusted Local may deliver personal identifiers and development secrets to Claude, unchanged. Continue?",
+    { modal: true },
+    "Continue",
+  );
+  const acknowledged = choice === "Continue";
+  if (acknowledged) await extensionContext?.workspaceState.update(key, true);
+  return acknowledged;
 }
 
 function dynamicRetrievalModeSetting(): RetrievalMode {
@@ -3546,6 +3593,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return source && prepared ? { source, prepared } : undefined;
       },
       deliveryMode: () => dynamicDeliveryModeSetting(),
+      privacyMode: () => dynamicPrivacyModeSetting(),
+      confirmTrustedLocal: () => confirmTrustedLocalForWorkspace("yuhi.nativeGui.trustedLocalAcknowledged"),
       retrievalMode: () => dynamicRetrievalModeSetting(),
     }),
     vscode.commands.registerCommand("yuhi.showRecovery", () =>

@@ -11,6 +11,7 @@
 import { appendFile, writeFile } from "node:fs/promises";
 
 import type { DeliveryMode } from "@yuhi/context-runtime";
+import type { PrivacyMode } from "@yuhi/shared";
 
 import type { RetrievalMode } from "../anthropic/transform.js";
 import type {
@@ -56,6 +57,7 @@ export interface LifecycleRecorderOptions {
   readonly workspaceHash: string;
   readonly sourceWorkspaceId: string;
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode?: PrivacyMode;
   readonly retrievalMode: RetrievalMode;
   readonly clientSurface?: ClientSurface;
   readonly now?: () => string;
@@ -121,6 +123,7 @@ export class LifecycleRecorder {
       createdAt: this.createdAt,
       updatedAt: this.now(),
       deliveryMode: this.options.deliveryMode,
+      ...(this.options.privacyMode ? { privacyMode: this.options.privacyMode } : {}),
       retrievalMode: this.options.retrievalMode,
       claudeExtensionId: this.claudeExtensionId,
       claudeExtensionVersion: this.claudeExtensionVersion,
