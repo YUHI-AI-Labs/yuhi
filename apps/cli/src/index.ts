@@ -1033,6 +1033,13 @@ async function main(): Promise<void> {
         "retrieval capability shown to the agent: disabled | conditional | required (measured: registering the tools costs agent turns)",
         "disabled",
       )
+      .option(
+        "--generation-mode <mode>",
+        "v0.5.0 Task-Aware Dynamic Context Generation: off | observe | active (default: observe)",
+        "observe",
+      )
+      .option("--context-budget <tokens>", "v0.5.0 best-effort per-session token target for the Planner")
+      .option("--context-max <tokens>", "v0.5.0 hard per-session token ceiling for the Planner")
       .action(
         action(async (cmd) => {
           const { g } = getContext(cmd);
@@ -1092,6 +1099,15 @@ async function main(): Promise<void> {
               retrieval: (["disabled", "conditional", "required"] as const).includes(opts.retrieval)
                 ? (opts.retrieval as "disabled" | "conditional" | "required")
                 : "disabled",
+              generationMode: (["off", "observe", "active"] as const).includes(opts.generationMode)
+                ? (opts.generationMode as "off" | "observe" | "active")
+                : "observe",
+              ...(opts.contextBudget !== undefined && !Number.isNaN(Number(opts.contextBudget))
+                ? { contextBudget: Number(opts.contextBudget) }
+                : {}),
+              ...(opts.contextMax !== undefined && !Number.isNaN(Number(opts.contextMax))
+                ? { contextMaximum: Number(opts.contextMax) }
+                : {}),
             });
             return result.exitCode;
           }

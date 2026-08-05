@@ -87,6 +87,11 @@ export interface StartDynamicSessionInput {
   readonly aliasContext?: StudentAliasContext;
   readonly upstreamBaseUrl?: string;
   readonly sessionId?: string;
+  /** v0.5.0 Task-Aware Dynamic Context Generation. Defaults to "observe" (see
+   *  `startDynamicClaudeSession`'s own default) when omitted. */
+  readonly generationMode?: "off" | "observe" | "active";
+  readonly contextBudget?: number;
+  readonly contextMaximum?: number;
 }
 
 /** Single-quote a token for POSIX shells (paths with spaces or metacharacters). */
@@ -113,6 +118,9 @@ export async function startDynamicSession(
       ? { privacyMode: input.privacyMode, privacyModeAcknowledged: input.privacyModeAcknowledged ?? true }
       : { deliveryMode: input.deliveryMode ?? "developer" }),
     ...(input.aliasContext ? { aliasContext: input.aliasContext } : {}),
+    ...(input.generationMode ? { generationMode: input.generationMode } : {}),
+    ...(input.contextBudget === undefined ? {} : { contextBudget: input.contextBudget }),
+    ...(input.contextMaximum === undefined ? {} : { contextMaximum: input.contextMaximum }),
     claudeCommand: input.claudeCommand,
     ...(input.upstreamBaseUrl ? { upstreamBaseUrl: input.upstreamBaseUrl } : {}),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),

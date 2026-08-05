@@ -61,6 +61,13 @@ export interface DynamicLaunchOptions {
   readonly privacyModeAcknowledged?: boolean;
   /** The session's de-identification registry, when the caller has one to restore. */
   readonly aliasContext?: StudentAliasContext;
+  /** v0.5.0 Task-Aware Dynamic Context Generation. CLI default: `--generation-mode
+   *  observe` (see index.ts's flag parsing) — this field is left `undefined` here
+   *  only when the caller omits the flag AND `startDynamicClaudeSession`'s own
+   *  default applies. */
+  readonly generationMode?: "off" | "observe" | "active";
+  readonly contextBudget?: number;
+  readonly contextMaximum?: number;
   readonly env?: NodeJS.ProcessEnv;
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
@@ -133,6 +140,9 @@ export async function launchClaudeWithDynamicContext(
         ? { privacyMode: opts.privacyMode, privacyModeAcknowledged: opts.privacyModeAcknowledged ?? true }
         : { deliveryMode: opts.deliveryMode ?? "developer" }),
       ...(opts.aliasContext ? { aliasContext: opts.aliasContext } : {}),
+      ...(opts.generationMode ? { generationMode: opts.generationMode } : {}),
+      ...(opts.contextBudget === undefined ? {} : { contextBudget: opts.contextBudget }),
+      ...(opts.contextMaximum === undefined ? {} : { contextMaximum: opts.contextMaximum }),
       upstreamBaseUrl: upstream.baseUrl,
       sessionId,
       ...(opts.startGatewayImpl ? { startGatewayImpl: opts.startGatewayImpl } : {}),

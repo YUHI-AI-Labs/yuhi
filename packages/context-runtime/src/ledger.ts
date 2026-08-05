@@ -262,3 +262,39 @@ export async function tallyRetrievals(store: ContextStore, session: SessionId): 
   }
   return { delivered, withheld, tokensDelivered, locators };
 }
+
+export interface GenerationPlanTally {
+  readonly total: number;
+  readonly byKind: Readonly<Record<string, number>>;
+  readonly executed: number;
+  readonly repeatedWorkEvents: number;
+  readonly repeatedWorkHints: number;
+}
+
+/**
+ * v0.5.0 CLI stats (directive §19's "Generation plans: 18 / Reused: 7 /
+ * Structured: 4 / ..." example). Reads plan/repeatedWork evidence directly from
+ * the ledger — no separate live counter needed, matching `tallyRetrievals`'s own
+ * pattern (evidence is already the durable source of truth; a gateway restart
+ * must not lose these counts).
+ */
+export async function tallyGenerationPlans(store: ContextStore, session: SessionId): Promise<GenerationPlanTally> {
+  const rows = (await store.readEvidence(session)) as LedgerRow[];
+  let total = 0;
+  let executed = 0;
+  let repeatedWorkEvents = 0;
+  let repeatedWorkHints = 0;
+  const byKind: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.type === "delivery" && row.plan) {
+      total += 1;
+      byKind[row.plan.kind] = (byKind[row.plan.kind] ?? 0) + 1;
+      if (row.plan.executed) executed += 1;
+    }
+    if ((row.type === "delivery" || row.type === "retrieval") && row.repeatedWork) {
+      repeatedWorkEvents += 1;
+      if (row.repeatedWork.hint) repeatedWorkHints += 1;
+    }
+  }
+  return { total, byKind, executed, repeatedWorkEvents, repeatedWorkHints };
+}
