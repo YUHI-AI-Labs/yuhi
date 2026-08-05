@@ -14,7 +14,7 @@ function report(): PrepareReport {
       beforeChars: 400, afterChars: 100,
       beforeTokens: 100, afterTokens: 40, tokensSaved: 60, percentReduction: 0.6,
       hasData: true, filesExcluded: 1, filesSummarized: 1, sensitiveMasked: 1,
-      sourceModified: 0, approx: true,
+      sourceModified: 0, approx: true, method: "cjk-weighted-heuristic",
     },
     files: [
       {

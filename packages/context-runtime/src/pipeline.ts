@@ -35,6 +35,15 @@ import {
   type SessionId,
 } from "@yuhi/context-store";
 import type { DetectorOptions } from "@yuhi/scanner";
+import {
+  createStudentAliasContext,
+  DEFAULT_PRIVACY_MODE,
+  directPersonalValueTokens,
+  modeTransformsDirectIdentifiers,
+  scanTextForDirectPersonalIdentifiers,
+  type PrivacyMode,
+  type StudentAliasContext,
+} from "@yuhi/shared";
 
 import {
   contextEventId,
@@ -54,6 +63,7 @@ import {
   type RetrievalRecord,
 } from "./ledger.js";
 import { locatorWithin, narrowSuggestion, parseLocator, type Locator } from "./locator.js";
+import { classifyDeliveryContent, transformDirectPersonalIdentifiers } from "./privacy-pipeline.js";
 import {
   DEFAULT_DETECTOR_OPTIONS,
   exactOutputScan,
@@ -128,6 +138,10 @@ export type Delivery =
       readonly removed: readonly EvidenceRecord["removed"][number][];
       readonly secretRedactions: number;
       readonly metadataRedactions: number;
+      /** v0.4.8 Phase 3A — kept separate from `secretRedactions`/compression stats
+       *  (spec §11): a privacy transformation is not a secret redaction. */
+      readonly privacyMode: string;
+      readonly directIdentifiersTransformed: number;
       /** Whether to advertise retrieval for this delivery (compressor's declaration). */
       readonly hintPolicy: HintPolicy;
       /**
@@ -188,6 +202,19 @@ export interface ContextRuntimeOptions {
    * agent can read project configuration, and no raw value ever reaches logs, evidence or UI.
    */
   readonly deliveryPolicy?: DeliveryPolicy;
+  /**
+   * What happens to DIRECT PERSONAL IDENTIFIERS (v0.4.8 Phase 3A). Defaults to
+   * Balanced — the same default Static Prepare uses. A DIFFERENT axis from
+   * `deliveryPolicy`, which governs SECRETS only (see `@yuhi/shared`'s privacy-mode.ts).
+   */
+  readonly privacyMode?: PrivacyMode;
+  /**
+   * The run/session-scoped de-identification registry. Shared with Static Prepare's
+   * shape (`StudentAliasContext`) so a value pseudonymized in one surface reuses the
+   * SAME token in another, when the caller passes the same context across surfaces.
+   * Defaults to a fresh, empty registry (a new Dynamic session with no prior linkage).
+   */
+  readonly aliasContext?: StudentAliasContext;
 }
 
 interface DeliveredBytes {
@@ -205,6 +232,8 @@ export class ContextRuntime {
   private readonly tokenBudget: number | undefined;
   private readonly fallbackPolicy: FallbackPolicy;
   private readonly policy: DeliveryPolicy;
+  private readonly privacyMode: PrivacyMode;
+  private readonly aliasContext: StudentAliasContext;
   private readonly limits: RetrievalLimits;
   private readonly seqs = new Map<string, number>();
   /**
@@ -225,6 +254,8 @@ export class ContextRuntime {
     this.tokenBudget = opts.tokenBudget;
     this.fallbackPolicy = opts.fallbackPolicy ?? DEFAULT_FALLBACK_POLICY;
     this.policy = opts.deliveryPolicy ?? DEVELOPER_MODE_POLICY;
+    this.privacyMode = opts.privacyMode ?? DEFAULT_PRIVACY_MODE;
+    this.aliasContext = opts.aliasContext ?? createStudentAliasContext();
     this.limits = opts.retrievalLimits ?? DEFAULT_RETRIEVAL_LIMITS;
     this.ctx = defaultCompressContext({
       now: this.now,
@@ -238,6 +269,16 @@ export class ContextRuntime {
 
   get deliveryPolicy(): DeliveryPolicy {
     return this.policy;
+  }
+
+  get currentPrivacyMode(): PrivacyMode {
+    return this.privacyMode;
+  }
+
+  /** The run-scoped de-identification registry — exposed so a caller can persist it
+   *  across process restarts (mirrors Static Prepare's alias-registry-store, Phase 3B). */
+  get privacyAliasContext(): StudentAliasContext {
+    return this.aliasContext;
   }
 
   estimateTokens(text: string): number {
@@ -276,11 +317,30 @@ export class ContextRuntime {
       timestamp: this.now(),
     };
 
+    // 0. Direct-personal identifier transformation, BEFORE any secret scan or
+    // compression — the SAME taxonomy/registry/verification Static Prepare uses
+    // (v0.4.8 Phase 3A), routed by content shape so source code and command output are
+    // not scanned for CJK name-shaped substrings (see `privacy-pipeline.ts`).
+    let privacyText: string;
+    let privacyDetected = 0;
+    let privacyTransformed = 0;
+    try {
+      const contentType = classifyDeliveryContent(req.kind, req.content);
+      const outcome = transformDirectPersonalIdentifiers(req.content, contentType, this.aliasContext, this.privacyMode);
+      privacyText = outcome.text;
+      privacyDetected = outcome.detected;
+      privacyTransformed = outcome.transformed;
+    } catch {
+      const failScan = scanAndRedact(req.content, this.detectorOptions);
+      const failMetadata = scanMetadata(failScan.text, req.privateMetadata);
+      return this.withhold(event, failScan, failMetadata, "privacy-transformation-failed", "security", "privacy-transformation-failed");
+    }
+
     // 1-3. Secret scan → PII scan → metadata scan, before anything is compressed.
     // Detection ALWAYS runs; the policy decides what a finding means for delivery.
-    const scan = scanAndRedact(req.content, this.detectorOptions);
+    const scan = scanAndRedact(privacyText, this.detectorOptions);
     // Key material is masked in EVERY mode — the kind is recorded, the value never is.
-    const keyMaterial = redactKeyMaterial(req.content, this.policy, this.detectorOptions);
+    const keyMaterial = redactKeyMaterial(privacyText, this.policy, this.detectorOptions);
     const scannedContent = this.policy.redactSecretsBeforeDelivery ? scan.text : keyMaterial.text;
     const metadata = scanMetadata(scannedContent, req.privateMetadata);
     const safeContent = metadata.text;
@@ -385,6 +445,29 @@ export class ContextRuntime {
       return this.withhold(event, scan, metadata, verdict.reason, "security");
     }
 
+    // 5b. Direct-personal residue rescan — the same "verify the EXACT delivered bytes,
+    // not the transform's self-report" discipline §5 applies to secrets. Balanced and
+    // Strict fail closed on residue; Trusted Local never transformed anything, so
+    // residue there is expected and is not a failure (spec §9).
+    let directResidue = 0;
+    if (modeTransformsDirectIdentifiers(this.privacyMode)) {
+      const residueCheck = scanTextForDirectPersonalIdentifiers(
+        candidate,
+        directPersonalValueTokens(this.aliasContext).keys(),
+      );
+      directResidue = residueCheck.residual;
+      if (directResidue > 0) {
+        return this.withhold(
+          event,
+          scan,
+          metadata,
+          "direct-personal-identifier-in-output",
+          "security",
+          "direct-personal-identifier-in-output",
+        );
+      }
+    }
+
     if (!pinned) this.delivered.set(key, { text: candidate, strategy });
 
     const deliveryPath: EvidenceRecord["deliveryPath"] = fallback
@@ -415,6 +498,13 @@ export class ContextRuntime {
       ...(scan.fingerprints.length > 0 ? { secretFingerprints: scan.fingerprints } : {}),
       deliveryPolicy: this.policy.mode,
       ...(keyMaterial.categories.length > 0 ? { keyMaterialMasked: keyMaterial.categories } : {}),
+      privacyMode: this.privacyMode,
+      secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+      directIdentifiersDetected: privacyDetected,
+      directIdentifiersTransformed: privacyTransformed,
+      directIdentifierResidue: directResidue,
+      privacyTransformationApplied: privacyTransformed > 0,
+      privacyVerificationPassed: true,
       secretRedactions: this.policy.redactSecretsBeforeDelivery ? scan.redactions : keyMaterial.count,
       metadataRedactions: metadata.redactions,
       metadataLabels: metadata.labels,
@@ -446,6 +536,8 @@ export class ContextRuntime {
       removed: [...removed],
       secretRedactions: this.policy.redactSecretsBeforeDelivery ? scan.redactions : keyMaterial.count,
       metadataRedactions: metadata.redactions,
+      privacyMode: this.privacyMode,
+      directIdentifiersTransformed: privacyTransformed,
       hintPolicy,
       scannedText: safeContent,
       ...(fallback ? { fallback } : {}),
@@ -482,6 +574,9 @@ export class ContextRuntime {
     // Correlate the retrieval with the delivery that exposed the region, so
     // `explain()` can report a complete retrieval count for that event.
     const eventId = deliveries[deliveries.length - 1]?.eventId;
+    // Same content-type routing a delivery uses, so a retrieved range gets the SAME
+    // precision (structured-table/JSON/prose/…) the original delivery would have.
+    const contentKind = deliveries[deliveries.length - 1]?.kind ?? "text";
     const exposed = locatorsOf(deliveries);
     if (exposed.length === 0 && !req.allowUnexposed) {
       return this.refuse(req, "object-not-delivered-in-session", undefined, eventId);
@@ -511,14 +606,34 @@ export class ContextRuntime {
     const bound = this.checkBounds(raw, requested);
     if (bound) return this.refuse(req, bound.reason, bound.suggestion, eventId);
 
-    // A retrieval is a delivery: it goes through the same gates.
-    const scan = scanAndRedact(raw, this.detectorOptions);
+    // A retrieval is a delivery: it goes through the same gates, re-applying the
+    // RUNTIME'S CURRENT privacy policy — never the raw bytes, and never a policy
+    // pinned from when the range was first delivered (spec §7).
+    let privacyRaw: string;
+    try {
+      const contentType = classifyDeliveryContent(contentKind, raw);
+      privacyRaw = transformDirectPersonalIdentifiers(raw, contentType, this.aliasContext, this.privacyMode).text;
+    } catch {
+      return this.refuse(req, "privacy-transformation-failed", undefined, eventId);
+    }
+
+    const scan = scanAndRedact(privacyRaw, this.detectorOptions);
     const retrievedContent = this.policy.redactSecretsBeforeDelivery
       ? scan.text
-      : redactKeyMaterial(raw, this.policy, this.detectorOptions).text;
+      : redactKeyMaterial(privacyRaw, this.policy, this.detectorOptions).text;
     const metadata = scanMetadata(retrievedContent, { scope: "private" });
     const verdict = exactOutputScan(metadata.text, { scope: "private" }, this.detectorOptions, undefined, this.policy);
     if (!verdict.ok) return this.refuse(req, verdict.reason, undefined, eventId);
+
+    if (modeTransformsDirectIdentifiers(this.privacyMode)) {
+      const residueCheck = scanTextForDirectPersonalIdentifiers(
+        metadata.text,
+        directPersonalValueTokens(this.aliasContext).keys(),
+      );
+      if (residueCheck.residual > 0) {
+        return this.refuse(req, "direct-personal-identifier-in-output", undefined, eventId);
+      }
+    }
 
     const text = metadata.text;
     this.retrieved.set(cacheKey, text);
@@ -603,6 +718,7 @@ export class ContextRuntime {
     metadata: ReturnType<typeof scanMetadata>,
     reason: string,
     failureClass: FailureClass,
+    privacyFailure?: "privacy-transformation-failed" | "direct-personal-identifier-in-output",
   ): Promise<Delivery> {
     const record: EvidenceRecord = {
       type: "delivery",
@@ -623,6 +739,11 @@ export class ContextRuntime {
       safetyFindings: scan.findings,
       ...(scan.fingerprints.length > 0 ? { secretFingerprints: scan.fingerprints } : {}),
       deliveryPolicy: this.policy.mode,
+      privacyMode: this.privacyMode,
+      secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+      ...(privacyFailure
+        ? { privacyVerificationPassed: false, privacyFallback: privacyFailure }
+        : { privacyVerificationPassed: true }),
       secretRedactions: scan.redactions,
       metadataRedactions: metadata.redactions,
       metadataLabels: metadata.labels,

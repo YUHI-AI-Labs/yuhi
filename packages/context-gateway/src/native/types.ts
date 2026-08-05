@@ -12,6 +12,7 @@
  */
 
 import type { DeliveryMode } from "@yuhi/context-runtime";
+import type { PrivacyMode } from "@yuhi/shared";
 
 import type { RetrievalMode } from "../anthropic/transform.js";
 import type { DynamicContextStats } from "../launch-session.js";
@@ -70,7 +71,13 @@ export type ClientSurface = "cli" | "dynamic-terminal" | "native-gui";
 export interface StartNativeClaudeGuiOptions {
   readonly sourceWorkspace: string;
   readonly preparedWorkspace?: string;
+  /** LEGACY, superseded by `privacyMode` (v0.4.8) — ignored when `privacyMode` is given. */
   readonly deliveryMode: DeliveryMode;
+  /** What happens to DIRECT PERSONAL IDENTIFIERS (v0.4.8). Takes precedence over the
+   *  legacy `deliveryMode`. The caller resolves this via `resolveLaunchPrivacyMode`
+   *  before calling in, so it arrives here already-valid. */
+  readonly privacyMode?: PrivacyMode;
+  readonly privacyModeAcknowledged?: boolean;
   readonly retrievalMode: RetrievalMode;
   /** Pin a specific official-extension version. Omitted means "whatever satisfies the contract". */
   readonly extensionVersion?: string;
@@ -96,6 +103,7 @@ export interface NativeSessionDiagnostics {
   readonly vscodeAttached: boolean;
   readonly claudeExtensionVersion: string | undefined;
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode?: PrivacyMode;
   readonly retrievalMode: RetrievalMode;
   readonly lastHeartbeatAt: string | undefined;
   readonly requests: number;
@@ -134,6 +142,7 @@ export interface NativeClaudeGuiSession {
   readonly profileName: string;
 
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode: PrivacyMode;
   readonly retrievalMode: RetrievalMode;
 
   readonly claudeExtension: {
@@ -162,6 +171,7 @@ export interface PublicSessionRecord {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode?: PrivacyMode;
   readonly retrievalMode: RetrievalMode;
   readonly claudeExtensionId: string | undefined;
   readonly claudeExtensionVersion: string | undefined;
@@ -186,6 +196,7 @@ export interface NativeGuiEnvironment {
   readonly YUHI_DYNAMIC_CONTEXT: "1";
   readonly YUHI_CLIENT_SURFACE: ClientSurface;
   readonly YUHI_DELIVERY_MODE: DeliveryMode;
+  readonly YUHI_PRIVACY_MODE: PrivacyMode;
   readonly YUHI_RETRIEVAL_MODE: RetrievalMode;
 }
 
@@ -197,6 +208,7 @@ export const YUHI_MANAGED_ENV_KEYS: readonly (keyof NativeGuiEnvironment)[] = [
   "YUHI_DYNAMIC_CONTEXT",
   "YUHI_CLIENT_SURFACE",
   "YUHI_DELIVERY_MODE",
+  "YUHI_PRIVACY_MODE",
   "YUHI_RETRIEVAL_MODE",
 ];
 
@@ -205,6 +217,7 @@ export function nativeGuiEnvironment(input: {
   sessionId: string;
   contextRoot: string;
   deliveryMode: DeliveryMode;
+  privacyMode: PrivacyMode;
   retrievalMode: RetrievalMode;
 }): NativeGuiEnvironment {
   return {
@@ -214,6 +227,7 @@ export function nativeGuiEnvironment(input: {
     YUHI_DYNAMIC_CONTEXT: "1",
     YUHI_CLIENT_SURFACE: "native-gui",
     YUHI_DELIVERY_MODE: input.deliveryMode,
+    YUHI_PRIVACY_MODE: input.privacyMode,
     YUHI_RETRIEVAL_MODE: input.retrievalMode,
   };
 }

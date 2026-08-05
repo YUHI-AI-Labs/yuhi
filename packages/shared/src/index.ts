@@ -1,6 +1,7 @@
 export * from "./actions.js";
 export * from "./archive.js";
 export * from "./safety-mode.js";
+export * from "./privacy-mode.js";
 export * from "./text-encoding.js";
 export * from "./errors.js";
 export * from "./types.js";

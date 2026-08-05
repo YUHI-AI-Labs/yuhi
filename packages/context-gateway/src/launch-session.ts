@@ -13,11 +13,21 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { startGateway, type GatewayHandle, type GatewayStats } from "./server.js";
 import type { RetrievalMode } from "./anthropic/transform.js";
 import { policyForMode, type DeliveryMode } from "@yuhi/context-runtime";
+import {
+  isPrivacyMode,
+  privacyModeFromLegacyDeliveryMode,
+  resolveDeliveryPolicy,
+  resolvePrivacyPolicy,
+  PrivacyModeResolutionError,
+  type PrivacyMode,
+  type StudentAliasContext,
+} from "@yuhi/shared";
 
 export const GATEWAY_STARTUP_TIMEOUT_MS = 15_000;
 export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "disabled";
@@ -33,11 +43,33 @@ export interface DynamicClaudeSessionOptions {
    */
   readonly retrievalMode?: RetrievalMode;
   /**
-   * What a detected secret means for delivery. `developer` (default) lets the agent read
-   * project configuration; `strict` masks detected secrets before they leave, which is the
-   * 0.3.x behaviour and the right choice when the folder holds documents rather than code.
+   * LEGACY. What a detected secret means for delivery. `developer` (default) lets the
+   * agent read project configuration; `strict` masks detected secrets before they
+   * leave. Superseded by `privacyMode` (v0.4.8) — when `privacyMode` is given, this
+   * field is ignored; when it is not, `deliveryMode` maps onto `privacyMode` via
+   * `privacyModeFromLegacyDeliveryMode` so existing callers keep their exact current
+   * behavior (`developer` -> Balanced, `strict` -> Strict) until they migrate.
    */
   readonly deliveryMode?: DeliveryMode;
+  /**
+   * What happens to DIRECT PERSONAL IDENTIFIERS, and (composed with this surface) what
+   * a detected SECRET means for delivery (v0.4.8 Phase 3B) — see `@yuhi/shared`'s
+   * `resolveDeliveryPolicy`. Takes precedence over the legacy `deliveryMode`. Defaults
+   * to Balanced.
+   */
+  readonly privacyMode?: PrivacyMode;
+  /**
+   * Required when `privacyMode` is `"trusted-local"` — the caller (CLI/VS Code) is
+   * responsible for having already run `resolvePrivacyPolicy`'s acknowledgement gate;
+   * this is not re-validated here, only carried through into the resolved policy.
+   */
+  readonly privacyModeAcknowledged?: boolean;
+  /**
+   * The session's de-identification registry. Fresh per session by default. A caller
+   * that persists one across a restart (mirroring Static Prepare's
+   * alias-registry-store) can restore it here so a name keeps its token.
+   */
+  readonly aliasContext?: StudentAliasContext;
   /** Upstream base URL. Defaults to the public API; an enterprise gateway chains here. */
   readonly upstreamBaseUrl?: string;
   readonly sessionId?: string;
@@ -68,6 +100,7 @@ export interface DynamicClaudeSession {
   readonly contextRoot: string;
   readonly retrievalMode: RetrievalMode;
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode: PrivacyMode;
   readonly readyMs: number;
   readonly command: DynamicSessionCommand;
   getStats(): Promise<DynamicContextStats>;
@@ -84,6 +117,103 @@ export class DynamicSessionStartError extends Error {
 
 export function contextStoreRoot(preparedWorkspace: string): string {
   return join(preparedWorkspace, ".yuhi", "context");
+}
+
+/**
+ * The Privacy Mode Static Prepare recorded for this run (v0.4.8 Phase 1's
+ * `manifest.json` `privacyPolicy.mode` field), when the run was prepared under 0.4.8
+ * or later. `undefined` for an older run or a manifest that never recorded it —
+ * callers treat that as "unknown", not as a mismatch.
+ *
+ * Lives here, not per-surface, because Dynamic Terminal (CLI), VS Code's Dynamic
+ * Terminal command, and Native GUI Mode all need the SAME answer to "what mode was
+ * this run prepared under" — one implementation, three callers, exactly like
+ * `startDynamicClaudeSession` itself.
+ */
+export async function readPreparedPrivacyMode(preparedWorkspace: string): Promise<PrivacyMode | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(join(preparedWorkspace, "manifest.json"), "utf8")) as {
+      privacyPolicy?: { mode?: unknown };
+    };
+    const mode = raw.privacyPolicy?.mode;
+    return isPrivacyMode(mode) ? mode : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ResolveLaunchPrivacyModeInput {
+  /** Raw `--privacy-mode` CLI/setting value, `""` when not explicitly given. */
+  readonly rawPrivacyMode: string;
+  /** Raw legacy delivery-mode value (`--delivery-mode`, or a VS Code setting). */
+  readonly legacyDeliveryMode: "developer" | "strict";
+  /** `readPreparedPrivacyMode(workspace)`'s result — `undefined` when unknown/older run. */
+  readonly preparedPrivacyMode: PrivacyMode | undefined;
+  readonly trustedLocalAcknowledged: boolean;
+}
+
+export type ResolveLaunchPrivacyModeResult =
+  | { readonly ok: true; readonly privacyMode: PrivacyMode }
+  | { readonly ok: false; readonly exitCode: 3; readonly message: string };
+
+/**
+ * Privacy Mode precedence for launching a dynamic session (Section 5/8), on ANY
+ * surface (CLI, VS Code Dynamic Terminal, Native GUI). Pure, so the mode-mismatch
+ * refusal — a safety-critical branch — has direct unit tests rather than only being
+ * reachable through a spawned subprocess or a running editor.
+ *
+ * Precedence: explicit mode > the PREPARED RUN's own recorded mode (so a plain launch
+ * inherits what `yuhi prepare` already used, rather than silently defaulting away from
+ * it) > legacy delivery-mode mapping > balanced.
+ *
+ * Mode-mismatch guard: a prepared run's files on disk were protected under ITS OWN
+ * recorded mode. Trusted Local preparation leaves direct personal identifiers
+ * unmasked AT REST — launching under an EXPLICIT balanced/strict mode would claim
+ * protection the files on disk do not have. Every other combination is safe:
+ * Balanced/Strict-prepared files are already masked at rest regardless of the Dynamic
+ * session's own mode, and Dynamic Context applies its own live transform to whatever
+ * it reads either way (v0.4.8 Phase 3A) — so a mismatch there is not a real confusion,
+ * only Trusted Local's "unmasked at rest" case is.
+ */
+export function resolveLaunchPrivacyMode(input: ResolveLaunchPrivacyModeInput): ResolveLaunchPrivacyModeResult {
+  const { rawPrivacyMode, legacyDeliveryMode, preparedPrivacyMode, trustedLocalAcknowledged } = input;
+  let privacyMode: PrivacyMode;
+  try {
+    privacyMode = resolvePrivacyPolicy({
+      candidates: [
+        { mode: rawPrivacyMode, source: "cli" },
+        { mode: preparedPrivacyMode ?? "", source: "workspace-config" },
+        { mode: rawPrivacyMode ? "" : privacyModeFromLegacyDeliveryMode(legacyDeliveryMode), source: "legacy-mapping" },
+      ],
+      trustedLocalAcknowledged,
+    }).mode;
+  } catch (err) {
+    if (err instanceof PrivacyModeResolutionError) {
+      const hint =
+        err.code === "trusted-local-not-acknowledged"
+          ? "Re-run with --acknowledge-unmasked-data (CLI) or confirm the Trusted Local prompt (VS Code) to proceed."
+          : "Use: balanced, strict, trusted-local.";
+      return { ok: false, exitCode: 3, message: `${err.message}\n${hint}` };
+    }
+    throw err;
+  }
+
+  if (rawPrivacyMode && preparedPrivacyMode === "trusted-local" && privacyMode !== "trusted-local") {
+    return {
+      ok: false,
+      exitCode: 3,
+      message:
+        `Privacy Mode mismatch: this run was prepared under Trusted Local — direct personal ` +
+        `identifiers are unmasked in the prepared files on disk. Launching Dynamic Context under ` +
+        `"${privacyMode}" does not retransform files already on disk; it only affects what THIS session ` +
+        `delivers live.\n\n` +
+        `Re-run \`yuhi prepare --privacy-mode ${privacyMode}\` to prepare a run whose files on disk match, ` +
+        `or launch with Trusted Local to acknowledge the existing files.\n\n` +
+        `Safe error category: privacy-mode-mismatch`,
+    };
+  }
+
+  return { ok: true, privacyMode };
 }
 
 /**
@@ -114,13 +244,28 @@ export async function startDynamicClaudeSession(
   const log = options.log ?? ((): void => {});
   const start = options.startGatewayImpl ?? startGateway;
 
+  // Privacy Mode wins when given; otherwise the legacy deliveryMode maps onto it, so
+  // an unmigrated caller's SECRET behavior is byte-identical to today (see the
+  // `deliveryMode` doc comment). Composed for THIS surface (dynamic-terminal and
+  // native-gui share this one function, both via `startDynamicClaudeSession`).
+  const privacyMode: PrivacyMode =
+    options.privacyMode ?? privacyModeFromLegacyDeliveryMode(options.deliveryMode ?? "developer");
+  const resolved = resolveDeliveryPolicy({
+    privacyMode,
+    surface: "dynamic-terminal",
+    warningAcknowledged: options.privacyModeAcknowledged ?? true,
+  });
+  const deliveryPolicy = policyForMode(resolved.secretDeliveryMode === "redact" ? "strict" : "developer");
+
   const began = now();
   let gateway: GatewayHandle;
   try {
     gateway = await start({
       storeRoot: contextRoot,
       retrievalMode,
-      deliveryPolicy: policyForMode(options.deliveryMode ?? "developer"),
+      deliveryPolicy,
+      privacyMode,
+      ...(options.aliasContext ? { aliasContext: options.aliasContext } : {}),
       sessionOverride: sessionId,
       ...(options.upstreamBaseUrl ? { upstreamBaseUrl: options.upstreamBaseUrl } : {}),
       log,
@@ -160,7 +305,8 @@ export async function startDynamicClaudeSession(
     sessionId,
     contextRoot,
     retrievalMode,
-    deliveryMode: options.deliveryMode ?? "developer",
+    deliveryMode: resolved.secretDeliveryMode === "redact" ? "strict" : "developer",
+    privacyMode,
     readyMs,
     command: {
       file: options.claudeCommand ?? "claude",

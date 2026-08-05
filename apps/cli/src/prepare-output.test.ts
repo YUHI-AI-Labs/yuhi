@@ -36,6 +36,7 @@ function report(partial = false): PrepareReport {
       sensitiveMasked: 1,
       sourceModified: 0,
       approx: true,
+      method: "cjk-weighted-heuristic",
     },
     files: [
       {

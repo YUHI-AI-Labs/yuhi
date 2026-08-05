@@ -12,12 +12,10 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
+import { privacyModeCopyFor, type PrivacyMode, type StudentAliasContext } from "@yuhi/shared";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
-import { DEVELOPER_MODE_NOTICE, STRICT_MODE_POLICY } from "@yuhi/context-runtime";
-
-const STRICT_MODE_NOTICE = STRICT_MODE_POLICY.notice;
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -30,6 +28,11 @@ import { performLaunch, resolveRunForLaunch, type PerformLaunchOptions } from ".
 import { detectUpstream, type UpstreamConfig } from "./environment.js";
 import { writeMcpConfig } from "./gateway-process.js";
 import { formatStatsReport } from "./stats.js";
+
+// Privacy Mode resolution/mismatch logic lives in `@yuhi/context-gateway` (one
+// implementation shared by the CLI, VS Code's Dynamic Terminal command, and Native GUI
+// Mode) — re-exported here so existing CLI call sites/imports are unaffected.
+export { readPreparedPrivacyMode, resolveLaunchPrivacyMode } from "@yuhi/context-gateway";
 
 export interface DynamicLaunchOptions {
   readonly runRef?: string;
@@ -46,8 +49,18 @@ export interface DynamicLaunchOptions {
    * benchmark scores 3/3 with them and records real retrievals in the ledger.
    */
   readonly retrieval?: RetrievalMode;
-  /** `strict` masks detected secrets before delivery (0.3.x behaviour). */
+  /** LEGACY. `strict` masks detected secrets before delivery (0.3.x behaviour).
+   *  Superseded by `privacyMode` (v0.4.8) — ignored when `privacyMode` is given. */
   readonly deliveryMode?: "developer" | "strict";
+  /** What happens to DIRECT PERSONAL IDENTIFIERS (v0.4.8). Takes precedence over the
+   *  legacy `deliveryMode`. The CLI resolves this via `resolvePrivacyPolicy` before
+   *  calling in, so it arrives here already-valid. */
+  readonly privacyMode?: PrivacyMode;
+  /** Carried through to the gateway; not re-validated (the caller already ran the
+   *  Trusted Local acknowledgement gate). */
+  readonly privacyModeAcknowledged?: boolean;
+  /** The session's de-identification registry, when the caller has one to restore. */
+  readonly aliasContext?: StudentAliasContext;
   readonly env?: NodeJS.ProcessEnv;
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
@@ -116,7 +129,10 @@ export async function launchClaudeWithDynamicContext(
     session = await startSession({
       preparedWorkspace: workspace,
       retrievalMode: retrieval,
-      deliveryMode: opts.deliveryMode ?? "developer",
+      ...(opts.privacyMode
+        ? { privacyMode: opts.privacyMode, privacyModeAcknowledged: opts.privacyModeAcknowledged ?? true }
+        : { deliveryMode: opts.deliveryMode ?? "developer" }),
+      ...(opts.aliasContext ? { aliasContext: opts.aliasContext } : {}),
       upstreamBaseUrl: upstream.baseUrl,
       sessionId,
       ...(opts.startGatewayImpl ? { startGatewayImpl: opts.startGatewayImpl } : {}),
@@ -146,7 +162,12 @@ export async function launchClaudeWithDynamicContext(
     out(`Yuhi dynamic context: ON — gateway ${session.gatewayUrl} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
     out("");
-    out(opts.deliveryMode === "strict" ? STRICT_MODE_NOTICE : DEVELOPER_MODE_NOTICE);
+    // The banner reflects the RUNTIME's actual resolved policy (`session.privacyMode`),
+    // not the raw CLI input — printed only after the gateway/pipeline started
+    // successfully (spec §12: no mode banner on a failed pipeline init).
+    const copy = privacyModeCopyFor(session.privacyMode, "dynamic-terminal");
+    out(`Privacy: ${copy.title}`);
+    for (const line of copy.en.split("\n")) if (line) out(line);
     out("");
     out(`Retrieval mode: ${retrieval}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);

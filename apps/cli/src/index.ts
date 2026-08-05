@@ -11,6 +11,12 @@ import {
   type WorkspaceManifest,
 } from "@yuhi/shared";
 import {
+  resolvePrivacyPolicy,
+  privacyModeCopyFor,
+  PrivacyModeResolutionError,
+  type PrivacyMode,
+} from "@yuhi/shared";
+import {
   runInit,
   computePlan,
   buildPreview,
@@ -599,6 +605,12 @@ async function main(): Promise<void> {
     .command("prepare [dir]")
     .description("Prepare a local, reduced copy of your context (never sent anywhere)")
     .option("--safety-mode <mode>", "balanced | strict | maximum-privacy (default: balanced)")
+    .option("--privacy-mode <mode>", "balanced | strict | trusted-local (default: balanced)")
+    .option(
+      "--acknowledge-unmasked-data",
+      "required (non-interactive) to select --privacy-mode trusted-local",
+      false,
+    )
     .option("--compress", "opt-in v0.3.3 structure compression of the delivered context", false)
     .option("--token-budget <n>", "best-effort token budget for the delivered context")
     .option("--wait-background", "opt-in: run deferred background preparation to completion before returning", false)
@@ -617,6 +629,7 @@ async function main(): Promise<void> {
           }
           safetyMode = rawSafetyMode;
         }
+        const rawPrivacyMode = (cmd.opts().privacyMode as string | undefined) ?? "";
 
         const compress = Boolean(cmd.opts().compress);
         const rawTokenBudget = cmd.opts().tokenBudget as string | undefined;
@@ -654,11 +667,63 @@ async function main(): Promise<void> {
           console.log(`Safety Mode: ${safetyModeLabel(effectiveSafetyMode)}`);
         }
 
+        // Effective Privacy Mode: CLI flag > yuhi.yaml `privacy.mode` > balanced
+        // (Section 5 precedence — a DIFFERENT axis from Safety Mode; see
+        // packages/shared/src/privacy-mode.ts's module doc comment).
+        let acknowledgedTrustedLocal = Boolean(cmd.opts().acknowledgeUnmaskedData);
+        // Interactive fallback: `confirm()` returns the default (false) when
+        // non-interactive, so this line alone satisfies BOTH "prompt when a human is
+        // there" and "fail closed when not" without a separate TTY check — but only
+        // ask when the flag wasn't already given and the selection is actually
+        // trusted-local, so a plain `yuhi prepare` never prompts.
+        const candidateMode = rawPrivacyMode || loaded.config.privacy?.mode || "";
+        if (!acknowledgedTrustedLocal && candidateMode === "trusted-local") {
+          acknowledgedTrustedLocal = await confirm(
+            "Trusted Local delivers personal identifiers unchanged. Continue?",
+            false,
+          );
+        }
+        let privacyMode: PrivacyMode;
+        try {
+          privacyMode = resolvePrivacyPolicy({
+            candidates: [
+              { mode: rawPrivacyMode, source: "cli" },
+              { mode: loaded.config.privacy?.mode ?? "", source: "workspace-config" },
+            ],
+            trustedLocalAcknowledged: acknowledgedTrustedLocal,
+          }).mode;
+        } catch (err) {
+          if (err instanceof PrivacyModeResolutionError) {
+            console.error(`${symbols.err()} ${err.message}`);
+            if (err.code === "trusted-local-not-acknowledged") {
+              console.error("Re-run with --acknowledge-unmasked-data to proceed non-interactively.");
+            } else {
+              console.error("Use: balanced, strict, trusted-local.");
+            }
+            return 3;
+          }
+          throw err;
+        }
+        if (!g.json) {
+          const copy = privacyModeCopyFor(privacyMode, "static-prepare");
+          // v0.4.8 Phase 6: the concise (non-verbose) success summary already prints
+          // "Privacy: <mode>" itself, so repeating it here BEFORE the run even starts
+          // would just duplicate it. --verbose keeps the old upfront line, matching
+          // its fuller, more detailed report. The Trusted Local warning body is a
+          // safety disclosure, not a summary line, and is shown either way — before a
+          // potentially long run starts, not only after it succeeds.
+          if (g.verbose) console.log(`Privacy: ${copy.title}`);
+          if (privacyMode === "trusted-local") {
+            for (const line of copy.en.split("\n")) if (line) console.log(line);
+          }
+        }
+
         const mode = loaded.config.budget?.reduction_mode;
         const res = await prepareWorkspace(target, {
           providerFactory,
           ...(mode !== undefined ? { mode } : {}),
           safetyMode: effectiveSafetyMode,
+          privacyMode,
           compress,
           ...(tokenBudget !== null ? { tokenBudget } : {}),
         });
@@ -703,16 +768,32 @@ async function main(): Promise<void> {
           const excluded =
             result.deliveryIntegrity?.excludedByRecommendation ?? result.filesKeptLocal;
           const warned = result.deliveryIntegrity?.deliveredWithWarning ?? 0;
-          const parts = [`${result.filesIncluded} files available`];
-          if (excluded > 0) parts.push(`${excluded} excluded by recommendation`);
-          if (warned > 0) parts.push(`${warned} delivered with a warning`);
-          const detail = parts.join(" · ");
-          console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
-          console.log(formatCliPrepareResult(result));
-          // v0.3.3: when compression ran, follow the summary with the compression block.
-          // With --json the same data is already inside the JSON result (nothing extra).
-          if (res.compression) {
-            console.log("\n" + formatCompressionReport(res.compression, "terminal"));
+          if (g.verbose) {
+            const parts = [`${result.filesIncluded} files available`];
+            if (excluded > 0) parts.push(`${excluded} excluded by recommendation`);
+            if (warned > 0) parts.push(`${warned} delivered with a warning`);
+            const detail = parts.join(" · ");
+            console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
+            console.log(formatCliPrepareResult(result));
+            // v0.3.3: when compression ran, follow the summary with the compression block.
+            // With --json the same data is already inside the JSON result (nothing extra).
+            if (res.compression) {
+              console.log("\n" + formatCompressionReport(res.compression, "terminal"));
+            }
+          } else {
+            // v0.4.8 Phase 6: minimal first-run UX. The full ~40-line report is one
+            // flag away (--verbose) — see prepare-output.ts / formatCliPrepareResult
+            // for the detail this intentionally does not repeat here.
+            console.log(`${symbols.ok()} Workspace prepared`);
+            console.log(`  Privacy: ${privacyModeCopyFor(privacyMode, "static-prepare").title}`);
+            const fileBits = [`${result.filesIncluded} available`];
+            if (excluded > 0) fileBits.push(`${excluded} excluded`);
+            if (warned > 0) fileBits.push(`${warned} with a warning`);
+            console.log(`  Files: ${fileBits.join(" · ")}`);
+            console.log(`  Reduction: ~${Math.round(result.preparationReport.estimatedReductionPercent)}%`);
+            console.log(`  Run ID: ${result.runId}`);
+            console.log(`\nStart Claude Code:  ${ui.bold(`yuhi launch claude --run ${result.runId}`)}`);
+            console.log(`Full details:       ${ui.dim("yuhi prepare --verbose")}`);
           }
         } else {
           console.error(yuhiBanner("partial") + "\n");
@@ -935,8 +1016,17 @@ async function main(): Promise<void> {
       )
       .option(
         "--delivery-mode <mode>",
-        "how detected secrets are handled: developer (default, project configuration reaches the agent) | strict (mask before delivery, 0.3.x behaviour)",
+        "LEGACY, superseded by --privacy-mode: developer (default) | strict (0.3.x behaviour)",
         "developer",
+      )
+      .option(
+        "--privacy-mode <mode>",
+        "balanced | strict | trusted-local (default: inherit the prepared run's mode, else balanced). Supersedes --delivery-mode.",
+      )
+      .option(
+        "--acknowledge-unmasked-data",
+        "required (non-interactive) to select --privacy-mode trusted-local",
+        false,
       )
       .option(
         "--retrieval <mode>",
@@ -952,14 +1042,53 @@ async function main(): Promise<void> {
               console.error("--dynamic-context currently supports claude only.\n\nSafe error category: unsupported-agent");
               return 3;
             }
-            const { launchClaudeWithDynamicContext } = await import("./dynamic-context/launch-dynamic.js");
+            const { launchClaudeWithDynamicContext, readPreparedPrivacyMode, resolveLaunchPrivacyMode } =
+              await import("./dynamic-context/launch-dynamic.js");
+            const { resolveRunForLaunch } = await import("./launch.js");
+
+            // Privacy Mode precedence + mode-mismatch guard (Section 5/8) — pure logic
+            // lives in `resolveLaunchPrivacyMode` (unit-tested directly); this action
+            // only gathers its inputs and reports the result.
+            const rawPrivacyMode = (opts.privacyMode as string | undefined) ?? "";
+            const legacyDeliveryMode = opts.deliveryMode === "strict" ? "strict" : "developer";
+            const resolution = await resolveRunForLaunch(opts.run ? String(opts.run) : undefined);
+            const preparedPrivacyMode = resolution.ok
+              ? await readPreparedPrivacyMode(resolution.run.workspace)
+              : undefined;
+
+            let acknowledgedTrustedLocal = Boolean(opts.acknowledgeUnmaskedData);
+            const candidateMode = rawPrivacyMode || preparedPrivacyMode || "";
+            if (!acknowledgedTrustedLocal && candidateMode === "trusted-local") {
+              acknowledgedTrustedLocal = await confirm(
+                "Trusted Local may deliver personal identifiers and development secrets to Claude, unchanged. Continue?",
+                false,
+              );
+            }
+            const resolvedPrivacy = resolveLaunchPrivacyMode({
+              rawPrivacyMode,
+              legacyDeliveryMode,
+              preparedPrivacyMode,
+              trustedLocalAcknowledged: acknowledgedTrustedLocal,
+            });
+            if (!resolvedPrivacy.ok) {
+              console.error(`${symbols.err()} ${resolvedPrivacy.message}`);
+              return resolvedPrivacy.exitCode;
+            }
+            const privacyMode = resolvedPrivacy.privacyMode;
+
+            if (!g.json) {
+              const copy = privacyModeCopyFor(privacyMode, "dynamic-terminal");
+              console.log(`Privacy: ${copy.title}`);
+            }
+
             const result = await launchClaudeWithDynamicContext({
               ...(opts.run ? { runRef: String(opts.run) } : {}),
               forwardedArgs: forwarded,
               spawn: !opts.dryRun,
               json: g.json,
               cliEntry: process.argv[1] ?? "",
-              deliveryMode: opts.deliveryMode === "strict" ? "strict" : "developer",
+              privacyMode,
+              privacyModeAcknowledged: acknowledgedTrustedLocal,
               retrieval: (["disabled", "conditional", "required"] as const).includes(opts.retrieval)
                 ? (opts.retrieval as "disabled" | "conditional" | "required")
                 : "disabled",

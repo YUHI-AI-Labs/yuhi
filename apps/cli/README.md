@@ -25,7 +25,7 @@ Repository Ready
   Secrets blocked             18
   Identifiers transformed    103
 
-  Estimated accessible-content reduction: 94%
+  Estimated accessible-content reduction: (repository-dependent)
 
 Ready for Claude Code.
 ```
@@ -41,7 +41,7 @@ type, or identity:
 ```bash
 yuhi report <run> --format markdown   # a table for your README or PR
 yuhi report <run> --format json       # machine-readable, for CI
-yuhi report <run> --format svg        # a "Prepared with Yuhi — 94% reduced" badge
+yuhi report <run> --format svg        # a "Prepared with Yuhi" badge with your run's own numbers
 ```
 
 CI can post it automatically with the

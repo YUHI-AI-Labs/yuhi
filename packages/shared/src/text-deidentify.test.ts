@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  deidentifyJsonFields,
   deidentifyText,
   scanTextForDirectPersonalIdentifiers,
 } from "./text-deidentify.js";
@@ -139,5 +140,68 @@ describe("scanTextForDirectPersonalIdentifiers", () => {
     const result = scanTextForDirectPersonalIdentifiers("氏名：PERSON-001");
     expect(result.residual).toBe(0);
     expect(result.residualRisk).toBe(false);
+  });
+});
+
+describe("deidentifyJsonFields", () => {
+  it("masks a name field by key when a sibling operational key makes the object record-shaped", () => {
+    const context = createStudentAliasContext();
+    const input = JSON.stringify({ student_id: "L001", name: "山田太郎", score: 90 });
+    const result = deidentifyJsonFields(input, context, "balanced");
+    expect(result).not.toBeNull();
+    const parsed = JSON.parse(result!.text) as { student_id: string; name: string; score: number };
+    expect(parsed.student_id).toBe("L001");
+    expect(parsed.name).toMatch(/^PERSON-\d+$/);
+    expect(parsed.score).toBe(90);
+  });
+
+  it("does NOT mask a name field with no operational sibling key (ordinary API/test JSON)", () => {
+    const context = createStudentAliasContext();
+    const input = JSON.stringify({ id: 1, name: "user-500" });
+    const result = deidentifyJsonFields(input, context, "balanced");
+    const parsed = JSON.parse(result!.text) as { id: number; name: string };
+    expect(parsed.name).toBe("user-500");
+  });
+
+  it("a bare 'id' key does not count as an operational signal by itself", () => {
+    const context = createStudentAliasContext();
+    // The most common JSON shape there is -- must never be treated as record-shaped.
+    const input = JSON.stringify({ id: "abc123", name: "Repository Settings" });
+    const result = deidentifyJsonFields(input, context, "balanced");
+    const parsed = JSON.parse(result!.text) as { id: string; name: string };
+    expect(parsed.name).toBe("Repository Settings");
+  });
+
+  it("still masks shape-detectable values (email) under any key, record-shaped or not", () => {
+    const context = createStudentAliasContext();
+    const input = JSON.stringify({ id: 1, contact: "user-500@example.com" });
+    const result = deidentifyJsonFields(input, context, "balanced");
+    const parsed = JSON.parse(result!.text) as { id: number; contact: string };
+    expect(parsed.contact).not.toContain("@example.com");
+  });
+
+  it("reuses the same unlinked token for the same name value repeated in one JSON payload", () => {
+    const context = createStudentAliasContext();
+    const input = JSON.stringify([
+      { student_id: "L001", name: "山田太郎" },
+      { student_id: "L002", name: "山田太郎" },
+    ]);
+    const result = deidentifyJsonFields(input, context, "balanced");
+    const parsed = JSON.parse(result!.text) as { student_id: string; name: string }[];
+    expect(parsed[0]!.name).toBe(parsed[1]!.name);
+    expect(parsed[0]!.name).toMatch(/^PERSON-\d+$/);
+  });
+
+  it("trusted-local preserves everything unchanged", () => {
+    const context = createStudentAliasContext();
+    const input = JSON.stringify({ student_id: "L001", name: "山田太郎" });
+    const result = deidentifyJsonFields(input, context, "trusted-local");
+    expect(result?.text).toBe(input);
+    expect(result?.replacedFields).toBe(0);
+  });
+
+  it("returns null for invalid JSON so the caller can fall back to prose handling", () => {
+    const context = createStudentAliasContext();
+    expect(deidentifyJsonFields("{not valid json", context, "balanced")).toBeNull();
   });
 });

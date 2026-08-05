@@ -17,6 +17,7 @@ describe("renderPrepareReport boundary and metric terminology", () => {
         beforeTokens: 300, afterTokens: 64, tokensSaved: 236,
         percentReduction: 236 / 300, hasData: true, filesExcluded: 0,
         filesSummarized: 1, sensitiveMasked: 1, sourceModified: 0, approx: true,
+        method: "cjk-weighted-heuristic",
       },
       files: [{
         relpath: "notes.md", action: "prepare-locally", status: "ok",

@@ -5,8 +5,10 @@ import {
   requiresPseudonymization,
   parseDelimitedTable,
   pseudonymizeStudentRecords,
+  DEFAULT_PRIVACY_MODE,
   type StudentAliasContext,
   type LocalModelProvider,
+  type PrivacyMode,
   type ProcessorAudit,
   type ProcessorResult,
   type ProcessorSpec,
@@ -205,6 +207,9 @@ export async function runLocalPreparation(
     localModelParallelism?: number;
     /** Run-scoped in-memory linkage for explicit tabular pseudonymization. */
     studentAliases?: StudentAliasContext;
+    /** v0.4.8 Privacy Mode. Omitted -> `DEFAULT_PRIVACY_MODE` ("balanced"), the same
+     *  effective behavior every caller had before this option existed. */
+    privacyMode?: PrivacyMode;
   } = {},
 ): Promise<LocalPreparationResult> {
   const identifiers = extractCsvIdentifiers(content);
@@ -262,18 +267,39 @@ export async function runLocalPreparation(
         audits.push(r.audit);
         steps.push(r.safePreview);
       } else if (id === "pseudonymize-student-records") {
-        const transformed = opts.studentAliases
-          ? pseudonymizeStudentRecords(output, opts.studentAliases)
-          : pseudonymizeStudentRecords(output);
-        output = transformed.output;
-        audits.push({
-          processorId: id,
-          version: "1.0.0",
-          kind: "rule-based",
-          itemsChanged: transformed.valuesReplaced,
-          note: `${transformed.aliasesCreated} stable alias(es) created in memory`,
-        });
-        steps.push(`${transformed.valuesReplaced} direct-identifier value(s) pseudonymized locally`);
+        // Trusted Local: privacy transformation disabled by explicit user choice
+        // (`docs/design/0.4.8_privacy_mode.md`). `pseudonymizeStudentRecords` itself
+        // throws `TRUSTED_LOCAL_NO_TRANSFORM` for this mode -- a deliberate sentinel,
+        // same pattern as its `NO_DIRECT_PERSONAL_IDENTIFIERS` throw -- meaning "I have
+        // nothing useful to do", not an error. This branch is the catcher: skip the
+        // call entirely so the file still proceeds through the rest of the pipeline
+        // (e.g. `safety-check`) with its content genuinely unchanged, rather than
+        // letting the sentinel propagate to the generic `catch` below and BLOCK the
+        // file outright.
+        const privacyMode = opts.privacyMode ?? DEFAULT_PRIVACY_MODE;
+        if (privacyMode === "trusted-local") {
+          audits.push({
+            processorId: id,
+            version: "1.0.0",
+            kind: "rule-based",
+            itemsChanged: 0,
+            note: "Trusted Local: direct-identifier transformation disabled by policy",
+          });
+          steps.push("Direct identifiers preserved unchanged (Trusted Local)");
+        } else {
+          const transformed = opts.studentAliases
+            ? pseudonymizeStudentRecords(output, opts.studentAliases, privacyMode)
+            : pseudonymizeStudentRecords(output, undefined, privacyMode);
+          output = transformed.output;
+          audits.push({
+            processorId: id,
+            version: "1.0.0",
+            kind: "rule-based",
+            itemsChanged: transformed.valuesReplaced,
+            note: `${transformed.aliasesCreated} stable alias(es) created in memory`,
+          });
+          steps.push(`${transformed.valuesReplaced} direct-identifier value(s) pseudonymized locally`);
+        }
       } else if (id === "sanitize-environment") {
         const transformed = sanitizeDotenv(output);
         output = transformed.output;

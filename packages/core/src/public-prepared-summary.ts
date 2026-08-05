@@ -1,4 +1,4 @@
-import type { ReductionReport } from "@yuhi/shared";
+import { currentMeasurementMethod, type MeasurementMethod, type ReductionReport } from "@yuhi/shared";
 import type { CompressionReport, PreparedFileEntry } from "./prepare-workspace.js";
 
 export interface PublicPreparedContextSummary {
@@ -15,6 +15,12 @@ export interface PublicPreparedContextSummary {
   preparedEstimatedTokens: number | null;
   reducedTokens: number | null;
   reductionPercent: number | null;
+  /** Which estimator produced the token figures above (v0.4.8 Phase 5). `null` only
+   *  when neither `compression` nor `reduction` ran (nothing was estimated at all). */
+  tokenEstimationMethod: MeasurementMethod | null;
+  /** True unless an exact tokenizer was configured — mirrors `TokenEstimate.approx`,
+   *  surfaced here so a manifest reader never has to infer it from the method name. */
+  tokenEstimationApprox: boolean | null;
   fullFiles: number;
   compressedFiles: number;
   compressionExcludedFiles: number;
@@ -75,6 +81,14 @@ export function buildPublicPreparedContextSummary(
   const reduction = original !== null && original > 0 && reduced !== null
     ? (reduced / original) * 100
     : original === 0 ? 0 : null;
+  // Both compression (via `tokenEstimate()`, packages/core/src/compression/registry.ts)
+  // and the plain reduction path resolve through the same currently-active estimator
+  // today, so the method is the same regardless of which one produced the numbers —
+  // `input.reduction?.method` is preferred when present (it is the more direct
+  // record), falling back to the live estimator's method, `null` only when nothing
+  // was estimated at all.
+  const method: MeasurementMethod | null =
+    original === null ? null : (input.reduction?.method ?? currentMeasurementMethod());
   const tokenBudgetStatus = !compression || compression.targetBudget === null
     ? "not-configured"
     : compression.preparedTokens <= compression.targetBudget
@@ -96,6 +110,8 @@ export function buildPublicPreparedContextSummary(
     preparedEstimatedTokens: prepared,
     reducedTokens: reduced,
     reductionPercent: reduction,
+    tokenEstimationMethod: method,
+    tokenEstimationApprox: method === null ? null : method !== "exact-tokenizer",
     fullFiles: compression?.fullFiles ?? 0,
     compressedFiles: compression?.compressedFiles ?? 0,
     compressionExcludedFiles: compression?.excludedFiles ?? 0,

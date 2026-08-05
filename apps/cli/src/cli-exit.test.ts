@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,11 +11,7 @@ afterEach(() => {
 
 describe("bundled CLI lifecycle", () => {
   it("prints the result and exits after deterministic preparation", async () => {
-    execFileSync(
-      process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-      ["--filter", "@yuhi-ai-labs/yuhi", "build"],
-      { cwd: process.cwd(), stdio: "ignore" },
-    );
+    // Built once for the whole run by vitest.global-setup.ts.
     const root = mkdtempSync(path.join(tmpdir(), "yuhi-cli-exit-"));
     roots.push(root);
     const home = mkdtempSync(path.join(tmpdir(), "yuhi-cli-home-"));

@@ -23,6 +23,7 @@ import {
   type RetrievalLimits,
 } from "@yuhi/context-runtime";
 import type { Compressor } from "@yuhi/context-compression";
+import type { PrivacyMode, StudentAliasContext } from "@yuhi/shared";
 
 import { deriveSessionId } from "./anthropic/request.js";
 import { transformRequest, type RetrievalMode, type TransformDeps } from "./anthropic/transform.js";
@@ -55,6 +56,11 @@ export interface GatewayOptions {
   readonly retrievalMode?: RetrievalMode;
   /** What a detected secret means for delivery. Defaults to Developer Mode. */
   readonly deliveryPolicy?: DeliveryPolicy;
+  /** What happens to DIRECT PERSONAL IDENTIFIERS (v0.4.8 Phase 3B). Defaults to Balanced. */
+  readonly privacyMode?: PrivacyMode;
+  /** The session's de-identification registry. Fresh per gateway process unless the
+   *  caller persists and restores one across restarts (see `startDynamicClaudeSession`). */
+  readonly aliasContext?: StudentAliasContext;
   /** Ceiling above which a prose/log `Read` is compressed anyway (default 20,000 est tokens). */
   readonly scanGuardMaxTokens?: number;
   readonly log?: (line: string) => void;
@@ -92,6 +98,8 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
     ...(opts.tokenBudget === undefined ? {} : { tokenBudget: opts.tokenBudget }),
     ...(opts.compressors ? { compressors: opts.compressors } : {}),
     ...(opts.deliveryPolicy ? { deliveryPolicy: opts.deliveryPolicy } : {}),
+    ...(opts.privacyMode ? { privacyMode: opts.privacyMode } : {}),
+    ...(opts.aliasContext ? { aliasContext: opts.aliasContext } : {}),
   };
   const runtime = new ContextRuntime(runtimeOptions);
 

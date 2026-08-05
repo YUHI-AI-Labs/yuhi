@@ -14,7 +14,9 @@ import * as vscode from "vscode";
 import {
   YUHI_EXTENSION_ID,
   discoverSessions,
+  readPreparedPrivacyMode,
   recoverStaleSessions,
+  resolveLaunchPrivacyMode,
   sessionLayout,
   workspaceHash,
   describeDiscovered,
@@ -41,7 +43,13 @@ export interface NativeCommandDeps {
   readonly output: vscode.OutputChannel;
   /** Resolve (or prepare) the Prepared Workspace for the current window. */
   resolvePrepared(): Promise<{ source: string; prepared: string } | undefined>;
+  /** LEGACY, superseded by `privacyMode()` (v0.4.8) — ignored once `privacyMode()` resolves to a value. */
   deliveryMode(): "developer" | "strict";
+  /** Raw `yuhi.dynamicContext.privacyMode` setting value, `""` when unset (inherit). */
+  privacyMode(): string;
+  /** Prompt for and persist the Trusted Local acknowledgement (workspace-scoped). Returns
+   *  the acknowledgement's final state — `false` means the user declined or dismissed. */
+  confirmTrustedLocal(): Promise<boolean>;
   retrievalMode(): "disabled" | "conditional" | "required";
 }
 
@@ -131,6 +139,25 @@ async function commandOpen(context: vscode.ExtensionContext, deps: NativeCommand
     return;
   }
 
+  // Privacy Mode precedence + mode-mismatch guard (v0.4.8 Phase 4), sharing the SAME
+  // pure resolver `yuhi launch --dynamic-context` and Dynamic Terminal use.
+  const rawPrivacyMode = deps.privacyMode();
+  const legacyDeliveryMode = deps.deliveryMode();
+  const preparedPrivacyMode = await readPreparedPrivacyMode(resolved.prepared);
+  let trustedLocalAcknowledged = false;
+  const candidateMode = rawPrivacyMode || preparedPrivacyMode || "";
+  if (candidateMode === "trusted-local") trustedLocalAcknowledged = await deps.confirmTrustedLocal();
+  const resolvedPrivacy = resolveLaunchPrivacyMode({
+    rawPrivacyMode,
+    legacyDeliveryMode,
+    preparedPrivacyMode,
+    trustedLocalAcknowledged,
+  });
+  if (!resolvedPrivacy.ok) {
+    void vscode.window.showWarningMessage(`Yuhi: ${resolvedPrivacy.message}`);
+    return;
+  }
+
   const scratch = await mkdtemp(join(tmpdir(), "yuhi-native-"));
   const configPath = join(scratch, "broker-config.json");
   const handshakePath = join(scratch, "handshake.json");
@@ -144,6 +171,8 @@ async function commandOpen(context: vscode.ExtensionContext, deps: NativeCommand
         sourceWorkspace: resolved.source,
         preparedWorkspace: resolved.prepared,
         deliveryMode: deps.deliveryMode(),
+        privacyMode: resolvedPrivacy.privacyMode,
+        privacyModeAcknowledged: trustedLocalAcknowledged,
         retrievalMode: deps.retrievalMode(),
         configPath,
         handshakePath,

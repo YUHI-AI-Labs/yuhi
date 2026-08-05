@@ -14,6 +14,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { DeliveryMode } from "@yuhi/context-runtime";
+import type { PrivacyMode } from "@yuhi/shared";
 
 import type { RetrievalMode } from "../anthropic/transform.js";
 import { startNativeClaudeGuiSession } from "./native-session.js";
@@ -24,7 +25,10 @@ import { touchLock } from "./session-lock.js";
 export interface BrokerConfig {
   readonly sourceWorkspace: string;
   readonly preparedWorkspace: string;
+  /** LEGACY, superseded by `privacyMode` (v0.4.8) — ignored when `privacyMode` is given. */
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode?: PrivacyMode;
+  readonly privacyModeAcknowledged?: boolean;
   readonly retrievalMode: RetrievalMode;
   readonly extensionVersion?: string;
   readonly vscodeExecutable?: string;
@@ -47,6 +51,10 @@ export async function runBroker(config: BrokerConfig): Promise<void> {
       sourceWorkspace: config.sourceWorkspace,
       preparedWorkspace: config.preparedWorkspace,
       deliveryMode: config.deliveryMode,
+      ...(config.privacyMode ? { privacyMode: config.privacyMode } : {}),
+      ...(config.privacyModeAcknowledged === undefined
+        ? {}
+        : { privacyModeAcknowledged: config.privacyModeAcknowledged }),
       retrievalMode: config.retrievalMode,
       ...(config.extensionVersion ? { extensionVersion: config.extensionVersion } : {}),
       ...(config.vscodeExecutable ? { vscodeExecutable: config.vscodeExecutable } : {}),

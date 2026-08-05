@@ -1,5 +1,10 @@
 import ExcelJS from "exceljs";
-import { requiresPseudonymization } from "./identifier-taxonomy.js";
+import {
+  DEFAULT_PRIVACY_MODE,
+  modeTransformsDirectIdentifiers,
+  requiresPseudonymization,
+  type PrivacyMode,
+} from "./identifier-taxonomy.js";
 import {
   classifyStudentRecordTable,
   detectTableLayout,
@@ -95,6 +100,7 @@ export async function inspectXlsxRecords(input: Buffer): Promise<XlsxInspection>
 export async function pseudonymizeXlsxRecords(
   input: Buffer,
   context: StudentAliasContext = createStudentAliasContext(),
+  mode: PrivacyMode = DEFAULT_PRIVACY_MODE,
 ): Promise<XlsxTransformResult> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(input as never);
@@ -129,17 +135,24 @@ export async function pseudonymizeXlsxRecords(
         if (value) rawIdentifiers.add(value);
       }
     }
-    const serialized = serializeDelimitedTable({ delimiter: ",", rows: table.rows });
-    const transformed = pseudonymizeStudentRecords(serialized, context);
-    const outputRows = parseDelimitedTable(transformed.output).rows;
-    for (let rowIndex = layout.dataStartRow; rowIndex < outputRows.length; rowIndex += 1) {
-      for (const columnIndex of classification.directIdentifierIndexes) {
-        sheet
-          .getRow(table.headerRow + rowIndex)
-          .getCell(columnIndex + 1).value = outputRows[rowIndex]![columnIndex] ?? "";
+    // Trusted Local: privacy transformation disabled by explicit user choice
+    // (`docs/design/0.4.8_privacy_mode.md`). `pseudonymizeStudentRecords` throws
+    // `TRUSTED_LOCAL_NO_TRANSFORM` for this mode -- skip the call so the sheet's
+    // cells stay genuinely unchanged, rather than letting the sentinel propagate and
+    // fail the whole workbook.
+    if (modeTransformsDirectIdentifiers(mode)) {
+      const serialized = serializeDelimitedTable({ delimiter: ",", rows: table.rows });
+      const transformed = pseudonymizeStudentRecords(serialized, context, mode);
+      const outputRows = parseDelimitedTable(transformed.output).rows;
+      for (let rowIndex = layout.dataStartRow; rowIndex < outputRows.length; rowIndex += 1) {
+        for (const columnIndex of classification.directIdentifierIndexes) {
+          sheet
+            .getRow(table.headerRow + rowIndex)
+            .getCell(columnIndex + 1).value = outputRows[rowIndex]![columnIndex] ?? "";
+        }
       }
+      valuesReplaced += transformed.valuesReplaced;
     }
-    valuesReplaced += transformed.valuesReplaced;
   }
 
   if (sensitiveSheets === 0) {

@@ -219,6 +219,56 @@ describe("launch orchestration", () => {
     expect(errors.join("\n")).toContain("without --dynamic-context");
   });
 
+  it("v0.4.8: propagates privacyMode into the gateway and prints the resolved (dynamic-terminal) banner", async () => {
+    const lines: string[] = [];
+    let gatewayOptions: Record<string, unknown> | undefined;
+    await launchClaudeWithDynamicContext({
+      privacyMode: "strict",
+      upstream: { mode: "anthropic-api", baseUrl: "https://api.anthropic.com", supportsDynamicContext: true },
+      resolveWorkspace: async () => "/prepared/workspace",
+      startGatewayImpl: async (o) => {
+        gatewayOptions = o as unknown as Record<string, unknown>;
+        return fakeGateway().handle;
+      },
+      fetchProbe: async () => ({ ok: true }),
+      performLaunchImpl: async () => 0,
+      sessionId: "sess_fixed",
+      out: (l) => lines.push(l),
+      err: (l) => lines.push(l),
+    });
+    expect(gatewayOptions?.["privacyMode"]).toBe("strict");
+    // deliveryPolicy composed FROM privacyMode: Strict -> secrets redacted too.
+    expect((gatewayOptions?.["deliveryPolicy"] as { mode?: string } | undefined)?.mode).toBe("strict");
+    const text = lines.join("\n");
+    expect(text).toContain("Privacy: Strict");
+    // The dynamic-terminal wording claims BOTH identifiers and secrets are masked
+    // under Strict -- different from the static-prepare copy, which never mentions
+    // secrets being conditionally delivered at all.
+    expect(text).toMatch(/personal identifiers and detected secrets/i);
+  });
+
+  it("v0.4.8: legacy --delivery-mode still resolves to the equivalent Privacy Mode banner when privacyMode is not given", async () => {
+    const lines: string[] = [];
+    let gatewayOptions: Record<string, unknown> | undefined;
+    await launchClaudeWithDynamicContext({
+      deliveryMode: "developer",
+      upstream: { mode: "anthropic-api", baseUrl: "https://api.anthropic.com", supportsDynamicContext: true },
+      resolveWorkspace: async () => "/prepared/workspace",
+      startGatewayImpl: async (o) => {
+        gatewayOptions = o as unknown as Record<string, unknown>;
+        return fakeGateway().handle;
+      },
+      fetchProbe: async () => ({ ok: true }),
+      performLaunchImpl: async () => 0,
+      sessionId: "sess_fixed",
+      out: (l) => lines.push(l),
+      err: (l) => lines.push(l),
+    });
+    expect(gatewayOptions?.["privacyMode"]).toBe("balanced");
+    expect((gatewayOptions?.["deliveryPolicy"] as { mode?: string } | undefined)?.mode).toBe("developer");
+    expect(lines.join("\n")).toContain("Privacy: Balanced");
+  });
+
   it("fails closed when the gateway never becomes ready", async () => {
     const errors: string[] = [];
     const result = await launchClaudeWithDynamicContext({
