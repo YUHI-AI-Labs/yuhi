@@ -281,9 +281,13 @@ describe("prepareWorkspace", () => {
     // Companion published; Balanced retains the warning-marked original.
     expect(existsSync(path.join(report.outDir, "architecture.pdf"))).toBe(true);
     const companion = readFileSync(path.join(report.outDir, "architecture.pdf.md"), "utf8");
-    // Structured identifiers in the extracted body are redacted out of the companion.
+    // The direct personal identifier (email) is masked out of the companion.
     expect(companion).not.toContain("taro.yamada@example.ac.jp");
-    expect(companion).not.toContain("A000000");
+    // "A000000" is an OPERATIONAL identifier (student number shape) — 0.4.6/0.4.7
+    // policy preserves these, in documents exactly as in CSV/XLSX, since masking a
+    // business key breaks the analysis it exists for while buying no privacy (the
+    // person is already protected by masking the name/email next to it).
+    expect(companion).toContain("A000000");
     // The absolute source path is never written into the companion or the public status.
     expect(companion).not.toContain(dir);
     // The foreground handoff never exposes original document paths, and is created.

@@ -30,11 +30,17 @@ export interface CompanionInput {
 
 export interface CompanionResult {
   markdown: string;
-  /** Count of secret + structured-identifier spans replaced across all text. */
+  /** Count of SECRET spans redacted here (structured/personal identifiers are masked
+   *  downstream — see `sanitizeBlock`'s doc comment — and are not counted here). */
   redactionCount: number;
   /**
-   * Always true: free-text personal names cannot be reliably removed by regex,
-   * so a residual re-identification risk always remains.
+   * Always true: this function's own pass only redacts secrets. The real,
+   * taxonomy-aware personal-identifier masking (`deidentifyText`, downstream in
+   * `wiring.ts`) has a known, DOCUMENTED coverage gap (non-CJK names, single- and
+   * 5+-character CJK names) it cannot close, so a residual re-identification risk in
+   * free text can never be certified zero at this layer. Unused downstream in the
+   * live pipeline today (the real gate is `wiring.ts`'s independent verification
+   * pass); kept for callers reading an older manifest shape.
    */
   residualNameRisk: boolean;
   warnings: string[];
@@ -42,13 +48,6 @@ export interface CompanionResult {
 
 const DEFAULT_ENTROPY_THRESHOLD = 4.5;
 
-// Structured-identifier patterns. Applied emails -> code IDs -> phones so an
-// alpha-prefixed ID is not partially consumed by the digit-run phone pattern.
-const EMAIL_RE = /[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}/g;
-// Phone-ish runs of digits with common separators; validated by digit count.
-const PHONE_RE = /\+?\d[\d\s().-]{5,}\d/g;
-// Code-like IDs: a short alpha prefix followed by 3+ digits (e.g. STU2024001).
-const CODE_ID_RE = /[A-Za-z]{1,6}\d{3,}[A-Za-z0-9]*/g;
 // Absolute path shapes we must never emit (POSIX or Windows).
 const ABS_PATH_RE = /(?:[A-Za-z]:\\[^\s]*|\/[^\s]*\/[^\s]*)/g;
 // Filename shape (has an extension); used to reject path/file-like titles.
@@ -56,65 +55,43 @@ const FILENAME_RE = /[^\s/\\]+\.[A-Za-z0-9]{1,5}$/;
 
 interface SanitizeState {
   count: number;
-  // Stable token maps so a repeated identifier gets the same token.
-  email: Map<string, string>;
-  phone: Map<string, string>;
-  id: Map<string, string>;
 }
 
 function newState(): SanitizeState {
-  return { count: 0, email: new Map(), phone: new Map(), id: new Map() };
-}
-
-function token(map: Map<string, string>, key: string, prefix: string): string {
-  const existing = map.get(key);
-  if (existing) return existing;
-  const t = `«${prefix}:${map.size + 1}»`;
-  map.set(key, t);
-  return t;
+  return { count: 0 };
 }
 
 /**
- * Sanitize a single text block: redact secrets (via @yuhi/scanner) then
- * structured identifiers (emails, phones, code IDs). Increments state.count by
- * every replacement made. Returns the redacted string.
+ * Sanitize a single text block: redact secrets (via @yuhi/scanner). Increments
+ * state.count by every replacement made. Returns the redacted string.
+ *
+ * Structured personal identifiers (emails, phones) and operational identifiers
+ * (student/employee/course IDs) are deliberately NOT touched here (0.4.7,
+ * `docs/design/0.4.7_document_privacy.md`). This function used to mask them itself,
+ * with its own `«EMAIL:N»`/`«ID:N»`/`«PHONE:N»` tokens, unconditionally — including
+ * operational IDs, which the taxonomy (`identifier-taxonomy.ts`) requires to be
+ * PRESERVED, not masked, and which the identity linkage policy
+ * (`entitiesReachableInText`) needs present verbatim to detect a same-document
+ * linking key at all. Masking them here, before that detection ever ran, both broke
+ * linkage and produced a token format inconsistent with what the SAME email/phone
+ * value gets in a CSV (`EMAIL-001` there, `«EMAIL:1»` here) — exactly the
+ * inconsistency 0.4.6/0.4.7 exist to eliminate ("SAME taxonomy, SAME registry, SAME
+ * verification"). `packages/core/src/background/wiring.ts`'s pseudonymizer
+ * (`deidentifyText`) is now the SOLE authority for these, downstream, after this
+ * function returns.
  */
 function sanitizeBlock(raw: string, state: SanitizeState): string {
   if (!raw) return "";
 
-  // 1) Secrets / high-entropy tokens via the shared redactor.
+  // Secrets / high-entropy tokens via the shared redactor. This stays here: it is an
+  // orthogonal concern (credentials, not personal-identifier taxonomy) already shared
+  // with every other secret-scanning surface in the codebase.
   const secret = redactText(raw, {
     entropyThreshold: DEFAULT_ENTROPY_THRESHOLD,
     keywords: [],
   });
   state.count += secret.count;
-  let out = secret.redacted;
-
-  // 2) Emails.
-  out = out.replace(EMAIL_RE, (m) => {
-    const t = token(state.email, m, "EMAIL");
-    state.count += 1;
-    return t;
-  });
-
-  // 3) Code-like IDs (before phones so an alpha-prefixed ID like STU2024001 is
-  //    not partially consumed by the digit-run phone pattern).
-  out = out.replace(CODE_ID_RE, (m) => {
-    const t = token(state.id, m, "ID");
-    state.count += 1;
-    return t;
-  });
-
-  // 4) Phone numbers (require 7..15 digits to avoid eating plain numbers).
-  out = out.replace(PHONE_RE, (m) => {
-    const digits = (m.match(/\d/g) ?? []).length;
-    if (digits < 7 || digits > 15) return m;
-    const t = token(state.phone, m.trim(), "PHONE");
-    state.count += 1;
-    return t;
-  });
-
-  return out;
+  return secret.redacted;
 }
 
 /** Escape a cell for GitHub markdown table rendering. */
@@ -195,12 +172,16 @@ export function buildDocumentCompanion(input: CompanionInput): CompanionResult {
   lines.push("## Sanitization notice");
   lines.push("");
   lines.push(
-    "This companion is a redacted copy. Secrets and structured identifiers " +
-      "(emails, phone numbers, code-like IDs) were replaced with stable tokens.",
+    "This companion is a sanitized copy. Secrets are redacted here; personal names " +
+      "and structured identifiers (emails, phone numbers, and other identifiers that " +
+      "directly identify a person) are masked before delivery. Business/operational " +
+      "identifiers (student id, course code, …) are preserved for analysis.",
   );
   lines.push(
-    "Residual risk: arbitrary personal names in free text may remain. " +
-      "This document is NOT fully anonymized — free-text names cannot be reliably removed.",
+    "Residual risk: a personal name in free text is masked when the detector " +
+      "recognizes it (2-4 character CJK name-shaped sequences). A single-character, " +
+      "5+ character, or non-CJK (e.g. Latin-script) personal name may not be " +
+      "detected. This document is NOT guaranteed fully anonymized.",
   );
   lines.push("");
 
@@ -239,7 +220,8 @@ export function buildDocumentCompanion(input: CompanionInput): CompanionResult {
     warnings.push("Source contains hidden content; review before sharing.");
   }
   warnings.push(
-    "Residual risk: arbitrary personal names in free text may remain (not fully anonymized).",
+    "Residual risk: a personal name outside the CJK 2-4 character detector (e.g. " +
+      "single-character, 5+ character, or non-CJK) may not be masked.",
   );
 
   // Final guard: strip any absolute path that slipped through, then trim.

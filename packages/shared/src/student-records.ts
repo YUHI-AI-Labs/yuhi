@@ -607,6 +607,23 @@ export interface StudentAliasContext {
    * the token PREFIX followed whichever type that file happened to infer.
    */
   entityBucketTokens: Map<string, string>;
+  /**
+   * Every direct-personal (name/email/address/…) identifier VALUE this run has
+   * pseudonymized, keyed `identifierKey(type, value)`, mapped to the token it
+   * received. `entityBucketTokens` only answers "what token does entity N's NAME
+   * carry"; nothing else records "what token did the literal string 山田太郎
+   * receive", which is what prose de-identification (`text-deidentify.ts`) needs
+   * to look up. Populated alongside `entityAlias`/`addressAlias` in
+   * `pseudonymizeStudentRecords`, never for operational (preserved) types.
+   */
+  directValueTokens: Map<string, string>;
+  /**
+   * Entity each `directValueTokens` entry belongs to (same key). Lets
+   * `directPersonalValueTokensForEntities` restrict prose reuse to values linked to a
+   * specific set of entities, without re-deriving entity membership from
+   * `entityBucketTokens` (which is keyed by token, not value).
+   */
+  directValueEntity: Map<string, number>;
 }
 
 /**
@@ -645,6 +662,8 @@ export function createStudentAliasContext(): StudentAliasContext {
     columnTokens: new Map(),
     columnTokenCounts: new Map(),
     entityBucketTokens: new Map(),
+    directValueTokens: new Map(),
+    directValueEntity: new Map(),
   };
 }
 
@@ -959,18 +978,181 @@ export function directPersonalValueTokens(
     const value = key.slice(key.indexOf(":") + 1);
     if (value) out.set(value, token);
   }
-  // Entity-keyed tokens (name, name-reading, email, …): resolve value -> entity ->
-  // token, so a name that a table masked as `Student 001` masks identically in prose.
-  for (const [key, entity] of context.identifierToEntity) {
-    if (typeof entity !== "number") continue;
-    const separator = key.indexOf(":");
-    const bucket = key.slice(0, separator);
-    const value = key.slice(separator + 1);
-    if (!value) continue;
-    const token = context.entityBucketTokens.get(`${entity}\u0000${bucket}`);
-    if (token) out.set(value, token);
+  // Entity-keyed tokens (name, name-reading, email, address, …), recorded by VALUE at
+  // pseudonymization time (`directValueTokens`) -- so a name a table masked as
+  // `PERSON-001` masks identically in prose. (`entityBucketTokens` alone cannot answer
+  // this: it maps (entity, bucket) -> token, not the raw value that produced it.)
+  for (const [key, token] of context.directValueTokens) {
+    const value = key.slice(key.indexOf(":") + 1);
+    if (value) out.set(value, token);
   }
   return out;
+}
+
+/**
+ * Business-key entities whose value appears literally in `text` — the "same-document
+ * key" test the identity linkage policy requires
+ * (`docs/design/0.4.7_document_privacy.md`).
+ *
+ * Only `identifierToEntity` entries qualify: that map is committed ONLY for `strong`
+ * (linkable) identifiers in `pseudonymizeStudentRecords` — i.e. only for operational
+ * types that already passed `identifiesRowSubject()`'s discrimination check. There is
+ * no separate "is this a strong key" filter to apply here; every entry already is one.
+ */
+export function entitiesReachableInText(
+  context: StudentAliasContext,
+  text: string,
+): Set<number> {
+  const entities = new Set<number>();
+  const normalizedText = normalizeIdentifierValue(text);
+  for (const [key, entity] of context.identifierToEntity) {
+    if (typeof entity !== "number") continue;
+    const value = key.slice(key.indexOf(":") + 1);
+    if (value && value.length >= 2 && normalizedText.includes(value)) entities.add(entity);
+  }
+  return entities;
+}
+
+/**
+ * `directPersonalValueTokens`, restricted to values belonging to `allowedEntities`.
+ *
+ * Used to implement the identity linkage policy: a name may only reuse a table's token
+ * in prose when the SAME document also contains a strong key (student id, …) that
+ * resolves to that entity (`entitiesReachableInText`). A name with no such key present
+ * must NOT reuse any entity's token — two different people named 山田太郎 collapsing
+ * onto one token is data corruption, not anonymisation. (Unlinked names are still
+ * masked — see `text-deidentify.ts`'s own fresh-token minting — just not via this map.)
+ */
+export function directPersonalValueTokensForEntities(
+  context: StudentAliasContext,
+  allowedEntities: ReadonlySet<number>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (allowedEntities.size === 0) return out;
+  for (const [key, token] of context.directValueTokens) {
+    const entity = context.directValueEntity.get(key);
+    if (entity === undefined || !allowedEntities.has(entity)) continue;
+    const value = key.slice(key.indexOf(":") + 1);
+    if (value) out.set(value, token);
+  }
+  return out;
+}
+
+/**
+ * Claim a fresh, run-unique token for a personal value with NO linkable key in its
+ * document (the identity-linkage policy's safe default — see
+ * `docs/design/0.4.7_document_privacy.md`: mask it, but never merge it onto an
+ * existing entity on value-match alone).
+ *
+ * Deliberately does NOT write into `identifierToEntity` or `directValueTokens`: doing
+ * so would make this value "reachable" for a LATER, unrelated document's lookup,
+ * silently merging two different people who happen to share a name. Only `nextEntity`
+ * (a run-wide counter, so the number can never collide with a real linked entity's
+ * token) is consumed; the caller (`text-deidentify.ts`) is responsible for reusing the
+ * returned token consistently within the ONE text it is currently processing.
+ */
+export function mintUnlinkedPersonalToken(
+  context: StudentAliasContext,
+  type: DirectIdentifierType,
+): string {
+  const entity = context.nextEntity;
+  context.nextEntity += 1;
+  return aliasFor(type, entity, "person");
+}
+
+interface SerializedStudentAliasContext {
+  schemaVersion: 1;
+  runId: string;
+  identifierToEntity: [string, number | null][];
+  entityIdentifiers: [number, [string, string][]][];
+  nextEntity: number;
+  attributeTokens: [string, string][];
+  columnTokens: [string, string][];
+  columnTokenCounts: [string, number][];
+  entityBucketTokens: [string, string][];
+  directValueTokens: [string, string][];
+  directValueEntity: [string, number][];
+}
+
+/**
+ * Plain-JSON projection of a `StudentAliasContext`, for private cross-process
+ * persistence (`packages/core/src/background/alias-registry-store.ts`). Every field is
+ * a `Map` of strings/numbers, so this is a lossless round trip. `runId` is carried so
+ * the reader can refuse a mismatched file (the directory is already run-scoped, but a
+ * value-level check costs nothing and matches `writePrivateRunSourceBinding`'s own
+ * pattern).
+ *
+ * The registry's VALUES are stored as-is (not hashed): `entitiesReachableInText` and
+ * `text-deidentify.ts`'s known-value substitution both need literal substring matching
+ * against arbitrary document text, which a keyed hash cannot support (there is no way
+ * to hash "every substring of the document" and compare). Confidentiality instead comes
+ * from where this lives: a private, `0600`, `.internal/`-only file, never in the
+ * agent-visible tree, manifest, background status, or handoff — the same protection
+ * tier `private-state.ts` already uses for an absolute source path.
+ */
+export function serializeStudentAliasContext(
+  context: StudentAliasContext,
+  runId: string,
+): SerializedStudentAliasContext {
+  return {
+    schemaVersion: 1,
+    runId,
+    identifierToEntity: [...context.identifierToEntity],
+    entityIdentifiers: [...context.entityIdentifiers].map(([entity, slots]) => [
+      entity,
+      [...slots],
+    ]),
+    nextEntity: context.nextEntity,
+    attributeTokens: [...context.attributeTokens],
+    columnTokens: [...context.columnTokens],
+    columnTokenCounts: [...context.columnTokenCounts],
+    entityBucketTokens: [...context.entityBucketTokens],
+    directValueTokens: [...context.directValueTokens],
+    directValueEntity: [...context.directValueEntity],
+  };
+}
+
+/**
+ * Inverse of `serializeStudentAliasContext`. Throws on a shape mismatch OR a `runId`
+ * mismatch, so the caller's own fallback (a fresh, empty context — safe: masking and
+ * publish verification do not depend on this registry, only cross-format token reuse
+ * does) decides what happens next. Never silently produces a partially-reconstructed
+ * or wrong-run registry.
+ */
+export function deserializeStudentAliasContext(
+  data: unknown,
+  runId: string,
+): StudentAliasContext {
+  const value = data as Partial<SerializedStudentAliasContext> | null;
+  if (
+    !value ||
+    value.schemaVersion !== 1 ||
+    value.runId !== runId ||
+    !Array.isArray(value.identifierToEntity) ||
+    !Array.isArray(value.entityIdentifiers) ||
+    typeof value.nextEntity !== "number" ||
+    !Array.isArray(value.attributeTokens) ||
+    !Array.isArray(value.columnTokens) ||
+    !Array.isArray(value.columnTokenCounts) ||
+    !Array.isArray(value.entityBucketTokens) ||
+    !Array.isArray(value.directValueTokens) ||
+    !Array.isArray(value.directValueEntity)
+  ) {
+    throw new Error("invalid-student-alias-context");
+  }
+  return {
+    identifierToEntity: new Map(value.identifierToEntity),
+    entityIdentifiers: new Map(
+      value.entityIdentifiers.map(([entity, slots]) => [entity, new Map(slots)]),
+    ),
+    nextEntity: value.nextEntity,
+    attributeTokens: new Map(value.attributeTokens),
+    columnTokens: new Map(value.columnTokens),
+    columnTokenCounts: new Map(value.columnTokenCounts),
+    entityBucketTokens: new Map(value.entityBucketTokens),
+    directValueTokens: new Map(value.directValueTokens),
+    directValueEntity: new Map(value.directValueEntity),
+  };
 }
 
 export function tabularDirectIdentifierValues(input: string): string[] {
@@ -1257,7 +1439,7 @@ export function pseudonymizeStudentRecords(
     // Pseudonymize EVERY identifier in the row (best effort) with the chosen entity.
     for (const item of identifiers) {
       const bucket = identifierBucket(item.type);
-      row[item.index] =
+      const token =
         bucket === "phone"
           ? phoneToken(context, item.value)
           : bucket === "address"
@@ -1268,6 +1450,13 @@ export function pseudonymizeStudentRecords(
               bucket === "id" || columnScoped.has(item.type)
               ? strongValueAlias(context, item.type, item.value, conflicted)
               : entityAlias(context, item.type, entity, role);
+      row[item.index] = token;
+      // Record VALUE -> token for prose de-identification (`directPersonalValueTokens`).
+      // `identifiers` is already filtered to `requiresPseudonymization` (direct-personal
+      // only, never id/operational), so this never records a preserved value.
+      const directKey = identifierKey(item.type, item.value);
+      context.directValueTokens.set(directKey, token);
+      context.directValueEntity.set(directKey, entity);
       valuesReplaced += 1;
     }
     for (const [offset, index] of classification.directIdentifierIndexes.entries()) {

@@ -20,44 +20,31 @@ function baseInput(overrides: Partial<CompanionInput> = {}): CompanionInput {
 }
 
 describe("buildDocumentCompanion", () => {
-  it("redacts emails, phones, and code-like IDs with a positive count", () => {
+  it("does NOT mask structured identifiers itself (0.4.7) — that is wiring.ts's job downstream", () => {
+    // Pre-0.4.7 this function masked emails/phones/code-IDs itself with its own
+    // «EMAIL:N»-style tokens — unconditionally, including operational IDs like
+    // STU2024001, which the taxonomy requires PRESERVED, and using a token format
+    // inconsistent with what the SAME value gets in a CSV (`EMAIL-001`). Masking
+    // here also ran BEFORE the identity-linkage detection that needs the raw ID
+    // value present, breaking cross-format linkage entirely. This function's own
+    // output must now carry these values through untouched; only secrets are
+    // redacted at this layer.
     const res = buildDocumentCompanion(baseInput());
-    expect(res.markdown).not.toContain("admin@example.com");
-    expect(res.markdown).not.toContain("555");
-    expect(res.markdown).not.toContain("STU2024001");
-    expect(res.markdown).toContain("«EMAIL:1»");
-    expect(res.markdown).toContain("«PHONE:1»");
-    expect(res.markdown).toContain("«ID:1»");
-    expect(res.redactionCount).toBeGreaterThan(0);
-    // email + phone + id => at least 3 replacements.
-    expect(res.redactionCount).toBeGreaterThanOrEqual(3);
-  });
-
-  it("gives the same identifier a stable token across blocks", () => {
-    const res = buildDocumentCompanion(
-      baseInput({
-        sections: [
-          { paragraphs: ["First: admin@example.com"] },
-          { paragraphs: ["Again: admin@example.com"] },
-        ],
-      }),
-    );
-    const occurrences = res.markdown.match(/«EMAIL:1»/g) ?? [];
-    expect(occurrences.length).toBe(2);
-    expect(res.markdown).not.toContain("«EMAIL:2»");
+    expect(res.markdown).toContain("admin@example.com");
+    expect(res.markdown).toContain("STU2024001");
+    expect(res.markdown).not.toContain("«EMAIL:");
+    expect(res.markdown).not.toContain("«ID:");
+    expect(res.markdown).not.toContain("«PHONE:");
   });
 
   it("always reports residual name risk and never claims full anonymization", () => {
     const res = buildDocumentCompanion(baseInput());
     expect(res.residualNameRisk).toBe(true);
-    expect(res.markdown).toContain(
-      "Residual risk: arbitrary personal names in free text may remain",
-    );
-    // Any mention of "fully anonymized" must be negated ("NOT fully anonymized").
+    expect(res.markdown).toContain("Residual risk:");
+    // Any mention of "anonymized" must be negated ("NOT guaranteed fully anonymized").
     const md = res.markdown.toLowerCase();
-    expect(md).toContain("not fully anonymized");
+    expect(md).toContain("not guaranteed fully anonymized");
     expect(md).not.toContain("is fully anonymized");
-    expect(md.replace(/not fully anonymized/g, "")).not.toContain("fully anonymized");
     expect(res.warnings.some((w) => /residual risk/i.test(w))).toBe(true);
   });
 
@@ -76,7 +63,7 @@ describe("buildDocumentCompanion", () => {
     expect(res.markdown).toContain("«PATH»");
   });
 
-  it("renders tables as GitHub markdown and sanitizes their cells", () => {
+  it("renders tables as GitHub markdown; cell values pass through for downstream masking", () => {
     const res = buildDocumentCompanion(
       baseInput({
         sections: [
@@ -95,10 +82,10 @@ describe("buildDocumentCompanion", () => {
     );
     expect(res.markdown).toContain("| Name | Email | ID |");
     expect(res.markdown).toContain("| --- | --- | --- |");
-    expect(res.markdown).toContain("«EMAIL:1»");
-    expect(res.markdown).toContain("«ID:1»");
-    expect(res.markdown).not.toContain("alice@school.org");
-    expect(res.markdown).not.toContain("STU2024002");
+    // Structured identifiers are no longer masked at this layer (see the test above);
+    // an operational ID must survive so wiring.ts's linkage detection can find it.
+    expect(res.markdown).toContain("alice@school.org");
+    expect(res.markdown).toContain("STU2024002");
   });
 
   it("redacts secrets via the shared redactor", () => {

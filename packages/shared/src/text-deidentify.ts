@@ -5,7 +5,9 @@ import {
 } from "./identifier-taxonomy.js";
 import {
   createStudentAliasContext,
-  directPersonalValueTokens,
+  directPersonalValueTokensForEntities,
+  entitiesReachableInText,
+  mintUnlinkedPersonalToken,
   normalizeIdentifierValue,
   type StudentAliasContext,
 } from "./student-records.js";
@@ -19,16 +21,29 @@ import {
  * "Verified companion" (issue #21). This module puts documents on the SAME policy as
  * tables — same taxonomy, same run registry, same verification.
  *
- * What it can and cannot do, stated plainly because the difference decides whether a
- * companion may be delivered:
+ * What it does, stated plainly because the distinction is the whole point of the
+ * identity linkage policy (`docs/design/0.4.7_document_privacy.md`):
  *
  *   - Structured direct identifiers (email, phone, MyNumber, passport, bank account,
- *     card number) have detectable shapes and are masked here.
- *   - Any value already registered in this run's tabular data — typically a person's
- *     name — is masked with the SAME token the table used, via the run registry.
- *   - A personal name appearing ONLY in prose, with no tabular counterpart, is not
- *     reliably detectable. `residualRisk` reports that, and the caller must not publish
- *     a companion it cannot verify.
+ *     card number) have detectable shapes and are always masked.
+ *   - A value already registered in this run's tabular data — typically a person's
+ *     name — reuses the SAME token the table used, but ONLY when the document ALSO
+ *     contains a strong business key (student id, …) that resolves to that entity
+ *     (`entitiesReachableInText`). A bare name match is NOT sufficient evidence of
+ *     identity: merging two different people named 山田太郎 onto one token is data
+ *     corruption, not anonymisation.
+ *   - A CJK name-shaped candidate with NO such key is still masked — with a fresh,
+ *     run-unique token, reused consistently within this one call — but is deliberately
+ *     NOT linked to any existing entity. Masking without linking is the safe default;
+ *     leaving it raw because it could not be linked is not an option.
+ *
+ * Known coverage gap, stated rather than hidden: the name heuristic
+ * (`CJK_NAMEISH`) only recognizes 2–4 character CJK sequences. A single-character
+ * surname, a name of 5+ characters, or a non-CJK (e.g. Latin-script) personal name in
+ * prose is not detected by this function at all — there is no per-call signal for this,
+ * because it is a property of the algorithm, not of any one document. Everything this
+ * function DOES detect is masked; the gap is what it cannot recognize as a name in the
+ * first place, not something it detects and leaves unmasked.
  *
  * Operational identifiers (student id, course code, employee number) are never touched:
  * masking them would break the analysis the document is being prepared for.
@@ -45,18 +60,18 @@ export type DirectIdentifierKind =
 
 export interface TextDeidentifyResult {
   text: string;
-  /** How many substitutions were made, by kind. */
+  /** How many substitutions were made, by kind (registry reuse + shape patterns). */
   replaced: Record<DirectIdentifierKind, number>;
-  /** Total substitutions. */
+  /** Total substitutions, including `unlinkedNameCount`. */
   replacedTotal: number;
   /**
-   * True when the text may still hold a direct personal identifier this pass cannot
-   * detect — a CJK personal name with no counterpart in the run's tabular data.
-   * A caller must treat this as "not verifiable", never as "clean".
+   * How many CJK name-shaped candidates were masked WITHOUT a same-document linking
+   * key (a fresh, unlinked token — see the module doc comment). An AUDIT signal for
+   * reporting ("N names masked without cross-format linkage confirmation"), not a
+   * safety gate: every candidate this function detects is masked either way, so a
+   * non-zero count here does not mean anything was left raw.
    */
-  residualRisk: boolean;
-  /** Machine-readable reason for `residualRisk`, for honest reporting. */
-  residualReason?: "undetectable-personal-name-in-prose";
+  unlinkedNameCount: number;
 }
 
 /**
@@ -120,14 +135,18 @@ export function deidentifyText(
 
   // `trusted-local` transforms nothing, by definition.
   if (!modeTransformsDirectIdentifiers(mode)) {
-    return { text: input, replaced, replacedTotal: 0, residualRisk: false };
+    return { text: input, replaced, replacedTotal: 0, unlinkedNameCount: 0 };
   }
 
   let text = input;
 
-  // 1. Values this run already masked elsewhere — reuse the SAME token. Longest first,
-  //    so a full name is replaced before a substring of it.
-  const known = [...directPersonalValueTokens(context).entries()]
+  // 1. Values LINKED to this run's tabular registry via a strong key present in the
+  //    SAME text — reuse the SAME token the table used. Computed once from the
+  //    ORIGINAL input (not the in-progress `text`), since linkage is a property of the
+  //    whole document, not of what has been replaced so far. Longest value first, so a
+  //    full name is replaced before a substring of it.
+  const reachableEntities = entitiesReachableInText(context, input);
+  const known = [...directPersonalValueTokensForEntities(context, reachableEntities).entries()]
     .filter(([value]) => value.length >= 2)
     .sort((a, b) => b[0].length - a[0].length);
   for (const [normalized, token] of known) {
@@ -161,24 +180,29 @@ export function deidentifyText(
     });
   }
 
-  // 3. What is left that we cannot decide about. A 2–4 character CJK run that is not a
-  //    known label may be a personal name; we cannot tell, so we do not claim clean.
-  const leftover = new Set<string>();
-  for (const match of text.matchAll(CJK_NAMEISH)) {
-    const word = match[0];
-    if (!CJK_LABELS.has(word)) leftover.add(word);
-  }
+  // 3. CJK name-shaped candidates with no linking key: mask with a FRESH, unlinked
+  //    token — masked, never left raw, but deliberately NOT merged onto any existing
+  //    entity (a value match alone is not sufficient evidence of identity — see the
+  //    module doc comment). Reused consistently within THIS call only: a second
+  //    mention of the same string later in this same document gets the same token: a
+  //    DIFFERENT document mints its own, independent token for the same string, since
+  //    nothing here confirms it is the same person.
+  const unlinkedTokens = new Map<string, string>();
+  let unlinkedNameCount = 0;
+  text = text.replace(CJK_NAMEISH, (word) => {
+    if (CJK_LABELS.has(word)) return word;
+    const normalized = normalizeIdentifierValue(word);
+    let token = unlinkedTokens.get(normalized);
+    if (!token) {
+      token = mintUnlinkedPersonalToken(context, "name");
+      unlinkedTokens.set(normalized, token);
+    }
+    unlinkedNameCount += 1;
+    return token;
+  });
 
-  const replacedTotal = Object.values(replaced).reduce((a, b) => a + b, 0);
-  return {
-    text,
-    replaced,
-    replacedTotal,
-    residualRisk: leftover.size > 0,
-    ...(leftover.size > 0
-      ? { residualReason: "undetectable-personal-name-in-prose" as const }
-      : {}),
-  };
+  const replacedTotal = Object.values(replaced).reduce((a, b) => a + b, 0) + unlinkedNameCount;
+  return { text, replaced, replacedTotal, unlinkedNameCount };
 }
 
 /**

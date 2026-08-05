@@ -4,8 +4,13 @@ import {
   classifyStudentRecordHeaders,
   classifyStudentRecordTable,
   createStudentAliasContext,
+  deserializeStudentAliasContext,
+  directPersonalValueTokensForEntities,
+  entitiesReachableInText,
+  mintUnlinkedPersonalToken,
   parseDelimitedTable,
   pseudonymizeStudentRecords,
+  serializeStudentAliasContext,
   splitTablePreamble,
   tabularVerificationValues,
 } from "./student-records.js";
@@ -340,6 +345,88 @@ describe("semantics-preserving pseudonymization (v0.3.6 real-data regression)", 
     expect(classification.directIdentifierTypes).not.toContain("name");
     expect(() => pseudonymizeStudentRecords(input)).toThrow(
       /NO_DIRECT_PERSONAL_IDENTIFIERS/,
+    );
+  });
+});
+
+describe("0.4.7 -- identity linkage helpers and registry persistence", () => {
+  const ROSTER = "学籍番号,氏名\nSID_CANARY_001,山田太郎\nSID_CANARY_002,佐藤次郎\n";
+
+  it("entitiesReachableInText finds an entity only when its strong key is literally present", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context);
+    const withKey = entitiesReachableInText(context, "学籍番号：SID_CANARY_001 の証明書");
+    expect(withKey.size).toBe(1);
+    const withoutKey = entitiesReachableInText(context, "氏名：山田太郎（キーなし）");
+    expect(withoutKey.size).toBe(0);
+  });
+
+  it("entitiesReachableInText distinguishes two different entities' keys in the same text", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context);
+    const both = entitiesReachableInText(
+      context,
+      "SID_CANARY_001 and SID_CANARY_002 both attended.",
+    );
+    expect(both.size).toBe(2);
+  });
+
+  it("directPersonalValueTokensForEntities restricts to the given entities only", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context);
+    const reachable = entitiesReachableInText(context, "SID_CANARY_001");
+    const restricted = directPersonalValueTokensForEntities(context, reachable);
+    expect(restricted.get("山田太郎")).toBe("PERSON-001");
+    // The second person's name must NOT be reachable from a text naming only the first.
+    expect(restricted.has("佐藤次郎")).toBe(false);
+  });
+
+  it("directPersonalValueTokensForEntities returns nothing for an empty entity set", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context);
+    expect(directPersonalValueTokensForEntities(context, new Set()).size).toBe(0);
+  });
+
+  it("mintUnlinkedPersonalToken never collides with a real linked entity's token", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context); // entities 1, 2 already consumed
+    const unlinked = mintUnlinkedPersonalToken(context, "name");
+    expect(unlinked).toBe("PERSON-003");
+    // And it does NOT register as a reachable/linked entity for later lookups.
+    expect(context.identifierToEntity.size).toBe(2);
+  });
+
+  it("serializeStudentAliasContext / deserializeStudentAliasContext round-trips losslessly", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context);
+    const serialized = serializeStudentAliasContext(context, "run-abc");
+    // Simulates the actual cross-process path: JSON.stringify -> disk -> JSON.parse.
+    const restored = deserializeStudentAliasContext(
+      JSON.parse(JSON.stringify(serialized)),
+      "run-abc",
+    );
+    const reachable = entitiesReachableInText(restored, "SID_CANARY_001");
+    expect(directPersonalValueTokensForEntities(restored, reachable).get("山田太郎")).toBe(
+      "PERSON-001",
+    );
+    expect(restored.nextEntity).toBe(context.nextEntity);
+  });
+
+  it("deserializeStudentAliasContext refuses a runId mismatch", () => {
+    const context = createStudentAliasContext();
+    pseudonymizeStudentRecords(ROSTER, context);
+    const serialized = serializeStudentAliasContext(context, "run-a");
+    expect(() => deserializeStudentAliasContext(serialized, "run-b")).toThrow(
+      /invalid-student-alias-context/,
+    );
+  });
+
+  it("deserializeStudentAliasContext refuses a malformed payload rather than partially loading it", () => {
+    expect(() =>
+      deserializeStudentAliasContext({ schemaVersion: 1, runId: "run-a" }, "run-a"),
+    ).toThrow(/invalid-student-alias-context/);
+    expect(() => deserializeStudentAliasContext(null, "run-a")).toThrow(
+      /invalid-student-alias-context/,
     );
   });
 });

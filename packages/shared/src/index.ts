@@ -14,6 +14,7 @@ export * from "./tokens.js";
 export * from "./normalize.js";
 export * from "./student-records.js";
 export * from "./identifier-taxonomy.js";
+export * from "./text-deidentify.js";
 export * from "./file-capabilities.js";
 export * from "./xlsx-records.js";
 export * from "./safe-unzip.js";

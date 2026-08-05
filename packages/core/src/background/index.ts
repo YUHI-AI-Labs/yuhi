@@ -93,6 +93,12 @@ export {
 } from "./wiring.js";
 
 export {
+  privateAliasRegistryPath,
+  writePrivateAliasRegistry,
+  readPrivateAliasRegistry,
+} from "./alias-registry-store.js";
+
+export {
   computeRevisionId,
   canonicalizeRevisionIdInput,
   reduceProgressiveContextState,

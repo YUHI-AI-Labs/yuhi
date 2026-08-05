@@ -19,7 +19,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { LocalModelProvider } from "@yuhi/shared";
+import {
+  createStudentAliasContext,
+  pseudonymizeStudentRecords,
+  type LocalModelProvider,
+} from "@yuhi/shared";
 import type { PdfTextExtractor } from "../document-artifact.js";
 import { documentIdFor, withheldDisplayName } from "../metadata-boundary.js";
 import {
@@ -29,10 +33,12 @@ import {
   requestBackgroundCancel,
   retryBackgroundItem,
   retryBackgroundTerminal,
+  privateAliasRegistryPath,
   privateBackgroundDir,
   privateStagingDir,
   publicStatusPath,
   readPublicStatus,
+  writePrivateAliasRegistry,
   type EnqueueInput,
 } from "./index.js";
 
@@ -169,7 +175,11 @@ describe("runBackgroundForRun — extraction, publish, and safety gate", () => {
     expect(existsSync(privateStagingDir(parentDir, RUN))).toBe(false);
   });
 
-  it("keeps a PII-bearing document local; nothing is published", async () => {
+  it("masks a PII-bearing document (issue #21) and publishes the sanitized companion", async () => {
+    // Before the 0.4.7 fix this published RAW, labelled "Verified" (issue #21): the
+    // pseudonymizer only understood delimited tables, threw on prose, and the catch
+    // silently returned an empty forbidden list. It must now be masked AND published —
+    // not just kept local, which would make the feature useless on ordinary documents.
     const original = putSource("hr.pdf", "%PDF binary");
     await enqueue({ relpath: "hr.pdf", kind: "document-extraction", sourceArtifactPath: original });
 
@@ -179,12 +189,155 @@ describe("runBackgroundForRun — extraction, publish, and safety gate", () => {
       pdfTextExtractor: goodPdf("Employee record. 氏名：山田太郎 Contact: taro.yamada@example.com"),
     });
 
-    expect(summary.completed).toBe(0);
-    expect(summary.keptLocal).toBe(1);
-    expect(existsSync(path.join(preparedDir, "hr.pdf.md"))).toBe(false);
+    expect(summary.completed).toBe(1);
+    expect(summary.keptLocal).toBe(0);
+    const companion = path.join(preparedDir, withheldCompanion("hr.pdf"));
+    expect(existsSync(companion)).toBe(true);
+    const published = readFileSync(companion, "utf8");
+    // The label itself ("氏名：") is an operational column header, correctly preserved —
+    // only the VALUE next to it is masked.
+    expect(published).toContain("氏名");
+    expect(published).toMatch(/PERSON-\d{3}/);
+    expect(published).toMatch(/EMAIL-\d{3}/);
     for (const buf of allBytesUnder(preparedDir)) {
-      expect(buf.toString("utf8")).not.toContain("taro.yamada@example.com");
+      const text = buf.toString("utf8");
+      expect(text).not.toContain("山田太郎");
+      expect(text).not.toContain("taro.yamada@example.com");
     }
+  });
+
+  it("reuses the SAME token a same-run CSV already minted, when the document also carries the linking key", async () => {
+    // The core 0.4.7 identity linkage policy: `student-id` (or another strong key)
+    // present in BOTH the table and the document is what authorizes reusing the
+    // table's token — never a bare name match alone. Registry setup mirrors what
+    // `prepareWorkspace()` does synchronously (call the same real tabular transform,
+    // then persist), without paying for the whole prepare pipeline in this test.
+    const registryContext = createStudentAliasContext();
+    pseudonymizeStudentRecords(
+      "学籍番号,氏名\nSID_CANARY_001,山田太郎\n",
+      registryContext,
+    );
+    await writePrivateAliasRegistry(parentDir, RUN, registryContext);
+
+    const original = putSource("cert.pdf", "%PDF binary");
+    await enqueue({ relpath: "cert.pdf", kind: "document-extraction", sourceArtifactPath: original });
+
+    const summary = await runBackgroundForRun({
+      runId: RUN,
+      preparedDir,
+      pdfTextExtractor: goodPdf(
+        "Certificate of enrollment. 学籍番号：SID_CANARY_001 氏名：山田太郎",
+      ),
+    });
+
+    expect(summary.completed).toBe(1);
+    const companion = path.join(preparedDir, withheldCompanion("cert.pdf"));
+    const published = readFileSync(companion, "utf8");
+    // Same run, same table -> same entity -> the SAME PERSON-001 the CSV minted, not
+    // an independently-numbered token.
+    expect(published).toContain("PERSON-001");
+    expect(published).toContain("SID_CANARY_001"); // operational key: preserved, not masked
+    expect(published).not.toContain("山田太郎");
+  });
+
+  it("does NOT reuse the table's token for a same-named person with no key in the document", async () => {
+    // Two different people can share a name. A bare name match must mint a NEW entity,
+    // never silently merge onto the table's PERSON-001 — merging would be data
+    // corruption (docs/design/0.4.7_document_privacy.md).
+    const registryContext = createStudentAliasContext();
+    pseudonymizeStudentRecords(
+      "学籍番号,氏名\nSID_CANARY_001,山田太郎\n",
+      registryContext,
+    );
+    await writePrivateAliasRegistry(parentDir, RUN, registryContext);
+
+    const original = putSource("visitor.pdf", "%PDF binary");
+    await enqueue({ relpath: "visitor.pdf", kind: "document-extraction", sourceArtifactPath: original });
+
+    const summary = await runBackgroundForRun({
+      runId: RUN,
+      preparedDir,
+      // Same name, but NO student id anywhere in this document.
+      pdfTextExtractor: goodPdf("Visitor sign-in sheet. 氏名：山田太郎"),
+    });
+
+    expect(summary.completed).toBe(1);
+    const companion = path.join(preparedDir, withheldCompanion("visitor.pdf"));
+    const published = readFileSync(companion, "utf8");
+    expect(published).not.toContain("山田太郎");
+    // Masked, but NOT with the table's PERSON-001 — this document has nothing linking
+    // it to that entity.
+    expect(published).not.toContain("PERSON-001");
+    expect(published).toMatch(/PERSON-\d{3}/);
+  });
+
+  it("masks a name with NO linking key present, without merging it onto an unrelated entity", async () => {
+    const original = putSource("memo.pdf", "%PDF binary");
+    await enqueue({ relpath: "memo.pdf", kind: "document-extraction", sourceArtifactPath: original });
+
+    const summary = await runBackgroundForRun({
+      runId: RUN,
+      preparedDir,
+      // No student id, no key of any kind — just a bare name.
+      pdfTextExtractor: goodPdf("Visitor log. 氏名：鈴木花子"),
+    });
+
+    expect(summary.completed).toBe(1);
+    const companion = path.join(preparedDir, withheldCompanion("memo.pdf"));
+    const published = readFileSync(companion, "utf8");
+    expect(published).not.toContain("鈴木花子");
+    // Masked (never raw) but with SOME token — this run minted no other entities, so
+    // asserting a token exists at all is the safety property; a future run's specific
+    // numbering is an implementation detail, not part of the contract.
+    expect(published).toMatch(/PERSON-\d{3}/);
+  });
+
+  it("still masks and publishes safely when the private alias registry is unavailable", async () => {
+    // No prepareWorkspace() ran for this RUN, so readPrivateAliasRegistry has nothing
+    // to read. Confirms the documented safety property: masking and independent
+    // verification do not depend on the registry — only cross-format token reuse does.
+    const original = putSource("solo.pdf", "%PDF binary");
+    await enqueue({ relpath: "solo.pdf", kind: "document-extraction", sourceArtifactPath: original });
+
+    const summary = await runBackgroundForRun({
+      runId: RUN,
+      preparedDir,
+      pdfTextExtractor: goodPdf("Standalone note. 氏名：高橋一郎 Contact: ichiro@example.com"),
+    });
+
+    expect(summary.completed).toBe(1);
+    const companion = path.join(preparedDir, withheldCompanion("solo.pdf"));
+    const published = readFileSync(companion, "utf8");
+    expect(published).not.toContain("高橋一郎");
+    expect(published).not.toContain("ichiro@example.com");
+    expect(published).toMatch(/PERSON-\d{3}/);
+    expect(published).toMatch(/EMAIL-\d{3}/);
+  });
+
+  it("still masks and publishes safely when the private alias registry is CORRUPT (not just absent)", async () => {
+    mkdirSync(privateBackgroundDir(parentDir, RUN), { recursive: true });
+    writeFileSync(privateAliasRegistryPath(parentDir, RUN), "{ not valid json", "utf8");
+
+    const original = putSource("corrupt-registry.pdf", "%PDF binary");
+    await enqueue({
+      relpath: "corrupt-registry.pdf",
+      kind: "document-extraction",
+      sourceArtifactPath: original,
+    });
+
+    const summary = await runBackgroundForRun({
+      runId: RUN,
+      preparedDir,
+      pdfTextExtractor: goodPdf("Note. 氏名：渡辺三郎 Contact: saburo@example.com"),
+    });
+
+    expect(summary.completed).toBe(1);
+    const companion = path.join(preparedDir, withheldCompanion("corrupt-registry.pdf"));
+    const published = readFileSync(companion, "utf8");
+    expect(published).not.toContain("渡辺三郎");
+    expect(published).not.toContain("saburo@example.com");
+    expect(published).toMatch(/PERSON-\d{3}/);
+    expect(published).toMatch(/EMAIL-\d{3}/);
   });
 
   it("keeps a secret-carrying summary local; the secret is never written anywhere", async () => {

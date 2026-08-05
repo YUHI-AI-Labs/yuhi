@@ -21,26 +21,39 @@ describe("buildDocumentArtifact", () => {
     expect(a.markdown).toContain("64 MB");
   });
 
-  it("a PDF with extractable text becomes a sanitized companion; structured PII is redacted", async () => {
+  it("a PDF with extractable text becomes a companion; secrets are redacted, structured/personal identifiers pass through for downstream masking", async () => {
+    // At THIS layer (`buildDocumentArtifact` -> `buildDocumentCompanion`), only
+    // secrets are redacted (0.4.7, `docs/design/0.4.7_document_privacy.md`). Emails,
+    // phone numbers, and operational IDs must survive unchanged here: masking them
+    // at this layer, before the shared taxonomy pipeline runs, both used a token
+    // format inconsistent with tabular output (`EMAIL-001` vs. the old `«EMAIL:1»`)
+    // and — for an operational id like a student number — was actively wrong, since
+    // operational identifiers must be PRESERVED, not masked (identifier-taxonomy.ts).
+    // The real, taxonomy-aware masking runs downstream in
+    // `packages/core/src/background/wiring.ts`'s pseudonymizer.
     const a = await buildDocumentArtifact({
       sourceType: "pdf",
       absPath: "/x/report.pdf",
       sizeBytes: 10_000,
       readBuffer: noBuffer,
       extractPdfText: async () => ({
-        text: "Contact taro.yamada@example.ac.jp or 090-1234-5678. Student A000000 passed.",
+        text:
+          "Contact taro.yamada@example.ac.jp or 090-1234-5678. Student A000000 passed. " +
+          "api_key = AKIAIOSFODNN7EXAMPLEKEY1234567890abcdef",
         method: "pdf-text",
         pageCount: 3,
       }),
     });
     expect(a.kind).toBe("companion");
     expect(a.extractionStatus).toBe("extracted");
+    // Only the secret is redacted at this layer.
     expect(a.redactionCount).toBeGreaterThan(0);
+    expect(a.markdown).not.toContain("AKIAIOSFODNN7EXAMPLEKEY1234567890abcdef");
     expect(a.residualNameRisk).toBe(true);
-    // Structured identifiers are redacted out of the companion.
-    expect(a.markdown).not.toContain("taro.yamada@example.ac.jp");
-    expect(a.markdown).not.toContain("090-1234-5678");
-    expect(a.markdown).not.toContain("A000000");
+    // Email, phone, and the operational student id survive THIS layer unchanged.
+    expect(a.markdown).toContain("taro.yamada@example.ac.jp");
+    expect(a.markdown).toContain("090-1234-5678");
+    expect(a.markdown).toContain("A000000");
     // Never leaks the source path.
     expect(a.markdown).not.toContain("/x/report.pdf");
     // Honest residual-name language, not "fully anonymized".

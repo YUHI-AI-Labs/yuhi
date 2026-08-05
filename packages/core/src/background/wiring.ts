@@ -27,8 +27,13 @@ import path from "node:path";
 
 import {
   classifyStudentRecordHeaders,
+  createStudentAliasContext,
+  deidentifyText,
+  directPersonalValueTokens,
   parseDelimitedTable,
+  scanTextForDirectPersonalIdentifiers,
   type LocalModelProvider,
+  type StudentAliasContext,
 } from "@yuhi/shared";
 import type { YuhiConfig } from "@yuhi/config";
 import { createPseudonymizer, inMemoryMappingStore } from "@yuhi/processors";
@@ -41,6 +46,7 @@ import { documentIdFor, withheldDisplayName } from "../metadata-boundary.js";
 import type { PreparedFileEntry } from "../prepare-workspace.js";
 import type { PublicPreparedContextSummary } from "../public-prepared-summary.js";
 import { buildYuhiModeSummary, renderYuhiModeHandoff } from "../yuhi-mode-summary.js";
+import { readPrivateAliasRegistry } from "./alias-registry-store.js";
 import { BackgroundQueue } from "./queue.js";
 import {
   BackgroundPublisher,
@@ -71,8 +77,40 @@ import {
   systemBackgroundClock,
   type BackgroundClock,
   type BackgroundPreparationItem,
+  type BackgroundReasonCode,
   type PublicBackgroundItem,
 } from "./types.js";
+
+/**
+ * Human-readable, public-safe text for `document-index.md`'s "kept local" section.
+ * Deliberately generic for `background-safety-rejected` — it never distinguishes a
+ * secret finding from a residual-identifier finding, because THAT distinction is
+ * itself sensitive (it would hint at what kind of content the document contains).
+ */
+function humanReasonText(reasonCode: BackgroundReasonCode | undefined): string {
+  switch (reasonCode) {
+    case "background-safety-rejected":
+      return "Could not be safely verified for delivery.";
+    case "background-ocr-unavailable":
+      return "Scanned document; OCR is not available in this environment.";
+    case "background-ocr-deferred":
+      return "Handed off for OCR (insufficient extracted text).";
+    case "background-extraction-failed":
+      return "Could not be extracted (unsupported or malformed file).";
+    case "background-provider-unavailable":
+      return "Local model unavailable.";
+    case "background-timeout":
+      return "Timed out during processing.";
+    case "background-cancelled":
+      return "Cancelled.";
+    case "background-publication-failed":
+      return "Publication failed.";
+    case "background-state-corrupt":
+      return "Internal state could not be read.";
+    default:
+      return "Not delivered.";
+  }
+}
 
 /**
  * Public, path-safe summary of a background run. Counts only — NO absolute paths, no
@@ -156,10 +194,32 @@ function extractTabularIdentifiers(content: string): string[] {
   }
 }
 
-const PERSONAL_DATA_PATTERN =
-  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|(?:\+\d{1,3}[- ]?)?(?:\(\d{2,4}\)[- ]?)?\d{2,4}[- ]\d{2,4}[- ]\d{3,4}|(?:氏名|full\s*name|address|住所)\s*[:：]/i;
-
-function buildSafetyPrimitives(config?: YuhiConfig): {
+/**
+ * `config` supplies scan/policy settings; `aliasContext` is this run's pseudonym
+ * registry (loaded from the private, cross-process store — `readPrivateAliasRegistry`
+ * — or a fresh empty one; see `runBackgroundForRun` and `alias-registry-store.ts`'s
+ * doc comment for why an empty context is still safe).
+ *
+ * Fixes issue #21 (P0): the pseudonymizer used to call `extractTabularIdentifiers`
+ * only, which throws on non-tabular text (any PDF/DOCX/PPTX extraction), so document
+ * prose was published completely unmasked. It now ALSO runs `deidentifyText` — the
+ * SAME taxonomy and registry the synchronous tabular pass uses (0.4.7,
+ * `docs/design/0.4.7_document_privacy.md`) — which masks every direct identifier and
+ * CJK name-shaped candidate it detects unconditionally (linked to an existing entity
+ * when a same-document strong key confirms it, a fresh unlinked token otherwise; see
+ * `text-deidentify.ts`).
+ *
+ * The independent verification stays a SEPARATE stage, not a self-report from
+ * pseudonymize: `inspector.inspect` re-scans the ALREADY-pseudonymized text with
+ * `scanTextForDirectPersonalIdentifiers`, mirroring how 0.4.6 verifies tabular output
+ * independently of the transform that produced it (`docs/HANDOFF.md` §4, decision 1).
+ * Either check finding anything routes through the publisher's existing "any finding →
+ * rejected → kept local" logic (`publisher.ts`) — no publisher changes needed.
+ */
+function buildSafetyPrimitives(
+  config: YuhiConfig | undefined,
+  aliasContext: StudentAliasContext,
+): {
   normalizer: Normalizer;
   pseudonymizer: Pseudonymizer;
   inspector: SafetyInspector;
@@ -176,12 +236,20 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
 
   const pseudonymizer: Pseudonymizer = {
     pseudonymize: (text) => {
-      const identifiers = extractTabularIdentifiers(text);
-      const result = createPseudonymizer({
-        identifiers,
-        store: inMemoryMappingStore(),
-      }).process(text) as { output: string };
-      return { text: result.output };
+      // Tabular content, if any reaches this path: table-scoped identifiers first.
+      const tabularIdentifiers = extractTabularIdentifiers(text);
+      const working =
+        tabularIdentifiers.length > 0
+          ? (createPseudonymizer({
+              identifiers: tabularIdentifiers,
+              store: inMemoryMappingStore(),
+            }).process(text) as { output: string }).output
+          : text;
+      // Prose (PDF/DOCX/PPTX extractions, and any tabular remnants/preamble): SAME
+      // taxonomy + registry as the tabular pass. Always masks what it detects — see
+      // `deidentifyText`'s own doc comment for the identity linkage policy.
+      const deidentified = deidentifyText(working, aliasContext);
+      return { text: deidentified.text };
     },
   };
 
@@ -190,7 +258,30 @@ function buildSafetyPrimitives(config?: YuhiConfig): {
       const findings: SafetyFinding[] = runDetectors(text, { entropyThreshold, keywords }).map(
         (f) => ({ category: f.detector }),
       );
-      if (PERSONAL_DATA_PATTERN.test(text)) findings.push({ category: "personal-data" });
+      // (0.4.7) The former crude `PERSONAL_DATA_PATTERN` check is removed, not kept as
+      // defense-in-depth: its email/phone-shape half is a strict subset of
+      // `scanTextForDirectPersonalIdentifiers`'s PATTERNS below, and its label-word
+      // half (`氏名|address|住所\s*[:：]`) matched the LABEL ITSELF — which
+      // `deidentifyText` intentionally preserves (`CJK_LABELS`) — so it would keep
+      // flagging a document as unsafe forever, even after the actual value next to
+      // that label was correctly masked. That would have silently defeated this
+      // fix's whole purpose for the most common real case (a Japanese form with a
+      // 氏名 column).
+      // Independent re-verification of the ALREADY-pseudonymized text (issue #21's
+      // fix): a bug in `deidentifyText` must not silently pass just because
+      // pseudonymize claims success. `knownDirectValues` catches a registry-linked
+      // value the substitution step should have replaced but didn't; the shape/CJK
+      // checks are self-contained and need no context.
+      const verification = scanTextForDirectPersonalIdentifiers(
+        text,
+        directPersonalValueTokens(aliasContext).keys(),
+      );
+      if (verification.residual > 0) {
+        findings.push({ category: "residual-direct-personal-identifier" });
+      }
+      if (verification.residualRisk) {
+        findings.push({ category: "residual-personal-name-risk" });
+      }
       return { ok: findings.length === 0, findings };
     },
   };
@@ -378,7 +469,17 @@ export async function runBackgroundForRun(
 
   const queue = await BackgroundQueue.open(privateDir, clock);
   const cancelStore = new CancelStore(privateDir);
-  const { normalizer, pseudonymizer, inspector, policy } = buildSafetyPrimitives(input.config);
+  // Missing, corrupt, or wrong-runId registry -> fresh empty context. Safe: masking
+  // and independent verification below do not depend on this registry, only
+  // cross-format ("same token in the CSV and the PDF") reuse does — see
+  // `alias-registry-store.ts`'s doc comment.
+  const aliasContext = await readPrivateAliasRegistry(managedBase, runId).catch(() =>
+    createStudentAliasContext(),
+  );
+  const { normalizer, pseudonymizer, inspector, policy } = buildSafetyPrimitives(
+    input.config,
+    aliasContext,
+  );
   const publisher = new BackgroundPublisher({
     normalizer,
     pseudonymizer,
@@ -412,6 +513,12 @@ export async function runBackgroundForRun(
         initialAgentContextTokens:
           manifest.yuhiModeSummary?.contextEfficiency?.initialAgentContextTokens ?? null,
       });
+      const completedItems = status.items.filter(
+        (item) => item.status === "completed" && item.preparedRelpath,
+      );
+      const keptLocalItems = status.items.filter(
+        (item) => item.status === "kept-local" || item.status === "failed",
+      );
       const index = [
         "# Yuhi Document Context",
         "",
@@ -419,12 +526,31 @@ export async function runBackgroundForRun(
         "",
         `Context revision: ${status.revision}`,
         "",
-        "## Verified companions",
+        "## Document companions",
         "",
-        ...status.items
-          .filter((item) => item.status === "completed" && item.preparedRelpath)
-          .map((item) => `- ${item.preparedRelpath}`),
-        ...(status.counts.completed === 0 ? ["- None created yet"] : []),
+        // Each line here means a document made it all the way through
+        // extraction, de-identification, and independent verification — never a
+        // synonym for "a companion file exists"; see `alias-registry-store.ts` and
+        // `text-deidentify.ts` for what each stage actually checks.
+        ...(completedItems.length > 0
+          ? completedItems.flatMap((item) => [
+              `- ${item.preparedRelpath}`,
+              "  - Extracted: Yes",
+              "  - Direct identifiers transformed: Yes",
+              "  - Verification: Passed",
+              "  - Delivery: Available",
+            ])
+          : ["- None yet"]),
+        "",
+        "## Documents kept local (not delivered)",
+        "",
+        ...(keptLocalItems.length > 0
+          ? keptLocalItems.flatMap((item) => [
+              `- ${item.relpath ?? item.displayName ?? item.documentId ?? "(withheld)"}`,
+              "  - Delivery: Local only",
+              `  - Reason: ${humanReasonText(item.reasonCode)}`,
+            ])
+          : ["- None"]),
         "",
         "Original documents marked inspection-pending remain available with warnings.",
         "",

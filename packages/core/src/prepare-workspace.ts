@@ -67,6 +67,7 @@ import {
   privateBackgroundDir,
   buildPublicStatus,
   writePublicStatus,
+  writePrivateAliasRegistry,
   type BackgroundPreparationKind,
 } from "./background/index.js";
 import { writePrivateRunSourceBinding } from "./patch/private-state.js";
@@ -276,6 +277,10 @@ function cloneStudentAliases(context: StudentAliasContext): StudentAliasContext 
     // Must be carried: dropping it would re-mint a fresh token prefix per file and
     // silently break cross-file linkage (#11).
     entityBucketTokens: new Map(context.entityBucketTokens),
+    // Carried for the same reason: dropping these would silently break cross-format
+    // name/email reuse in prose (0.4.7 — see `text-deidentify.ts`).
+    directValueTokens: new Map(context.directValueTokens),
+    directValueEntity: new Map(context.directValueEntity),
   };
 }
 
@@ -3603,6 +3608,21 @@ export async function prepareWorkspace(
     reductionMode: effectiveMode,
     compressionThresholdTokens: options.compressionThresholdTokens ?? null,
   });
+
+  // The run's alias registry (name/email/… pseudonym tokens minted while transforming
+  // tabular files above) MUST be durable BEFORE any item becomes visible in the
+  // persistent background queue below — `runBackgroundForRun` is always a LATER,
+  // separate process (a resumed CLI session, a fresh VS Code extension host) that can
+  // start draining the queue as soon as an item is enqueued, and without the registry
+  // a document companion cannot reuse the SAME `PERSON-001` token a CSV in this run
+  // already minted (0.4.7, `docs/design/0.4.7_document_privacy.md`). Best-effort and
+  // private-only, same posture as `writePrivateRunSourceBinding` below: a write
+  // failure never blocks or delays Yuhi Mode, and `runBackgroundForRun` safely falls
+  // back to an empty registry if this is absent (documents are still fully masked and
+  // independently verified either way — see `alias-registry-store.ts`'s doc comment).
+  if (backgroundEnqueue.length > 0) {
+    await writePrivateAliasRegistry(managedBase, runId, studentAliases).catch(() => {});
+  }
 
   // ===== v0.3.5 FOREGROUND → BACKGROUND QUEUE REGISTRATION =====
   // Persist each deferred item into the run's PRIVATE queue (under the managed base,
