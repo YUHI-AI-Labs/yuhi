@@ -65,6 +65,7 @@ async function fixture(): Promise<{ root: string; outDir: string; report: Prepar
         sensitiveMasked: 1,
         sourceModified: 0,
         approx: true,
+        method: "cjk-weighted-heuristic",
       },
       files: [
         {

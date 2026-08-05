@@ -11,7 +11,7 @@
  */
 
 import type { ContentKind, ObjectId } from "@yuhi/context-store";
-import { estimateTokens } from "@yuhi/shared";
+import { activeTokenEstimator } from "@yuhi/shared";
 
 /** A bounded prefix of the content, used for cheap dispatch in `supports()`. */
 export interface Sample {
@@ -62,7 +62,14 @@ export function defaultCompressContext(overrides: Partial<CompressContext> = {})
   return {
     now: overrides.now ?? (() => new Date().toISOString()),
     timeoutMs: overrides.timeoutMs ?? 2_000,
-    estimateTokens: overrides.estimateTokens ?? estimateTokens,
+    // Delegates to the CURRENT `activeTokenEstimator` on every call (v0.4.8 Phase 5),
+    // not a snapshot of whichever estimator was active when this context was built —
+    // matching `@yuhi/shared`'s `tokenEstimate()`, which Static Prepare already reads
+    // live. Before this fix, Dynamic Context was pinned to the raw chars/4 heuristic
+    // and never picked up `setTokenEstimator()` at all: Static Prepare and Dynamic
+    // Context reduction numbers could silently diverge for a reason that had nothing
+    // to do with the content, only with which surface asked.
+    estimateTokens: overrides.estimateTokens ?? ((text: string) => activeTokenEstimator(text)),
     ...(overrides.signal ? { signal: overrides.signal } : {}),
   };
 }

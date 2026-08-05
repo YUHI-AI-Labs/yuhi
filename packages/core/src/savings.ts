@@ -22,7 +22,10 @@ export interface ContextSavings {
   secretsRemoved: number;
   /** Bytes kept on the machine via `local-only` (noise/private not sent). */
   noiseKeptLocalBytes: number;
-  /** Token reduction as a percentage (0–100). */
+  /** Token reduction as a percentage. Signed and unclamped (v0.4.8 Phase 5): a
+   *  negative value means the visible set is LARGER than the source, and must be
+   *  shown honestly rather than floored at 0 — see `docs/HANDOFF.md`'s "reduction is
+   *  not clamped" rule, which this field previously violated. */
   tokenReductionPct: number;
 }
 
@@ -58,8 +61,7 @@ export function contextSavings(plan: Plan): ContextSavings {
     }
   }
 
-  const tokenReductionPct =
-    beforeBytes > 0 ? Math.max(0, Math.round((1 - afterBytes / beforeBytes) * 100)) : 0;
+  const tokenReductionPct = beforeBytes > 0 ? Math.round((1 - afterBytes / beforeBytes) * 100) : 0;
 
   return {
     before: { files: beforeFiles, bytes: beforeBytes, tokens: toTokens(beforeBytes) },
