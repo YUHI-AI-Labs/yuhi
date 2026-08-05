@@ -250,6 +250,14 @@
             "telemetry": {
               "type": "boolean",
               "default": false
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "strict",
+                "balanced",
+                "trusted-local"
+              ]
             }
           },
           "additionalProperties": false,
@@ -324,6 +332,26 @@
                 "type": "string"
               },
               "default": []
+            }
+          },
+          "additionalProperties": false
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "runtimeBudget": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "maximum": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

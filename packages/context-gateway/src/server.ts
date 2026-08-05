@@ -63,6 +63,14 @@ export interface GatewayOptions {
   readonly aliasContext?: StudentAliasContext;
   /** Ceiling above which a prose/log `Read` is compressed anyway (default 20,000 est tokens). */
   readonly scanGuardMaxTokens?: number;
+  /**
+   * v0.5.0 Task-Aware Dynamic Context Generation. Defaults to `"off"` (no
+   * behavior change from pre-0.5.0). See `ContextRuntimeOptions.generationMode`.
+   */
+  readonly generationMode?: ContextRuntimeOptions["generationMode"];
+  /** v0.5.0 Dynamic Budget; omitted -> pre-0.5.0 compatible. See
+   *  `ContextRuntimeOptions.runtimeBudget`. */
+  readonly runtimeBudget?: ContextRuntimeOptions["runtimeBudget"];
   readonly log?: (line: string) => void;
 }
 
@@ -100,6 +108,12 @@ export async function startGateway(opts: GatewayOptions): Promise<GatewayHandle>
     ...(opts.deliveryPolicy ? { deliveryPolicy: opts.deliveryPolicy } : {}),
     ...(opts.privacyMode ? { privacyMode: opts.privacyMode } : {}),
     ...(opts.aliasContext ? { aliasContext: opts.aliasContext } : {}),
+    ...(opts.generationMode ? { generationMode: opts.generationMode } : {}),
+    ...(opts.runtimeBudget ? { runtimeBudget: opts.runtimeBudget } : {}),
+    // The Planner's Rule 5 (reference) needs to know whether retrieval
+    // infrastructure actually exists for this session — the SAME condition that
+    // decides whether MCP retrieval tools are registered at all.
+    retrievalAvailable: (opts.retrievalMode ?? "disabled") !== "disabled",
   };
   const runtime = new ContextRuntime(runtimeOptions);
 

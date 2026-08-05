@@ -40,6 +40,7 @@ import {
   byteCount,
   codePointCount,
   createStudentAliasContext,
+  currentMeasurementMethod,
   DEFAULT_PRIVACY_MODE,
   directPersonalValueTokens,
   modeTransformsDirectIdentifiers,
@@ -90,6 +91,7 @@ import type {
   DynamicContextPlanner,
   GenerationMode,
   PriorDelivery,
+  RuntimeBudgetState,
 } from "./planner/index.js";
 
 export interface FallbackPolicy {
@@ -252,6 +254,16 @@ export interface ContextRuntimeOptions {
    * to false, matching v0.4.0's measured-cheapest default (retrieval is opt-in).
    */
   readonly retrievalAvailable?: boolean;
+  /**
+   * v0.5.0 Dynamic Context runtime budget (docs/design/0.5.0_dynamic_generation.md
+   * §4). Both `target`/`maximum` optional; omitted entirely (the default) means
+   * the Planner never sees a budget object at all -- Rule 7/9's behavior is then
+   * identical to pre-0.5.0 `deliver()`. When present, the measurement METHOD is
+   * captured once at construction and never re-read mid-session (switching
+   * estimators mid-session would make "delivered so far" incomparable to
+   * "target").
+   */
+  readonly runtimeBudget?: { readonly target?: number; readonly maximum?: number };
 }
 
 interface DeliveredBytes {
@@ -294,6 +306,13 @@ export class ContextRuntime {
   /** v0.5.0 Generation Cache (planner_contract.md §5) — see the field's own doc
    *  comment in cache.ts for why `planKind`/`strategyVersion` live on the entry. */
   private readonly generationCache = new GenerationCache();
+  /** v0.5.0 Dynamic Budget (Phase 4). `undefined` target/maximum -> pre-0.5.0
+   *  compatible (see `runtimeBudget` on `ContextRuntimeOptions`). */
+  private readonly runtimeBudgetConfig: { target?: number; maximum?: number } | undefined;
+  /** Fixed once at construction — never re-read mid-session (design doc §4). */
+  private readonly budgetMeasurementMethod: string;
+  private cumulativeEstimatedTokens = 0;
+  private cumulativeExactCharacters = 0;
 
   constructor(opts: ContextRuntimeOptions) {
     this.store = opts.store;
@@ -310,6 +329,8 @@ export class ContextRuntime {
     this.generationMode = opts.generationMode ?? "off";
     this.planner = opts.planner ?? defaultPlanner;
     this.retrievalAvailable = opts.retrievalAvailable ?? false;
+    this.runtimeBudgetConfig = opts.runtimeBudget;
+    this.budgetMeasurementMethod = currentMeasurementMethod();
     this.ctx = defaultCompressContext({
       now: this.now,
       ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
@@ -341,6 +362,27 @@ export class ContextRuntime {
 
   estimateTokens(text: string): number {
     return this.ctx.estimateTokens(text);
+  }
+
+  /** v0.5.0 Dynamic Budget state, built fresh per call from the session's
+   *  cumulative counters (docs/design/0.5.0_dynamic_generation.md §4). Only
+   *  called when `runtimeBudgetConfig` is set, so `target`/`maximum` are never
+   *  both undefined here even though the type allows it (they came from
+   *  `ContextRuntimeOptions.runtimeBudget`, which itself may set only one). */
+  private currentBudgetState(): RuntimeBudgetState {
+    const remaining =
+      this.runtimeBudgetConfig?.maximum === undefined
+        ? undefined
+        : Math.max(0, this.runtimeBudgetConfig.maximum - this.cumulativeEstimatedTokens);
+    return {
+      ...(this.runtimeBudgetConfig?.target === undefined ? {} : { target: this.runtimeBudgetConfig.target }),
+      ...(this.runtimeBudgetConfig?.maximum === undefined ? {} : { maximum: this.runtimeBudgetConfig.maximum }),
+      unit: "tokens",
+      method: this.budgetMeasurementMethod,
+      estimatedDelivered: this.cumulativeEstimatedTokens,
+      ...(remaining === undefined ? {} : { estimatedRemaining: remaining }),
+      exactDeliveredCharacters: this.cumulativeExactCharacters,
+    };
   }
 
   /** True when these bytes were already delivered and are pinned for reuse. */
@@ -442,6 +484,7 @@ export class ContextRuntime {
         compressors: capabilitiesOf(this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]),
         privacyMode: this.privacyMode,
         secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+        ...(this.runtimeBudgetConfig ? { budget: this.currentBudgetState() } : {}),
         privacyOrSecurityFailure: false,
         tool: req.tool,
       });
@@ -642,6 +685,12 @@ export class ContextRuntime {
     // real in "active" mode via `plannerCandidate` above; every other rule stays
     // observe-only (evidence-only) until a later phase.
     if (plan) {
+      // v0.5.0 Dynamic Budget: cumulative counters feed the NEXT call's
+      // `currentBudgetState()`. Tracked regardless of whether a budget is
+      // configured (cheap; keeps the counters correct if budget is added
+      // mid-session via a fresh runtime) but only ever READ when it is.
+      this.cumulativeEstimatedTokens += tokensAfter;
+      this.cumulativeExactCharacters += byteCount(candidate);
       this.priorDeliveries.set(key, {
         objectId: stored.objectId,
         revision: stored.revision,

@@ -122,6 +122,24 @@ export const budgetSchema = z.object({
 });
 
 /**
+ * v0.5.0 Dynamic Context runtime budget (docs/design/0.5.0_dynamic_generation.md
+ * §4) -- a DIFFERENT setting from `budget` above, which shapes Static Prepare's
+ * reduction. Both fields stay `optional()` with NO numeric default: the directive
+ * is explicit that 8,000/16,000 must not become a fixed default before a
+ * benchmark justifies it, so an omitted `context.runtimeBudget` block preserves
+ * the pre-0.5.0 Dynamic Context behavior exactly (no budget ever passed to the
+ * Planner).
+ */
+export const runtimeBudgetSchema = z.object({
+  target: z.number().int().positive().optional(),
+  maximum: z.number().int().positive().optional(),
+});
+
+export const contextSchema = z.object({
+  runtimeBudget: runtimeBudgetSchema.optional(),
+});
+
+/**
  * v0.3.2 Safety Mode preset (see @yuhi/core `applySafetyMode`). Higher modes keep
  * more content local; absent → balanced. The string literals are kept in sync with
  * @yuhi/core `SafetyMode` by the compile-time guard below.
@@ -160,6 +178,9 @@ export const yuhiConfigSchema = z.object({
   execution: executionSchema.optional(),
   /** Context budget; omitted → balanced reduction, preserve nothing extra. */
   budget: budgetSchema.optional(),
+  /** v0.5.0 Dynamic Context runtime budget; omitted → no budget passed to the
+   *  Planner (pre-0.5.0 compatible). See `runtimeBudgetSchema`'s doc comment. */
+  context: contextSchema.optional(),
 });
 
 /** The fully-parsed, defaulted configuration object. */
@@ -169,3 +190,4 @@ export type AgentConfig = z.infer<typeof agentSchema>;
 export type LocalModelSettings = z.infer<typeof localModelSchema>;
 export type ExecutionSettings = z.infer<typeof executionSchema>;
 export type BudgetSettings = z.infer<typeof budgetSchema>;
+export type RuntimeBudgetSettings = z.infer<typeof runtimeBudgetSchema>;
