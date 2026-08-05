@@ -403,15 +403,108 @@ export class ContextRuntime {
     const metadata = scanMetadata(scannedContent, req.privateMetadata);
     const safeContent = metadata.text;
 
+    // v0.5.0 Planner — computed BEFORE compression so "active" mode can steer
+    // WHICH existing path executes (docs/design/0.5.0_dynamic_generation.md §2).
+    // `"off"` never builds a PlannerInput (zero overhead). `"observe"` computes the
+    // SAME plan but never branches on it below — the compression call a few lines
+    // down is taken UNCONDITIONALLY for observe, exactly as before Phase 3, which
+    // is what keeps observe byte-identical to off (see observe-mode.test.ts).
+    let plan: ContextPlan | undefined;
+    let planIntent: ContextIntent | undefined;
+    let planRole: ContextRole | undefined;
+    const key = `${stored.objectId}#${stored.revision}`;
+    if (this.generationMode !== "off") {
+      const failureMarkers = hasTestFailureMarkers(req.kind, req.content);
+      planIntent = classifyIntent({
+        tool: req.tool,
+        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
+        kind: req.kind,
+        hasFailureMarkers: failureMarkers,
+      });
+      planRole = classifyRole({
+        tool: req.tool,
+        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
+        kind: req.kind,
+        hasFailureMarkers: failureMarkers,
+        activeEditTargets: [],
+        isRepeatedContent: this.priorDeliveries.has(key),
+        confidenceHint: req.privateMetadata.absolutePath ? "high" : "low",
+      });
+      plan = this.planner.plan({
+        intent: planIntent,
+        role: planRole,
+        contentType: req.kind,
+        objectId: stored.objectId,
+        revision: stored.revision,
+        measurement: { estimatedTokens: this.ctx.estimateTokens(req.content), exactCharacters: codePointCount(req.content) },
+        priorDeliveries: [...this.priorDeliveries.values()],
+        retrievalAvailable: this.retrievalAvailable,
+        compressors: capabilitiesOf(this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]),
+        privacyMode: this.privacyMode,
+        secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+        privacyOrSecurityFailure: false,
+        tool: req.tool,
+      });
+    }
+    const active = this.generationMode === "active" ? plan : undefined;
+
     // 4. Compression, over the already-safe text so the view carries placeholders.
+    // Phase 3: an "active" plan of rule-4/5/6 steers this step (structured/
+    // reference/window); every other rule (and observe/off) takes the pre-0.5.0
+    // path unchanged. Whichever path runs, `candidate` still passes the SAME
+    // exact-output rescan and residue rescan below — this block only chooses
+    // which bytes are proposed, never what counts as safe to deliver.
     const budget = req.tokenBudget ?? this.tokenBudget;
     let outcome: CompressionOutcome;
+    let plannerCandidate: { candidate: string; strategy: string; omissions: readonly Omission[]; removed: EvidenceRecord["removed"] } | undefined;
     if (req.compress === false) {
       // Skipping compression is not skipping safety: the exact-output scan below still runs
       // on these bytes, and the delivery is recorded as `delivered-original`.
       outcome = { status: "failed", reason: "compression-not-requested", attempts: [{ compressorId: "none", ok: false, reason: "no-reduction" }] };
+    } else if (active?.rule === "rule-6-window") {
+      const win = safeWindow(safeContent, this.fallbackPolicy.safeWindowLines);
+      plannerCandidate = {
+        candidate: win.text,
+        strategy: "planner:window",
+        omissions: win.omitted
+          ? [
+              {
+                objectId: stored.objectId,
+                locator: win.omitted.locator,
+                kind: win.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines",
+                tokensOmitted: this.ctx.estimateTokens(win.omitted.text),
+                items: win.omitted.lines,
+              },
+            ]
+          : [],
+        removed: win.omitted
+          ? [{ kind: win.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines", count: win.omitted.lines }]
+          : [],
+      };
+      outcome = { status: "failed", reason: "planner-window", attempts: [] };
+    } else if (active?.rule === "rule-5-reference") {
+      const ref = referenceOnly(safeContent);
+      plannerCandidate = {
+        candidate: ref.text,
+        strategy: "planner:reference",
+        omissions: [
+          {
+            objectId: stored.objectId,
+            locator: ref.omitted.locator,
+            kind: ref.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines",
+            tokensOmitted: this.ctx.estimateTokens(ref.omitted.text),
+            items: ref.omitted.lines,
+          },
+        ],
+        removed: [{ kind: ref.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines", count: ref.omitted.lines }],
+      };
+      outcome = { status: "failed", reason: "planner-reference", attempts: [] };
     } else {
     try {
+      const registryOverride =
+        active?.rule === "rule-4-structured"
+          ? (this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]).filter((c) => c.id !== "text-window")
+          : this.compressors;
       outcome = await compressWithFallback(
         {
           objectId: stored.objectId,
@@ -421,7 +514,7 @@ export class ContextRuntime {
           ...(budget === undefined ? {} : { tokenBudget: budget }),
         },
         this.ctx,
-        this.compressors,
+        registryOverride,
       );
     } catch {
       outcome = { status: "failed", reason: "compression-error", attempts: [] };
@@ -438,7 +531,14 @@ export class ContextRuntime {
     let fallback: "safe-window" | "scanned-original" | undefined;
     let hintPolicy: HintPolicy = "offer-retrieval";
 
-    if (outcome.status === "compressed") {
+    if (plannerCandidate) {
+      candidate = plannerCandidate.candidate;
+      strategy = plannerCandidate.strategy;
+      omissions = plannerCandidate.omissions;
+      removed = plannerCandidate.removed;
+      tokensAfter = this.ctx.estimateTokens(candidate);
+      hintPolicy = "offer-retrieval";
+    } else if (outcome.status === "compressed") {
       candidate = outcome.result.text;
       strategy = `${outcome.result.compressorId}@${outcome.result.compressorVersion}`;
       anchors = outcome.result.anchors;
@@ -486,7 +586,8 @@ export class ContextRuntime {
     }
 
     // Prefix stability: identical (object, revision) always yields identical bytes.
-    const key = `${stored.objectId}#${stored.revision}`;
+    // `key` was already computed above, before compression, so the Planner could
+    // consult `priorDeliveries` for this exact identity.
     const pinned = this.delivered.get(key);
     let prefixStable = false;
     let recomputeDiverged = false;
@@ -534,46 +635,13 @@ export class ContextRuntime {
         ? "delivered-original"
         : "delivered";
 
-    // v0.5.0 Planner — OBSERVE ONLY (docs/design/0.5.0_dynamic_generation.md §2).
-    // `"off"` never builds a PlannerInput: zero overhead, not a flag check in the
-    // hot path. `"observe"`/`"active"` compute a counterfactual plan and record it
-    // in evidence; the bytes already chosen above (`candidate`/`strategy`) are
-    // NEVER changed by this block in Phase 1 — that is the guarantee, not a TODO.
-    let plan: ContextPlan | undefined;
-    let planIntent: ContextIntent | undefined;
-    let planRole: ContextRole | undefined;
-    if (this.generationMode !== "off") {
-      const failureMarkers = hasTestFailureMarkers(req.kind, req.content);
-      planIntent = classifyIntent({
-        tool: req.tool,
-        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
-        kind: req.kind,
-        hasFailureMarkers: failureMarkers,
-      });
-      planRole = classifyRole({
-        tool: req.tool,
-        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
-        kind: req.kind,
-        hasFailureMarkers: failureMarkers,
-        activeEditTargets: [],
-        isRepeatedContent: this.priorDeliveries.has(key),
-        confidenceHint: req.privateMetadata.absolutePath ? "high" : "low",
-      });
-      plan = this.planner.plan({
-        intent: planIntent,
-        role: planRole,
-        contentType: req.kind,
-        objectId: stored.objectId,
-        revision: stored.revision,
-        measurement: { estimatedTokens: tokensBefore, exactCharacters: codePointCount(req.content) },
-        priorDeliveries: [...this.priorDeliveries.values()],
-        retrievalAvailable: this.retrievalAvailable,
-        compressors: capabilitiesOf(this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]),
-        privacyMode: this.privacyMode,
-        secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
-        privacyOrSecurityFailure: false,
-        tool: req.tool,
-      });
+    // v0.5.0 Planner ledger/cache write-through. `plan`/`planIntent`/`planRole`
+    // were already computed BEFORE compression (see above) so "active" mode could
+    // steer execution; this only records the OUTCOME now that real delivered
+    // bytes exist. Phase 3: rules 4/5/6 (structured/reference/window) execute for
+    // real in "active" mode via `plannerCandidate` above; every other rule stays
+    // observe-only (evidence-only) until a later phase.
+    if (plan) {
       this.priorDeliveries.set(key, {
         objectId: stored.objectId,
         revision: stored.revision,
@@ -596,7 +664,7 @@ export class ContextRuntime {
           revision: stored.revision,
           privacyMode: this.privacyMode,
           secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
-          intent: planIntent,
+          intent: planIntent ?? "unknown",
         },
         {
           planKind: plan.kind,
@@ -650,14 +718,15 @@ export class ContextRuntime {
       ...(plan
         ? {
             plan: {
-              // Phase 2 scope: ONLY Rule 2 (reuse) is "executed" in active mode —
-              // and it is safe to mark it so WITHOUT changing any byte-producing
-              // code, because Rule 2's decision and the existing prefix-stability
-              // mechanism (`this.delivered`, unconditional since v0.4.0) are
-              // ALREADY the same decision: whenever Rule 2 fires, `pinned` above is
-              // guaranteed non-undefined for the same (objectId, revision), so the
-              // delivered bytes already equal what Rule 2 would choose to reuse.
-              // Rules 3-9 remain observe-only until Phase 3+ wires their execution.
+              // Phase 3 scope: rule-2 (reuse, Phase 2 — safe because it is already
+              // the same decision `this.delivered` makes unconditionally), and
+              // rule-4/5/6 (structured/reference/window, Phase 3 — executed via
+              // `plannerCandidate` above) are "executed" in active mode. Rules 1
+              // (withhold — already enforced upstream regardless of the planner),
+              // 3/7 (full — the existing incompressible/original path already
+              // delivers full content), 8/9 (fallback) stay observe-only: their
+              // "execution" is already indistinguishable from existing behavior,
+              // or deliberately deferred.
               generationMode: this.generationMode === "active" ? "active" : "observe",
               intent: planIntent ?? "unknown",
               role: planRole ?? "unknown",
@@ -666,7 +735,12 @@ export class ContextRuntime {
               rule: plan.rule,
               ...(plan.strategyId ? { strategyId: plan.strategyId } : {}),
               confidence: plan.confidence,
-              executed: this.generationMode === "active" && plan.rule === "rule-2-reuse",
+              executed:
+                this.generationMode === "active" &&
+                (plan.rule === "rule-2-reuse" ||
+                  plan.rule === "rule-4-structured" ||
+                  plan.rule === "rule-5-reference" ||
+                  plan.rule === "rule-6-window"),
             },
           }
         : {}),
@@ -965,6 +1039,33 @@ export function safeWindow(
       ...lines.slice(lines.length - keep),
     ].join("\n"),
     omitted: { locator: `L${from}-L${to}`, text: omittedText, lines: to - from + 1 },
+  };
+}
+
+/**
+ * v0.5.0 Rule 5 (reference) executor: unlike `safeWindow`, keeps NO head/tail —
+ * the whole content is one omission, retrievable via the existing bounded
+ * retrieval path. Used only for content the Planner judged `reference`-role and
+ * large (Rule 5 requires the content NOT be small); a genuinely small object
+ * never reaches this function because Rule 3/7 would already have delivered it
+ * in full. The short notice text still passes the exact-output rescan like any
+ * other candidate; the omitted content is only ever revealed through
+ * `retrieveByObject`, which re-applies the CURRENT privacy/secret policy.
+ */
+export function referenceOnly(text: string): { text: string; omitted: { locator: string; text: string; lines: number } } {
+  const lines = text.split("\n");
+  if (lines.length <= 1) {
+    const bytes = Buffer.byteLength(text, "utf8");
+    const locator = `B0-B${bytes}`;
+    return {
+      text: `… ${bytes} bytes available via retrieval → retrieve ${locator} …`,
+      omitted: { locator, text, lines: 1 },
+    };
+  }
+  const locator = `L1-L${lines.length}`;
+  return {
+    text: `… ${lines.length} lines available via retrieval → retrieve ${locator} …`,
+    omitted: { locator, text, lines: lines.length },
   };
 }
 

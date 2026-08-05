@@ -111,10 +111,11 @@ describe("v0.5.0 Planner — observe mode never changes delivery", () => {
     expect(explanation?.record.plan?.rule).toBe("rule-2-reuse");
     expect(explanation?.record.plan?.executed).toBe(true);
 
-    // Rules 3-9 stay observe-only even in active mode during Phase 2.
+    // The FIRST delivery is JSON content with no prior delivery, so it resolves
+    // to Rule 4 (structured) — also executed in active mode as of Phase 3.
     const firstExplanation = await active.explain(SESSION, first.eventId);
-    expect(firstExplanation?.record.plan?.rule).not.toBe("rule-2-reuse");
-    expect(firstExplanation?.record.plan?.executed).toBe(false);
+    expect(firstExplanation?.record.plan?.rule).toBe("rule-4-structured");
+    expect(firstExplanation?.record.plan?.executed).toBe(true);
   });
 
   it("the Generation Cache records a hit on the second delivery of identical content, under the same identity", async () => {
