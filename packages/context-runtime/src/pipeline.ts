@@ -81,6 +81,7 @@ import {
   capabilitiesOf,
   defaultPlanner,
   hasTestFailureMarkers,
+  GenerationCache,
 } from "./planner/index.js";
 import type {
   ContextIntent,
@@ -290,6 +291,9 @@ export class ContextRuntime {
    * already effectively content-identity, not session identity.
    */
   private readonly priorDeliveries = new Map<string, PriorDelivery>();
+  /** v0.5.0 Generation Cache (planner_contract.md §5) — see the field's own doc
+   *  comment in cache.ts for why `planKind`/`strategyVersion` live on the entry. */
+  private readonly generationCache = new GenerationCache();
 
   constructor(opts: ContextRuntimeOptions) {
     this.store = opts.store;
@@ -328,6 +332,11 @@ export class ContextRuntime {
    *  across process restarts (mirrors Static Prepare's alias-registry-store, Phase 3B). */
   get privacyAliasContext(): StudentAliasContext {
     return this.aliasContext;
+  }
+
+  /** v0.5.0 Generation Cache hit/miss counts (planner_contract.md §5). */
+  get generationCacheStats(): { hits: number; misses: number } {
+    return this.generationCache.stats();
   }
 
   estimateTokens(text: string): number {
@@ -576,6 +585,27 @@ export class ContextRuntime {
         exactCharacters: byteCount(candidate),
         deliveredAtTurn: seq,
       });
+      // Generation Cache (planner_contract.md §5) — a richer-keyed, WRITE-THROUGH
+      // record alongside `priorDeliveries`. Not yet consulted for lookups in
+      // Phase 2 (Rule 2 reads `priorDeliveries` only); this populates the cache so
+      // its hit/miss invariants are real and testable ahead of Phase 3+ wiring it
+      // into the lookup path itself.
+      this.generationCache.set(
+        {
+          objectId: stored.objectId,
+          revision: stored.revision,
+          privacyMode: this.privacyMode,
+          secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+          intent: planIntent,
+        },
+        {
+          planKind: plan.kind,
+          strategyVersion: strategy,
+          deliveredHash: sha256(candidate),
+          estimatedTokens: tokensAfter,
+          exactCharacters: byteCount(candidate),
+        },
+      );
     }
 
     // 6. Evidence, then delivery.
@@ -620,9 +650,14 @@ export class ContextRuntime {
       ...(plan
         ? {
             plan: {
-              // Phase 1 scope: "active" never drives delivery yet (see the block
-              // above), so `executed` is unconditionally false until a later phase
-              // wires Rule 2+ into the actual compression call.
+              // Phase 2 scope: ONLY Rule 2 (reuse) is "executed" in active mode —
+              // and it is safe to mark it so WITHOUT changing any byte-producing
+              // code, because Rule 2's decision and the existing prefix-stability
+              // mechanism (`this.delivered`, unconditional since v0.4.0) are
+              // ALREADY the same decision: whenever Rule 2 fires, `pinned` above is
+              // guaranteed non-undefined for the same (objectId, revision), so the
+              // delivered bytes already equal what Rule 2 would choose to reuse.
+              // Rules 3-9 remain observe-only until Phase 3+ wires their execution.
               generationMode: this.generationMode === "active" ? "active" : "observe",
               intent: planIntent ?? "unknown",
               role: planRole ?? "unknown",
@@ -631,7 +666,7 @@ export class ContextRuntime {
               rule: plan.rule,
               ...(plan.strategyId ? { strategyId: plan.strategyId } : {}),
               confidence: plan.confidence,
-              executed: false,
+              executed: this.generationMode === "active" && plan.rule === "rule-2-reuse",
             },
           }
         : {}),

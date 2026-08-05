@@ -93,5 +93,37 @@ describe("v0.5.0 Planner — observe mode never changes delivery", () => {
     const explanation = await observe.explain(SESSION, second.eventId);
     expect(explanation?.record.plan?.rule).toBe("rule-2-reuse");
     expect(explanation?.record.plan?.kind).toBe("reuse");
+    // Phase 2 scope: reuse is observe-only outside active mode.
+    expect(explanation?.record.plan?.executed).toBe(false);
+  });
+
+  it("Phase 2: active mode marks a Rule 2 reuse plan as executed, without changing delivered bytes", async () => {
+    const active = await runtimeWith("active");
+    const content = jsonPayload();
+    const first = await active.deliver({ sessionId: SESSION, tool: "read", kind: "json", content, privateMetadata: META });
+    const second = await active.deliver({ sessionId: SESSION, tool: "read", kind: "json", content, privateMetadata: META });
+    if (first.status !== "delivered" || second.status !== "delivered") throw new Error("expected delivery");
+
+    expect(second.text).toBe(first.text);
+    expect(second.strategy).toBe(first.strategy);
+
+    const explanation = await active.explain(SESSION, second.eventId);
+    expect(explanation?.record.plan?.rule).toBe("rule-2-reuse");
+    expect(explanation?.record.plan?.executed).toBe(true);
+
+    // Rules 3-9 stay observe-only even in active mode during Phase 2.
+    const firstExplanation = await active.explain(SESSION, first.eventId);
+    expect(firstExplanation?.record.plan?.rule).not.toBe("rule-2-reuse");
+    expect(firstExplanation?.record.plan?.executed).toBe(false);
+  });
+
+  it("the Generation Cache records a hit on the second delivery of identical content, under the same identity", async () => {
+    const observe = await runtimeWith("observe");
+    const content = jsonPayload();
+    expect(observe.generationCacheStats).toEqual({ hits: 0, misses: 0 });
+    await observe.deliver({ sessionId: SESSION, tool: "read", kind: "json", content, privateMetadata: META });
+    // Write-through only in Phase 2 (not yet consulted for lookups); stats reflect
+    // writes, not reads, until Phase 3+ wires it into the lookup path.
+    expect(observe.generationCacheStats.hits + observe.generationCacheStats.misses).toBe(0);
   });
 });
