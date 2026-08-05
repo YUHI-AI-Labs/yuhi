@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { normalizeAction, DEFAULT_LOCAL_MODEL, type Action } from "@yuhi/shared";
 import { DEFAULT_PREPARE_SAFETY_MODE, type SafetyMode } from "@yuhi/shared";
+import { PRIVACY_MODES, type PrivacyMode } from "@yuhi/shared";
 
 /** Accept friendly (send / remove-secrets / prepare-locally / runtime-only /
  *  keep-local / exclude) or internal action names, normalized to an Action. */
@@ -63,8 +64,28 @@ export const auditSchema = z.object({
   retention_days: z.number().int().positive().default(30),
 });
 
+/**
+ * v0.4.8 Privacy Mode (see @yuhi/shared `resolvePrivacyPolicy`). `z.enum` already
+ * rejects an unrecognized value with a validation error rather than silently falling
+ * back to a default (Section 5: "不明値はsilent fallbackせずエラーにしてください").
+ */
+export const privacyModeSchema = z.enum(PRIVACY_MODES as [PrivacyMode, ...PrivacyMode[]]);
+
+// Compile-time guard: fails to build if this enum ever diverges from shared's PrivacyMode.
+type _PrivacyModeEnumInSync = z.infer<typeof privacyModeSchema> extends PrivacyMode
+  ? PrivacyMode extends z.infer<typeof privacyModeSchema>
+    ? true
+    : never
+  : never;
+const _privacyModeEnumInSync: _PrivacyModeEnumInSync = true;
+void _privacyModeEnumInSync;
+
 export const privacySchema = z.object({
   telemetry: z.boolean().default(false),
+  /** Explicit Privacy Mode selection; omitted -> legacy deliveryMode mapping, then
+   *  default (balanced). Never silently coerced -- an unrecognized string fails
+   *  config load instead of falling back. */
+  mode: privacyModeSchema.optional(),
 });
 
 /**
