@@ -142,9 +142,17 @@ official extension's own UI.
 - First-time sign-in inside a fresh isolated profile has not yet been validated.
 - Direct-personal-identifier detection is heuristic: CJK name detection covers 2–4
   character sequences only; a single-character, 5+ character, or non-CJK (Latin
-  script) personal name in free text is not detected. Structured columns/fields
-  (student ID, email, phone, and similar) are detected by shape or by field
-  classification and are not subject to this limitation.
+  script) personal name in free text is not detected.
+- **In a JSON tool result, a personal field (e.g. `name`) is masked by key only when
+  the SAME object also has a recognized operational field (e.g. `student_id`,
+  `course_code`) — a deliberate precision trade-off to avoid over-masking ordinary
+  API/test-fixture JSON, where a bare `"name"` field is far more likely to be a
+  product name than a person's.** A JSON object with personal data and no such
+  operational sibling (e.g. `{"name": "...", "email": "...", "message": "..."}`) is
+  masked only on its shape-detectable fields (email, phone, and similar) — the `name`
+  value itself is left unmasked. Email/phone/similar shape-detectable values are
+  always masked regardless of key. "All JSON personal identifiers are transformed" is
+  not an accurate description of this behavior.
 - Strict Mode secret coverage depends on file format and content; contextless numeric
   identifiers in plain text may remain.
 - Developer Mode may retain raw secret values in the private object store when

@@ -3116,14 +3116,27 @@ export async function prepareWorkspace(
       // raw original). Per policy the file is still DELIVERED with a warning, but it
       // must NEVER be reported as transformed/verified/handled.
       entry.outcome = "included-unverified";
-      entry.failureCategory = "reidentification-risk";
       entry.transformed = false;
       entry.finalRescanVerified = false;
-      // Residue was FOUND. Never "not applicable".
-      entry.postTransformScan = "failed";
-      entry.error =
-        `Final artifact still contains ${surviving.length} source identifier value(s); ` +
-        "delivered with a warning — NOT de-identified.";
+      if (privacyDeliveryPolicy.transformDirectPersonalIdentifiers) {
+        // Balanced/Strict attempted transformation and identifiers survived anyway —
+        // a genuine reidentification-risk verification failure.
+        entry.failureCategory = "reidentification-risk";
+        entry.postTransformScan = "failed";
+        entry.error =
+          `Final artifact still contains ${surviving.length} source identifier value(s); ` +
+          "delivered with a warning — NOT de-identified.";
+      } else {
+        // Trusted Local never attempts direct-identifier transformation by explicit
+        // user choice (docs/design/0.4.8_privacy_mode.md) — mirrors the Trusted Local
+        // residue-rescan exemption in context-runtime/src/pipeline.ts. Surviving values
+        // here are the deliberate, correct outcome, not a failed verification.
+        delete entry.failureCategory;
+        entry.postTransformScan = "not-applicable";
+        entry.error =
+          "Trusted Local: direct identifiers were intentionally left unmasked per your " +
+          "explicit choice; delivered raw, not de-identified.";
+      }
       finalIdentifierLeaks += 1;
     } else {
       entry.finalRescanVerified = true;
@@ -3859,7 +3872,11 @@ export async function prepareWorkspace(
               }
               return {
                 ruleName: decision.ruleName,
-                reason: decision.reason,
+                // The run-specific outcome narrative (`f.error`, corrected for e.g. Trusted
+                // Local's "intentionally left unmasked" framing) is more accurate than the
+                // generic pre-run routing rationale once one exists — see the final-artifact
+                // security gate above, which sets `f.error` per privacy mode.
+                reason: f.error ?? decision.reason,
                 findingCategoryCounts,
                 findingSeverityCounts,
                 unresolvedHighRiskCount:

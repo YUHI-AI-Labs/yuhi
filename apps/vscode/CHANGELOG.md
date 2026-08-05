@@ -14,6 +14,16 @@ GUI surfaces — see the root `CHANGELOG.md` for the full detail. New
 first-run picker ("Prepare → Privacy Mode → Start Claude Code"). `yuhi prepare`'s
 normal CLI output is shorter; `--verbose` preserves the previous full report.
 
+Secret delivery (redact vs. Developer Mode) is a separate, composed setting from
+Privacy Mode, with a different contract per surface — Static Prepare always redacts;
+Dynamic Terminal and Native GUI default to Developer Mode with a Strict delivery
+option. Dynamic Context (tool output, JSON, retrieval) now also transforms direct
+personal identifiers, not only secrets; a masked value stays masked through a later
+retrieval, never falling back to raw. See the Known limitations section of this
+README for the precise, narrower JSON masking boundary and the prohibited claim about
+it. Numeric benchmark claims have been removed from this README pending
+re-measurement in v0.5.
+
 CLI ships 0.4.8 to stay in lockstep with the extension.
 
 ## [0.4.7] — 2026-08-05

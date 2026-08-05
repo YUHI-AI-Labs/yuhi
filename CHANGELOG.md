@@ -25,6 +25,38 @@ Code) before it can be selected — it is never a silent default or fallback.
 - **VS Code**: `yuhi.privacyMode` setting, plus a one-time first-run picker
   ("Prepare → Privacy Mode → Start Claude Code") so a new user chooses explicitly
   instead of silently defaulting.
+- **Secret delivery is a separate, composed axis from Privacy Mode**, and its contract
+  differs by surface: Static Prepare redacts every detected secret unconditionally, in
+  every Privacy Mode. Dynamic Terminal and Native GUI Mode default to Developer Mode
+  (project configuration, including `.env`, may reach Claude Code) with a Strict
+  delivery option that masks detected secrets before they leave. Raw secret values are
+  never written to Yuhi's own logs, evidence, statistics, or UI, in any mode.
+- **Dynamic Context now transforms direct personal identifiers**, not only secrets —
+  tool output, JSON, command output, and retrieved context flowing through the gateway
+  are routed by content shape (tabular/JSON/prose/source/config) and masked per the
+  active Privacy Mode. A masked value (e.g. `PERSON-001`) is stable through compression
+  and a later retrieval of an omitted range: **retrieval re-applies the same privacy
+  policy on every fetch, never a raw fallback.**
+- **JSON masking is intentionally narrower than "every personal field"**: a JSON
+  object's `name`-shaped field is masked by key only when the SAME object also carries a
+  recognized operational key (e.g. `student_id`, `course_code`) — a deliberate
+  precision trade-off against over-masking ordinary API/fixture JSON. Shape-detectable
+  values (email, phone, and similar) are always masked regardless of key. **"All JSON
+  personal identifiers are transformed" is not an accurate claim about this release.**
+  See `docs/design/0.4.8_privacy_mode.md`'s Known limitations.
+- **Fixed**: Static Prepare's final-artifact security gate reported Trusted Local's
+  correct, intentional raw-preservation of a tabular direct-identifier file as a failed
+  verification (`postTransformScan: "failed"`, `failureCategory: "reidentification-risk"`).
+  Trusted Local now reports `postTransformScan: "not-applicable"` with an accurate
+  "intentionally left unmasked" reason; Balanced/Strict verification behavior is
+  unchanged.
+- Token measurement now reports exact byte and code-point counts alongside the
+  estimate, and exposes which estimation method (heuristic or exact tokenizer) produced
+  a given figure — see Measurement Reliability below.
+- Removed numeric benchmark claims (e.g. "94% reduced") from the README (all
+  languages), the VS Code extension README, and the marketing site. Context reduction
+  is repository-, task-, and model-dependent; numeric results will be regenerated for
+  v0.5 rather than restated as a fixed figure.
 
 **Measurement Reliability**: token estimation now weights CJK text separately from
 Latin script (mainstream tokenizers split CJK far denser than the old flat
