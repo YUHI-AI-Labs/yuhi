@@ -706,7 +706,13 @@ async function main(): Promise<void> {
         }
         if (!g.json) {
           const copy = privacyModeCopyFor(privacyMode, "static-prepare");
-          console.log(`Privacy: ${copy.title}`);
+          // v0.4.8 Phase 6: the concise (non-verbose) success summary already prints
+          // "Privacy: <mode>" itself, so repeating it here BEFORE the run even starts
+          // would just duplicate it. --verbose keeps the old upfront line, matching
+          // its fuller, more detailed report. The Trusted Local warning body is a
+          // safety disclosure, not a summary line, and is shown either way — before a
+          // potentially long run starts, not only after it succeeds.
+          if (g.verbose) console.log(`Privacy: ${copy.title}`);
           if (privacyMode === "trusted-local") {
             for (const line of copy.en.split("\n")) if (line) console.log(line);
           }
@@ -762,16 +768,32 @@ async function main(): Promise<void> {
           const excluded =
             result.deliveryIntegrity?.excludedByRecommendation ?? result.filesKeptLocal;
           const warned = result.deliveryIntegrity?.deliveredWithWarning ?? 0;
-          const parts = [`${result.filesIncluded} files available`];
-          if (excluded > 0) parts.push(`${excluded} excluded by recommendation`);
-          if (warned > 0) parts.push(`${warned} delivered with a warning`);
-          const detail = parts.join(" · ");
-          console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
-          console.log(formatCliPrepareResult(result));
-          // v0.3.3: when compression ran, follow the summary with the compression block.
-          // With --json the same data is already inside the JSON result (nothing extra).
-          if (res.compression) {
-            console.log("\n" + formatCompressionReport(res.compression, "terminal"));
+          if (g.verbose) {
+            const parts = [`${result.filesIncluded} files available`];
+            if (excluded > 0) parts.push(`${excluded} excluded by recommendation`);
+            if (warned > 0) parts.push(`${warned} delivered with a warning`);
+            const detail = parts.join(" · ");
+            console.log(yuhiBanner(result.launchAllowed ? "ready" : "partial", detail) + "\n");
+            console.log(formatCliPrepareResult(result));
+            // v0.3.3: when compression ran, follow the summary with the compression block.
+            // With --json the same data is already inside the JSON result (nothing extra).
+            if (res.compression) {
+              console.log("\n" + formatCompressionReport(res.compression, "terminal"));
+            }
+          } else {
+            // v0.4.8 Phase 6: minimal first-run UX. The full ~40-line report is one
+            // flag away (--verbose) — see prepare-output.ts / formatCliPrepareResult
+            // for the detail this intentionally does not repeat here.
+            console.log(`${symbols.ok()} Workspace prepared`);
+            console.log(`  Privacy: ${privacyModeCopyFor(privacyMode, "static-prepare").title}`);
+            const fileBits = [`${result.filesIncluded} available`];
+            if (excluded > 0) fileBits.push(`${excluded} excluded`);
+            if (warned > 0) fileBits.push(`${warned} with a warning`);
+            console.log(`  Files: ${fileBits.join(" · ")}`);
+            console.log(`  Reduction: ~${Math.round(result.preparationReport.estimatedReductionPercent)}%`);
+            console.log(`  Run ID: ${result.runId}`);
+            console.log(`\nStart Claude Code:  ${ui.bold(`yuhi launch claude --run ${result.runId}`)}`);
+            console.log(`Full details:       ${ui.dim("yuhi prepare --verbose")}`);
           }
         } else {
           console.error(yuhiBanner("partial") + "\n");

@@ -70,10 +70,13 @@ import {
   MODEL_TIERS,
   CONFIG_FILENAME,
   isYuhiError,
+  resolvePrivacyPolicy,
+  PrivacyModeResolutionError,
   type LocalModelConfig,
   type LocalModelProvider,
   type ModelTier,
   type HealthResult,
+  type PrivacyMode,
 } from "@yuhi/shared";
 import { loadConfig } from "@yuhi/config";
 import { parseDocument } from "yaml";
@@ -1247,6 +1250,40 @@ function currentSafetyMode(): SafetyMode {
 }
 
 /**
+ * Privacy Mode for Static Prepare (v0.4.8 Phase 6) — a DIFFERENT axis from Safety
+ * Mode. Precedence: `yuhi.privacyMode` setting > `yuhi.yaml`'s `privacy.mode` >
+ * Balanced, sharing `resolvePrivacyPolicy` (`@yuhi/shared`) with the CLI's `prepare`
+ * command so the two surfaces cannot drift. Returns `undefined` (after showing the
+ * reason) when resolution fails — the caller must abort preparation, never silently
+ * fall back to a different mode.
+ */
+async function resolvePrivacyModeForLaunch(root: string): Promise<PrivacyMode | undefined> {
+  const raw = vscode.workspace.getConfiguration("yuhi").get<string>("privacyMode") ?? "";
+  const { config } = await loadConfig(root);
+  const configuredMode = config.privacy?.mode ?? "";
+  const candidate = raw || configuredMode || "";
+  const trustedLocalAcknowledged =
+    candidate === "trusted-local"
+      ? await confirmTrustedLocalForWorkspace("yuhi.staticPrepare.trustedLocalAcknowledged")
+      : false;
+  try {
+    return resolvePrivacyPolicy({
+      candidates: [
+        { mode: raw, source: "vscode-setting" },
+        { mode: configuredMode, source: "workspace-config" },
+      ],
+      trustedLocalAcknowledged,
+    }).mode;
+  } catch (err) {
+    if (err instanceof PrivacyModeResolutionError) {
+      void vscode.window.showWarningMessage(`Yuhi: ${err.message}`);
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+/**
  * The v0.3.3 Context Compression options selected in the workspace settings
  * (`yuhi.compress` / `yuhi.tokenBudget`). `tokenBudget` is normalized so `0`
  * (the "no budget" default) and any non-positive/invalid value become `null`
@@ -1312,6 +1349,8 @@ async function prepareWorkspaceForLaunch(
     await initializeProject(root);
     if (!existsSync(path.join(root, CONFIG_FILENAME))) return undefined;
   }
+  const privacyMode = await resolvePrivacyModeForLaunch(root);
+  if (!privacyMode) return undefined;
   setStatus("preparing");
   activityProvider?.setPreparing(true);
   try {
@@ -1366,6 +1405,7 @@ async function prepareWorkspaceForLaunch(
           const preparation = prepareWorkspaceOutcome(root, {
             provider,
             safetyMode,
+            privacyMode,
             // v0.3.3 opt-in Context Compression. Threaded exactly like safetyMode:
             // only sent when the user enabled `yuhi.compress`; the token budget is
             // omitted (best-effort, no target) when `yuhi.tokenBudget` is 0/none.
@@ -2252,6 +2292,54 @@ async function startClaudeFromSourceWorkspace(
   });
 }
 
+/**
+ * Shown exactly once (v0.4.8 Phase 6: minimal first-run UX) — "Prepare → Privacy Mode
+ * → Start Claude Code," nothing else. Writes the choice to `yuhi.privacyMode` (global
+ * scope: a first-run choice is a preference for this installation, not one folder) so
+ * every subsequent prepare — here or via the CLI-independent paths — picks it up
+ * through the SAME `resolvePrivacyModeForLaunch`/`resolvePrivacyPolicy` resolution,
+ * with no separate first-run-only code path to drift from the ongoing one.
+ *
+ * Dismissing (Escape) is treated as "accept Balanced" — consistent with the CLI's own
+ * silent default — and still marks first-run as done: a first-run polish step must
+ * never become a recurring interruption.
+ */
+async function ensureFirstRunPrivacyModeChoice(context: vscode.ExtensionContext): Promise<void> {
+  const shownKey = "yuhi.firstRunPrivacyModeShown";
+  if (context.globalState.get<boolean>(shownKey)) return;
+  const picked = await vscode.window.showQuickPick(
+    [
+      {
+        label: "$(check) Balanced",
+        description: "Recommended",
+        detail: "Direct personal identifiers are transformed. Detected secrets are redacted.",
+        mode: "balanced" as const,
+      },
+      {
+        label: "Strict",
+        detail: "Same as Balanced, and unverified artifacts stay local-only rather than being shared.",
+        mode: "strict" as const,
+      },
+      {
+        label: "Trusted Local",
+        detail: "Personal identifiers are NOT transformed. Requires confirmation — use only with a trusted local model or private infrastructure.",
+        mode: "trusted-local" as const,
+      },
+    ],
+    {
+      title: "Yuhi: Privacy Mode",
+      placeHolder: "How should Yuhi handle personal identifiers when preparing your repository?",
+      ignoreFocusOut: true,
+    },
+  );
+  if (picked) {
+    await vscode.workspace
+      .getConfiguration("yuhi")
+      .update("privacyMode", picked.mode, vscode.ConfigurationTarget.Global);
+  }
+  await context.globalState.update(shownKey, true);
+}
+
 async function commandPrepareAndStartClaude(context: vscode.ExtensionContext): Promise<void> {
   const current = firstWorkspaceRoot();
   if (current && isManagedYuhiWorkspace(current)) {
@@ -2259,11 +2347,13 @@ async function commandPrepareAndStartClaude(context: vscode.ExtensionContext): P
     return;
   }
   // Make the launch destination explicit before any preparation starts. This keeps
-  // the workflow predictable: choose VS Code or CLI → choose source → prepare → open.
+  // the workflow predictable: choose VS Code or CLI → choose source → Privacy Mode
+  // (first run only) → prepare → open.
   const target = await pickYuhiLaunchTarget(context);
   if (!target) return;
   const sourceRoot = await sourceWorkspaceForClaudeLaunch();
   if (!sourceRoot) return;
+  await ensureFirstRunPrivacyModeChoice(context);
   await startClaudeFromSourceWorkspace(context, sourceRoot, target);
 }
 

@@ -262,6 +262,24 @@
           "scope": "resource",
           "description": "Safety Mode preset applied when Yuhi prepares this workspace. Changing it takes effect the next time you prepare (re-prepare) the workspace."
         },
+        "yuhi.privacyMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "balanced",
+            "strict",
+            "trusted-local"
+          ],
+          "default": "",
+          "enumDescriptions": [
+            "Inherit yuhi.yaml's privacy.mode, or Balanced if unset.",
+            "Direct personal identifiers are transformed. Operational identifiers are preserved. Detected secrets are redacted from the prepared workspace.",
+            "Direct personal identifiers are transformed. Operational identifiers are preserved. Detected secrets are redacted. Unverified artifacts remain local-only.",
+            "Privacy transformation is disabled: personal identifiers are delivered unchanged. Requires confirmation on first use."
+          ],
+          "scope": "resource",
+          "description": "What happens to direct personal identifiers when Yuhi prepares this workspace (a DIFFERENT axis from Safety Mode). Empty inherits yuhi.yaml's privacy.mode."
+        },
         "yuhi.compress": {
           "type": "boolean",
           "default": true,
