@@ -83,6 +83,9 @@ import {
   defaultPlanner,
   hasTestFailureMarkers,
   GenerationCache,
+  RepeatedWorkTracker,
+  repeatedWorkHint,
+  type RepeatedWorkStats,
 } from "./planner/index.js";
 import type {
   ContextIntent,
@@ -313,6 +316,8 @@ export class ContextRuntime {
   private readonly budgetMeasurementMethod: string;
   private cumulativeEstimatedTokens = 0;
   private cumulativeExactCharacters = 0;
+  /** v0.5.0 Repeated Work Observation (Phase 5) — advisory only. */
+  private readonly repeatedWork = new RepeatedWorkTracker();
 
   constructor(opts: ContextRuntimeOptions) {
     this.store = opts.store;
@@ -358,6 +363,11 @@ export class ContextRuntime {
   /** v0.5.0 Generation Cache hit/miss counts (planner_contract.md §5). */
   get generationCacheStats(): { hits: number; misses: number } {
     return this.generationCache.stats();
+  }
+
+  /** v0.5.0 Repeated Work Observation stats (planner_contract.md §6). */
+  get repeatedWorkSessionStats(): RepeatedWorkStats {
+    return this.repeatedWork.stats();
   }
 
   estimateTokens(text: string): number {
@@ -455,6 +465,10 @@ export class ContextRuntime {
     let planIntent: ContextIntent | undefined;
     let planRole: ContextRole | undefined;
     const key = `${stored.objectId}#${stored.revision}`;
+    // Captured BEFORE this delivery's own write to `priorDeliveries` below, so
+    // Phase 5's repeated-work observation asks "was this already delivered
+    // EARLIER this session," not "does an entry exist now."
+    const wasAlreadyDelivered = this.priorDeliveries.has(key);
     if (this.generationMode !== "off") {
       const failureMarkers = hasTestFailureMarkers(req.kind, req.content);
       planIntent = classifyIntent({
@@ -469,7 +483,7 @@ export class ContextRuntime {
         kind: req.kind,
         hasFailureMarkers: failureMarkers,
         activeEditTargets: [],
-        isRepeatedContent: this.priorDeliveries.has(key),
+        isRepeatedContent: wasAlreadyDelivered,
         confidenceHint: req.privateMetadata.absolutePath ? "high" : "low",
       });
       plan = this.planner.plan({
@@ -684,6 +698,30 @@ export class ContextRuntime {
     // bytes exist. Phase 3: rules 4/5/6 (structured/reference/window) execute for
     // real in "active" mode via `plannerCandidate` above; every other rule stays
     // observe-only (evidence-only) until a later phase.
+    // v0.5.0 Repeated Work Observation (Phase 5) — advisory only, matching the
+    // directive: recorded in evidence/stats unconditionally when `plan` exists
+    // (i.e. generationMode !== "off"), but never a forced block, and a hint
+    // string is only ever computed, never injected into `candidate` itself (see
+    // planner_contract.md §6's scope note in repeated-work.ts for why: the
+    // existing prefix-stability pin would either discard a hint added after
+    // pinning or double-apply one added before, so hints stay evidence-only in
+    // this Release Candidate — still fully explainable via `yuhi_explain`).
+    let repeatedWorkEvidence: { type: string; count: number; estimatedAvoidableTokens?: number; hint?: string } | undefined;
+    if (plan && wasAlreadyDelivered) {
+      const repEvent = this.repeatedWork.observeDelivery(req.tool, stored.objectId, tokensAfter);
+      if (repEvent) {
+        const hint = this.repeatedWork.shouldHint(stored.objectId, repEvent.type, repEvent.count)
+          ? repeatedWorkHint(repEvent.type)
+          : undefined;
+        repeatedWorkEvidence = {
+          type: repEvent.type,
+          count: repEvent.count,
+          ...(repEvent.estimatedAvoidableTokens === undefined ? {} : { estimatedAvoidableTokens: repEvent.estimatedAvoidableTokens }),
+          ...(hint ? { hint } : {}),
+        };
+      }
+    }
+
     if (plan) {
       // v0.5.0 Dynamic Budget: cumulative counters feed the NEXT call's
       // `currentBudgetState()`. Tracked regardless of whether a budget is
@@ -793,6 +831,7 @@ export class ContextRuntime {
             },
           }
         : {}),
+      ...(repeatedWorkEvidence ? { repeatedWork: repeatedWorkEvidence } : {}),
     };
     await this.ledger.record(record);
 
@@ -869,7 +908,20 @@ export class ContextRuntime {
     const cacheKey = `${req.objectId}#${req.locator}`;
     const cached = this.retrieved.get(cacheKey);
     if (cached !== undefined) {
-      await this.recordRetrieval(req.sessionId, eventId, req.locator, "delivered", req.reason, this.ctx.estimateTokens(cached));
+      // This exact locator was already retrieved this session — the clearest
+      // "contained-read" signal (Phase 5), computed BEFORE the generic
+      // recordRetrieval call below so it lands in the same ledger row.
+      const repeated = this.observeRetrievalRepeat(req.objectId, req.locator);
+      await this.recordRetrieval(
+        req.sessionId,
+        eventId,
+        req.locator,
+        "delivered",
+        req.reason,
+        this.ctx.estimateTokens(cached),
+        undefined,
+        repeated,
+      );
       return { status: "delivered", text: cached, locator: req.locator, tokens: this.ctx.estimateTokens(cached) };
     }
 
@@ -913,10 +965,14 @@ export class ContextRuntime {
       }
     }
 
+    // Computed BEFORE `this.retrieved.set()` below, so this locator is not
+    // counted as its own "prior" retrieval (Phase 5 — contained/overlapping-read
+    // against locators retrieved EARLIER this session, for the same object).
+    const repeated = this.observeRetrievalRepeat(req.objectId, req.locator);
     const text = metadata.text;
     this.retrieved.set(cacheKey, text);
     const tokens = this.ctx.estimateTokens(text);
-    await this.recordRetrieval(req.sessionId, eventId, req.locator, "delivered", req.reason, tokens);
+    await this.recordRetrieval(req.sessionId, eventId, req.locator, "delivered", req.reason, tokens, undefined, repeated);
     return { status: "delivered", text, locator: req.locator, tokens };
   }
 
@@ -976,6 +1032,7 @@ export class ContextRuntime {
     requestReason: string | undefined,
     tokens: number,
     refusalReason?: string,
+    repeatedWork?: { type: string; count: number; estimatedAvoidableTokens?: number; hint?: string },
   ): Promise<void> {
     const row: RetrievalRecord = {
       type: "retrieval",
@@ -986,8 +1043,30 @@ export class ContextRuntime {
       outcome,
       tokensDelivered: tokens,
       ...(refusalReason ? { reason: refusalReason } : requestReason ? { reason: requestReason } : {}),
+      ...(repeatedWork ? { repeatedWork } : {}),
     };
     await this.ledger.record(row);
+  }
+
+  /** v0.5.0 Repeated Work Observation for a successful retrieval (Phase 5). */
+  private observeRetrievalRepeat(
+    objectId: string,
+    locator: string,
+  ): { type: string; count: number; estimatedAvoidableTokens?: number; hint?: string } | undefined {
+    if (this.generationMode === "off") return undefined;
+    const prefix = `${objectId}#`;
+    const priorLocators = [...this.retrieved.keys()]
+      .filter((k) => k.startsWith(prefix))
+      .map((k) => k.slice(prefix.length));
+    const event = this.repeatedWork.observeRetrieval(objectId, locator, priorLocators);
+    if (!event) return undefined;
+    const hint = this.repeatedWork.shouldHint(objectId, event.type, event.count) ? repeatedWorkHint(event.type) : undefined;
+    return {
+      type: event.type,
+      count: event.count,
+      ...(event.estimatedAvoidableTokens === undefined ? {} : { estimatedAvoidableTokens: event.estimatedAvoidableTokens }),
+      ...(hint ? { hint } : {}),
+    };
   }
 
   private async withhold(

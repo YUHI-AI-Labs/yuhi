@@ -88,6 +88,20 @@ export interface EvidenceRecord {
    * influence the bytes actually delivered.
    */
   readonly plan?: PlanEvidence;
+  /**
+   * v0.5.0 Repeated Work Observation (docs/design/0.5.0_planner_contract.md §6).
+   * Recorded unconditionally when detected (advisory only — never a forced
+   * block). `hint` is populated only when this specific (object, type) pair
+   * crossed the one-hint-per-pair threshold for the first time.
+   */
+  readonly repeatedWork?: RepeatedWorkEvidence;
+}
+
+export interface RepeatedWorkEvidence {
+  readonly type: string;
+  readonly count: number;
+  readonly estimatedAvoidableTokens?: number;
+  readonly hint?: string;
 }
 
 export interface PlanEvidence {
@@ -119,6 +133,8 @@ export interface RetrievalRecord {
   readonly outcome: "delivered" | "withheld";
   readonly reason?: string;
   readonly tokensDelivered: number;
+  /** v0.5.0 Repeated Work Observation for this retrieval (contained/overlapping-read). */
+  readonly repeatedWork?: RepeatedWorkEvidence;
 }
 
 /**

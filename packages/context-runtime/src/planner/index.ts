@@ -3,3 +3,4 @@ export * from "./classify.js";
 export * from "./rules.js";
 export * from "./planner.js";
 export * from "./cache.js";
+export * from "./repeated-work.js";
