@@ -23,9 +23,12 @@ import {
   xlsxCellText,
   tokenEstimate,
   reductionReport,
+  DEFAULT_PRIVACY_MODE,
+  resolveDeliveryPolicy,
   type Action,
   type LocalModelProvider,
   type ParsedDelimitedTable,
+  type PrivacyMode,
   type ReductionMode,
   type ReductionReport,
   type ProcessorSpec,
@@ -68,6 +71,7 @@ import {
   buildPublicStatus,
   writePublicStatus,
   writePrivateAliasRegistry,
+  writePrivatePrivacyMode,
   type BackgroundPreparationKind,
 } from "./background/index.js";
 import { writePrivateRunSourceBinding } from "./patch/private-state.js";
@@ -765,6 +769,11 @@ export interface PrepareWorkspaceOptions {
   excludeExtensions?: readonly string[];
   /** Safety Mode preset — shapes the effective policy (defaults to Balanced). */
   safetyMode?: SafetyMode;
+  /** v0.4.8 Privacy Mode — a DIFFERENT axis from Safety Mode (see privacy-mode.ts's
+   *  module doc comment). Shapes direct-personal-identifier transformation across
+   *  tabular and document content (defaults to Balanced). Static Prepare's secret
+   *  redaction does not depend on this value in any mode. */
+  privacyMode?: PrivacyMode;
   /** Deterministic lifecycle seam for cancellation/recovery integration. */
   onCheckpoint?: (checkpoint: PreparationCheckpoint) => void;
   /**
@@ -1261,6 +1270,18 @@ export async function prepareWorkspace(
   // Workspace — enforced at the unverified-delivery decision sites below.
   const safetyMode: SafetyMode = options.safetyMode ?? DEFAULT_PREPARE_SAFETY_MODE;
   const keepUnverifiedLocal = escalatesUnverified(safetyMode);
+  // v0.4.8 Privacy Mode (DIFFERENT axis from Safety Mode — see privacy-mode.ts's
+  // module doc comment). Omitted -> DEFAULT_PRIVACY_MODE ("balanced"), which is
+  // exactly the effective behavior every caller had before this option existed
+  // (pseudonymizeStudentRecords/deidentifyText always defaulted to "balanced" when
+  // no mode was threaded through). Static Prepare's secret redaction does NOT depend
+  // on this value — see docs/design/0.4.8_privacy_mode.md Decision 1.
+  const privacyMode: PrivacyMode = options.privacyMode ?? DEFAULT_PRIVACY_MODE;
+  // The full composed policy for THIS surface (Static Prepare always redacts
+  // secrets, in every mode — see the module import's doc comment). Resolved once,
+  // recorded read-only into the manifest below; nothing branches on this beyond the
+  // `privacyMode`/`transformDirectPersonalIdentifiers` values already used above.
+  const privacyDeliveryPolicy = resolveDeliveryPolicy({ privacyMode, surface: "static-prepare" });
   const localModelParallelism = Math.max(
     1,
     Math.floor(options.localModelParallelism ?? recommendedLocalModelParallelism()),
@@ -1997,7 +2018,7 @@ export async function prepareWorkspace(
       const sourceBytes = await readFile(info.absPath);
       const fileAliases = cloneStudentAliases(studentAliases);
       try {
-        const transformed = await pseudonymizeXlsxRecords(sourceBytes, fileAliases);
+        const transformed = await pseudonymizeXlsxRecords(sourceBytes, fileAliases, privacyMode);
         const verified = await inspectXlsxRecords(transformed.output);
         const rawPresent = await xlsxContainsAnyValue(
           transformed.output,
@@ -2009,8 +2030,14 @@ export async function prepareWorkspace(
         // cell still echoes a value or a sheet count differs. The mandatory final
         // gate reopens this exact file and has the last word on whether it may be
         // reported de-identified; anything it still finds is surfaced honestly there.
+        //
+        // Trusted Local: `rawPresent` is EXPECTED here, not a failure —
+        // `pseudonymizeXlsxRecords` deliberately did not transform anything
+        // (docs/design/0.4.8_privacy_mode.md). Requiring `!rawPresent` in that mode
+        // would keep every Trusted Local workbook local-only, which is the opposite
+        // of what the mode means.
         const fullyClean =
-          !rawPresent &&
+          (privacyMode === "trusted-local" || !rawPresent) &&
           verified.directIdentifierColumns > 0 &&
           verified.sensitiveSheets === transformed.sensitiveSheets;
         if (!fullyClean) {
@@ -2258,6 +2285,7 @@ export async function prepareWorkspace(
               mode: effectiveMode,
               localModelParallelism,
               studentAliases: fileAliases,
+              privacyMode,
               signal: childSignal,
             }),
           localModelTimeoutMs,
@@ -2293,6 +2321,7 @@ export async function prepareWorkspace(
           mode: effectiveMode,
           localModelParallelism,
           studentAliases: fileAliases,
+          privacyMode,
           ...(signal !== undefined ? { signal } : {}),
         });
       }
@@ -2313,9 +2342,17 @@ export async function prepareWorkspace(
         // first failure, so it is always visible WHERE a file leaves the happy path.
         // `leak` failures mean a raw identifier survived (a real safety problem);
         // everything else is a "could-not-fully-verify" mismatch, not a leak.
-        const pseudonymizedTable = prep.audits.some(
-          (audit) => audit.processorId === "pseudonymize-student-records",
-        );
+        // Trusted Local is excluded here even though the "pseudonymize-student-records"
+        // audit entry is still present (route-executor.ts pushes it to record that the
+        // step was deliberately SKIPPED, not that it ran): no transform ran, so the
+        // "no raw identifier in output" residue check below would fail on every
+        // Trusted Local table by design, not because anything went wrong
+        // (docs/design/0.4.8_privacy_mode.md). The secret-only "privacy-rescan" stage
+        // further down is unaffected — it excludes `tabular-*` findings already and
+        // runs the same in every Privacy Mode.
+        const pseudonymizedTable =
+          privacyMode !== "trusted-local" &&
+          prep.audits.some((audit) => audit.processorId === "pseudonymize-student-records");
         const stages: Array<{ stage: string; pass: boolean; leak: boolean }> = [];
         // Table verification only applies when a TABULAR pseudonymizer ran. A
         // summarized/text output is prose, not a table — parsing it as one is
@@ -3622,6 +3659,11 @@ export async function prepareWorkspace(
   // independently verified either way — see `alias-registry-store.ts`'s doc comment).
   if (backgroundEnqueue.length > 0) {
     await writePrivateAliasRegistry(managedBase, runId, studentAliases).catch(() => {});
+    // Same cross-process problem, same posture: the background document pipeline
+    // needs the SAME Privacy Mode this synchronous pass used, or Trusted Local
+    // silently reverts to Balanced for every document (0.4.8,
+    // `docs/design/0.4.8_privacy_mode.md`).
+    await writePrivatePrivacyMode(managedBase, runId, privacyMode).catch(() => {});
   }
 
   // ===== v0.3.5 FOREGROUND → BACKGROUND QUEUE REGISTRATION =====
@@ -3743,6 +3785,15 @@ export async function prepareWorkspace(
     // The RESOLVED effective Safety Mode this run was prepared with (not the raw input).
     // Consumed by freshness checks: selecting a different mode makes the run stale.
     safetyMode,
+    // v0.4.8 Privacy Mode — a DIFFERENT axis (privacy-mode.ts's module doc comment).
+    // Counts/booleans/enums only, never a raw identifier or secret value.
+    privacyPolicy: {
+      mode: privacyDeliveryPolicy.privacyMode,
+      surface: privacyDeliveryPolicy.surface,
+      directPersonalIdentifiersTransformed: privacyDeliveryPolicy.transformDirectPersonalIdentifiers,
+      operationalIdentifiersPreserved: privacyDeliveryPolicy.preserveOperationalIdentifiers,
+      secretDeliveryMode: privacyDeliveryPolicy.secretDeliveryMode,
+    },
     ...(compressionReport ? { compression: compressionReport } : {}),
     publicSummary,
     yuhiModeSummary,

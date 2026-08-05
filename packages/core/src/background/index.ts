@@ -99,6 +99,13 @@ export {
 } from "./alias-registry-store.js";
 
 export {
+  privatePrivacyModePath,
+  writePrivatePrivacyMode,
+  readPrivatePrivacyMode,
+  readPrivatePrivacyModeOrDefault,
+} from "./privacy-mode-store.js";
+
+export {
   computeRevisionId,
   canonicalizeRevisionIdInput,
   reduceProgressiveContextState,

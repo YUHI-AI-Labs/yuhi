@@ -2000,3 +2000,125 @@ describe("local-model reliability: timeout, circuit breaker, and budget", () => 
     expect(report.tabularAcceptance?.launchAllowed).toBe(true);
   }, 120_000);
 });
+
+describe("v0.4.8 Privacy Mode -- Static Prepare (Section 16.1/16.2/16.7)", () => {
+  const HEADER = ["学籍番号", "氏名", "評定"];
+  const RAW_NAME = "山田太郎";
+  const STUDENT_ID = "SID_CANARY_001";
+  const csvOf = () => [HEADER.join(","), [STUDENT_ID, RAW_NAME, "A"].join(",")].join("\n") + "\n";
+
+  it("balanced: direct identifiers masked, operational id preserved, delivered", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "balanced" });
+    const text = deliveredText(report.outDir);
+    expect(text).not.toContain(RAW_NAME);
+    expect(text).toContain(STUDENT_ID);
+    expect(report.files.find((f) => f.relpath === "roster.csv")?.omitted).not.toBe(true);
+  });
+
+  it("strict: same real behavior as balanced for Static Prepare (masks identical set)", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "strict" });
+    const text = deliveredText(report.outDir);
+    expect(text).not.toContain(RAW_NAME);
+    expect(text).toContain(STUDENT_ID);
+  });
+
+  it("trusted-local: direct identifiers PRESERVED, operational id preserved, file still delivered (not kept local)", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "trusted-local" });
+    const text = deliveredText(report.outDir);
+    expect(text).toContain(RAW_NAME);
+    expect(text).toContain(STUDENT_ID);
+    const entry = report.files.find((f) => f.relpath === "roster.csv");
+    expect(entry?.omitted).not.toBe(true);
+    expect(entry?.status).toBe("ok");
+  });
+
+  it("trusted-local: XLSX cells preserved unchanged, workbook still delivered", async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("評定");
+    ws.addRow(HEADER);
+    ws.addRow([STUDENT_ID, RAW_NAME, "A"]);
+    writeFileSync(path.join(dir, "roster.xlsx"), Buffer.from(await wb.xlsx.writeBuffer()));
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "trusted-local" });
+    const outPath = path.join(report.outDir, "roster.xlsx");
+    expect(existsSync(outPath)).toBe(true);
+    const w = new ExcelJS.Workbook();
+    await w.xlsx.readFile(outPath);
+    const cells: string[] = [];
+    w.eachSheet((sheet) => sheet.eachRow((row) => row.eachCell((c) => cells.push(String(c.value ?? "")))));
+    expect(cells).toContain(RAW_NAME);
+    expect(cells).toContain(STUDENT_ID);
+  });
+
+  it("trusted-local: detected secrets are STILL redacted (Decision 1 -- Static Prepare never varies secret handling by mode)", async () => {
+    put("notes.txt", "api_key = AKIAIOSFODNN7EXAMPLE\n");
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "trusted-local" });
+    const text = deliveredText(report.outDir);
+    expect(text).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    void report;
+  });
+
+  it("balanced: manifest records the resolved privacyPolicy (mode/surface/secretDeliveryMode)", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "balanced" });
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.privacyPolicy).toMatchObject({
+      mode: "balanced",
+      surface: "static-prepare",
+      directPersonalIdentifiersTransformed: true,
+      operationalIdentifiersPreserved: true,
+      secretDeliveryMode: "redact",
+    });
+  });
+
+  it("trusted-local: manifest records secretDeliveryMode redact and transformed=false", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "trusted-local" });
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.privacyPolicy).toMatchObject({
+      mode: "trusted-local",
+      surface: "static-prepare",
+      directPersonalIdentifiersTransformed: false,
+      operationalIdentifiersPreserved: true,
+      secretDeliveryMode: "redact",
+    });
+  });
+
+  it("manifest.privacyPolicy never contains a raw identifier or secret value", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir, { privacyMode: "trusted-local" });
+    const manifestRaw = readFileSync(path.join(report.outDir, "manifest.json"), "utf8");
+    const manifest = JSON.parse(manifestRaw);
+    const policyJson = JSON.stringify(manifest.privacyPolicy);
+    expect(policyJson).not.toContain(RAW_NAME);
+    expect(policyJson).not.toContain(STUDENT_ID);
+  });
+
+  it("omitting privacyMode defaults to balanced (unchanged pre-0.4.8 behavior)", async () => {
+    put("roster.csv", csvOf());
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    const report = await prepareWorkspace(dir);
+    const manifest = JSON.parse(readFileSync(path.join(report.outDir, "manifest.json"), "utf8"));
+    expect(manifest.privacyPolicy.mode).toBe("balanced");
+    const text = deliveredText(report.outDir);
+    expect(text).not.toContain(RAW_NAME);
+  });
+
+  it("source workspace is unchanged under trusted-local (same guarantee as every other mode)", async () => {
+    const csv = csvOf();
+    put("roster.csv", csv);
+    put("yuhi.yaml", 'version: "1"\nrules: []\ninclude_untracked: true\n');
+    await prepareWorkspace(dir, { privacyMode: "trusted-local" });
+    expect(readFileSync(path.join(dir, "roster.csv"), "utf8")).toBe(csv);
+  });
+});

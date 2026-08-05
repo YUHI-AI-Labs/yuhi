@@ -33,6 +33,7 @@ import {
   parseDelimitedTable,
   scanTextForDirectPersonalIdentifiers,
   type LocalModelProvider,
+  type PrivacyMode,
   type StudentAliasContext,
 } from "@yuhi/shared";
 import type { YuhiConfig } from "@yuhi/config";
@@ -47,6 +48,7 @@ import type { PreparedFileEntry } from "../prepare-workspace.js";
 import type { PublicPreparedContextSummary } from "../public-prepared-summary.js";
 import { buildYuhiModeSummary, renderYuhiModeHandoff } from "../yuhi-mode-summary.js";
 import { readPrivateAliasRegistry } from "./alias-registry-store.js";
+import { readPrivatePrivacyModeOrDefault } from "./privacy-mode-store.js";
 import { BackgroundQueue } from "./queue.js";
 import {
   BackgroundPublisher,
@@ -219,6 +221,7 @@ function extractTabularIdentifiers(content: string): string[] {
 function buildSafetyPrimitives(
   config: YuhiConfig | undefined,
   aliasContext: StudentAliasContext,
+  privacyMode: PrivacyMode,
 ): {
   normalizer: Normalizer;
   pseudonymizer: Pseudonymizer;
@@ -236,6 +239,12 @@ function buildSafetyPrimitives(
 
   const pseudonymizer: Pseudonymizer = {
     pseudonymize: (text) => {
+      // Trusted Local: privacy transformation disabled by explicit user choice, for
+      // documents exactly as for tables (docs/design/0.4.8_privacy_mode.md). Skip
+      // BOTH the tabular-in-prose masking below and deidentifyText's own transform
+      // (deidentifyText itself also no-ops for this mode, but skipping here avoids
+      // computing tabularIdentifiers/createPseudonymizer for nothing).
+      if (privacyMode === "trusted-local") return { text };
       // Tabular content, if any reaches this path: table-scoped identifiers first.
       const tabularIdentifiers = extractTabularIdentifiers(text);
       const working =
@@ -247,8 +256,11 @@ function buildSafetyPrimitives(
           : text;
       // Prose (PDF/DOCX/PPTX extractions, and any tabular remnants/preamble): SAME
       // taxonomy + registry as the tabular pass. Always masks what it detects — see
-      // `deidentifyText`'s own doc comment for the identity linkage policy.
-      const deidentified = deidentifyText(working, aliasContext);
+      // `deidentifyText`'s own doc comment for the identity linkage policy. `mode`
+      // is the SAME Privacy Mode the synchronous prepare pass used for this run
+      // (persisted cross-process — see `privacy-mode-store.ts`), so Trusted Local
+      // documents are not silently transformed while their CSV siblings are not.
+      const deidentified = deidentifyText(working, aliasContext, privacyMode);
       return { text: deidentified.text };
     },
   };
@@ -272,15 +284,23 @@ function buildSafetyPrimitives(
       // pseudonymize claims success. `knownDirectValues` catches a registry-linked
       // value the substitution step should have replaced but didn't; the shape/CJK
       // checks are self-contained and need no context.
-      const verification = scanTextForDirectPersonalIdentifiers(
-        text,
-        directPersonalValueTokens(aliasContext).keys(),
-      );
-      if (verification.residual > 0) {
-        findings.push({ category: "residual-direct-personal-identifier" });
-      }
-      if (verification.residualRisk) {
-        findings.push({ category: "residual-personal-name-risk" });
+      //
+      // Trusted Local: identifier residue is EXPECTED here (the pseudonymizer above
+      // deliberately did not transform anything) and must NOT gate delivery — only
+      // `runDetectors`'s secret findings above still do, unconditionally, on every
+      // Privacy Mode (docs/design/0.4.8_privacy_mode.md Decision 1: Static Prepare's
+      // secret redaction/verification never depends on Privacy Mode).
+      if (privacyMode !== "trusted-local") {
+        const verification = scanTextForDirectPersonalIdentifiers(
+          text,
+          directPersonalValueTokens(aliasContext).keys(),
+        );
+        if (verification.residual > 0) {
+          findings.push({ category: "residual-direct-personal-identifier" });
+        }
+        if (verification.residualRisk) {
+          findings.push({ category: "residual-personal-name-risk" });
+        }
       }
       return { ok: findings.length === 0, findings };
     },
@@ -476,9 +496,16 @@ export async function runBackgroundForRun(
   const aliasContext = await readPrivateAliasRegistry(managedBase, runId).catch(() =>
     createStudentAliasContext(),
   );
+  // Same cross-process problem, same safe fallback: the synchronous prepare pass's
+  // Privacy Mode selection (see `privacy-mode-store.ts`). Missing/corrupt/wrong-run
+  // -> DEFAULT_PRIVACY_MODE, which only degrades to "documents get the default
+  // treatment" — masking and verification above never skip themselves because this
+  // read failed.
+  const privacyMode = await readPrivatePrivacyModeOrDefault(managedBase, runId);
   const { normalizer, pseudonymizer, inspector, policy } = buildSafetyPrimitives(
     input.config,
     aliasContext,
+    privacyMode,
   );
   const publisher = new BackgroundPublisher({
     normalizer,
