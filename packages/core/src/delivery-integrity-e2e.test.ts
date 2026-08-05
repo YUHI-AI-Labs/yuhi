@@ -124,15 +124,16 @@ describe("a clean run reports clean, with no residue anywhere", () => {
     const report = await prepareWorkspace(dir, {});
     const delivered = readFileSync(path.join(report.outDir, "clean.csv"), "utf8");
 
-    // A phonetic-name column is personal data and must be transformed too.
+    // A phonetic-name column is personal data and must be transformed too. The student
+    // number is an OPERATIONAL key and is preserved by policy.
     for (const canary of [
       "STUDENT_CANARY_001",
       "STUDENT_CANARY_002",
-      "SID_CANARY_001",
       "カナ_CANARY_001",
     ]) {
       expect(delivered).not.toContain(canary);
     }
+    expect(delivered).toContain("SID_CANARY_001");
 
     const acceptance = report.tabularAcceptance!;
     expect(acceptance.rawFallbackUsed).toBe(false);
@@ -153,7 +154,8 @@ describe("a clean run reports clean, with no residue anywhere", () => {
     const [, row] = delivered.trim().split("\n");
     const cells = row!.split(",");
     // Entity-keyed tokens carry the same ordinal; column-scoped fallbacks would not.
-    expect(cells[1]).toMatch(/^Student 0*1$/);
-    expect(cells[2]).toMatch(/^Reading 0*1$/);
+    expect(cells[0]).toBe("SID_CANARY_001"); // operational key preserved
+    expect(cells[1]).toMatch(/^PERSON-0*1$/);
+    expect(cells[2]).toMatch(/^READING-0*1$/);
   });
 });

@@ -332,12 +332,8 @@ describe("BEHAVIOUR 2: duplicate representations collapse to a canonical alias",
       if (!existsSync(abs)) continue;
       joined += readFileSync(abs, "utf8");
     }
-    for (const canary of [
-      "SID_CANARY_001",
-      "SID_CANARY_002",
-      "STUDENT_CANARY_001",
-      "STUDENT_CANARY_002",
-    ]) {
+    // Names only: the SID canaries are operational keys and are preserved by policy.
+    for (const canary of ["STUDENT_CANARY_001", "STUDENT_CANARY_002"]) {
       expect(joined).not.toContain(canary);
     }
   });

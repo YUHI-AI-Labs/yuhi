@@ -1,8 +1,8 @@
 {
   "name": "@yuhi-ai-labs/yuhi",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "type": "module",
-  "description": "See exactly what your AI agent can see \u2014 then run it on a locally-prepared copy of your repo. Local-first, no telemetry.",
+  "description": "See exactly what your AI agent can see — then run it on a locally-prepared copy of your repo. Local-first, no telemetry.",
   "keywords": [
     "ai",
     "claude-code",

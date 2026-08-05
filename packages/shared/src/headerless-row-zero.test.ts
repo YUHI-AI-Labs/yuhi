@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   cellShape,
+  classifyStudentRecordTable,
   detectTableLayout,
   parseDelimitedTable,
   pseudonymizeStudentRecords,
@@ -20,15 +21,34 @@ import {
 
 const BOM = "﻿";
 const HEAD = ["学籍番号", "氏名", "コース", "担当教員", "成績"];
+/**
+ * Name canaries are digit-free on purpose.
+ *
+ * A HEADERLESS table has no header, so the type comes from the value pattern, and a real
+ * personal name contains no digits — `NAME_CANARY_001` would read as a code and classify
+ * as an OPERATIONAL identifier, which is preserved. Using name-shaped values keeps these
+ * fixtures faithful to the data the classifier actually meets.
+ */
 const ROWS = [
-  ["SID_CANARY_001", "STUDENT_CANARY_001", "COURSE_CANARY", "INSTRUCTOR_CANARY", "85"],
-  ["SID_CANARY_002", "STUDENT_CANARY_002", "COURSE_CANARY", "INSTRUCTOR_CANARY", "92"],
-  ["SID_CANARY_003", "STUDENT_CANARY_003", "COURSE_CANARY", "INSTRUCTOR_CANARY", "78"],
+  ["SID_CANARY_001", "ヤマダタロウカナリア", "COURSE_CANARY", "INSTRUCTOR_CANARY", "85"],
+  ["SID_CANARY_002", "サトウハナコカナリア", "COURSE_CANARY", "INSTRUCTOR_CANARY", "92"],
+  ["SID_CANARY_003", "スズキイチロウカナリア", "COURSE_CANARY", "INSTRUCTOR_CANARY", "78"],
 ];
 const join = (rows: string[][], d = ",", eol = "\n") =>
   rows.map((r) => r.join(d)).join(eol) + eol;
 
-const ROW0_CANARIES = ["SID_CANARY_001", "STUDENT_CANARY_001"];
+/**
+ * Row-0 leak canaries — DIRECT personal identifiers only.
+ *
+ * `SID_CANARY_001` sits in the 学籍番号 column, which the v0.5 taxonomy classifies as an
+ * OPERATIONAL identifier and therefore PRESERVES: masking a student id breaks the joins
+ * the data exists for and protects nobody, because the person is already protected by
+ * masking their name. So the row-0 privacy property is asserted on the name, and the
+ * preservation property is asserted separately below.
+ */
+const ROW0_CANARIES = ["ヤマダタロウカナリア"];
+/** Operational values that must survive row 0 untouched. */
+const ROW0_PRESERVED = ["SID_CANARY_001", "COURSE_CANARY", "INSTRUCTOR_CANARY"];
 
 describe("cellShape", () => {
   it("separates datetimes and times from codes and free text", () => {
@@ -82,16 +102,27 @@ describe("headerless row 0 is pseudonymized across the format/encoding matrix", 
   ];
 
   for (const [label, input] of variants) {
-    it(`${label}: no row-0 canary survives the transform`, () => {
+    it(`${label}: row 0's personal data is masked and its business keys survive`, () => {
       const out = pseudonymizeStudentRecords(input).output;
+      // The privacy property: no DIRECT personal identifier escapes row 0.
       for (const canary of ROW0_CANARIES) expect(out).not.toContain(canary);
+      // The analysis property: the operational keys in the very same row are intact.
+      for (const kept of ROW0_PRESERVED) expect(out).toContain(kept);
     });
   }
+
+  it("a SINGLE headerless row is still classified by shape, not by uniqueness", () => {
+    // The whole file is one record — the case that used to leak entirely. Shape-based
+    // inference still separates the name from the codes beside it.
+    const out = pseudonymizeStudentRecords(join([ROWS[0]!])).output;
+    for (const canary of ROW0_CANARIES) expect(out).not.toContain(canary);
+    for (const kept of ROW0_PRESERVED) expect(out).toContain(kept);
+  });
 
   it("an identifier at a chunk boundary is still transformed", () => {
     const pad = Array.from({ length: 1200 }, (_, i) => [
       `SID_CANARY_P${String(i).padStart(4, "0")}`,
-      `STUDENT_CANARY_P${String(i).padStart(4, "0")}`,
+      `ヤマダタロウ${"アイウエオカキクケコ".split("")[Math.floor(i / 100) % 10]}${"サシスセソタチツテト".split("")[Math.floor(i / 10) % 10]}${"ナニヌネノハヒフヘホ".split("")[i % 10]}`,
       "COURSE_CANARY",
       "INSTRUCTOR_CANARY",
       String(60 + (i % 40)),
@@ -100,7 +131,9 @@ describe("headerless row 0 is pseudonymized across the format/encoding matrix", 
     expect(input.length).toBeGreaterThan(64 * 1024);
     const out = pseudonymizeStudentRecords(input).output;
     for (const canary of ROW0_CANARIES) expect(out).not.toContain(canary);
-    expect(out).not.toContain("SID_CANARY_P1199");
+    // A padded student id is an operational key: preserved, by policy.
+    expect(out).toContain("SID_CANARY_P1199");
+    expect(out).not.toContain("ヤマダタロウアトホ");
   });
 
   it("a headered table keeps its label row verbatim", () => {
@@ -114,13 +147,15 @@ describe("verification does not share the transform's header/body guess", () => 
   it("collects row-0 values as verification candidates for a headerless table", () => {
     const values = tabularVerificationValues(join(ROWS));
     for (const canary of ROW0_CANARIES) expect(values).toContain(canary);
+    // An operational key is preserved by policy, so it is not a verification candidate.
+    expect(values).not.toContain("SID_CANARY_001");
   });
 
   it("still collects row-0 values when the table LOOKS headered", () => {
     // Even for a headered table the verifier must not exempt row 0; it excludes
     // recognized LABELS by content, not the first row by position.
     const values = tabularVerificationValues(join([HEAD, ...ROWS]));
-    expect(values).toContain("SID_CANARY_001");
+    expect(values).toContain("ヤマダタロウカナリア");
     for (const label of HEAD) expect(values).not.toContain(label);
   });
 
@@ -129,20 +164,21 @@ describe("verification does not share the transform's header/body guess", () => 
     // Simulate the historical defect: rows 2..N transformed, row 0 left raw.
     const leaked = join([
       ROWS[0]!,
-      ["SID-002", "Student 002", "COURSE_CANARY", "INSTRUCTOR_CANARY", "92"],
-      ["SID-003", "Student 003", "COURSE_CANARY", "INSTRUCTOR_CANARY", "78"],
+      ["SID_CANARY_002", "PERSON-002", "COURSE_CANARY", "INSTRUCTOR_CANARY", "92"],
+      ["SID_CANARY_003", "PERSON-003", "COURSE_CANARY", "INSTRUCTOR_CANARY", "78"],
     ]);
     const { residueCells, residueValues } = tabularResidueCells(source, leaked);
     expect(residueCells).toBeGreaterThan(0);
-    expect(residueValues).toContain("SID_CANARY_001");
-    expect(residueValues).toContain("STUDENT_CANARY_001");
+    expect(residueValues).toContain("ヤマダタロウカナリア");
+    // The preserved student id is not residue.
+    expect(residueValues).not.toContain("SID_CANARY_001");
   });
 
   it("byte scan catches the same row-0 residue", () => {
-    const leaked = join([ROWS[0]!, ["SID-002", "Student 002", "C", "I", "92"]]);
+    const leaked = join([ROWS[0]!, ["SID_CANARY_002", "PERSON-002", "C", "I", "92"]]);
     const candidates = tabularVerificationValues(join(ROWS));
     const surviving = candidates.filter((v) => leaked.includes(v));
-    expect(surviving).toContain("SID_CANARY_001");
+    expect(surviving).toContain("ヤマダタロウカナリア");
   });
 
   it("reports no residue for a fully transformed table", () => {
@@ -190,14 +226,14 @@ describe("MUTATION GUARD: verification must not consult the body start", () => {
     const source = join(ROWS);
     const leaked = join([
       ROWS[0]!,
-      ["SID-002", "Student 002", "COURSE_CANARY", "INSTRUCTOR_CANARY", "92"],
-      ["SID-003", "Student 003", "COURSE_CANARY", "INSTRUCTOR_CANARY", "78"],
+      ["SID_CANARY_002", "PERSON-002", "COURSE_CANARY", "INSTRUCTOR_CANARY", "92"],
+      ["SID_CANARY_003", "PERSON-003", "COURSE_CANARY", "INSTRUCTOR_CANARY", "78"],
     ]);
 
     // The mutant: collect identifier-column candidates from the BODY only, which is
     // exactly what `tabularDirectIdentifierValues` did before the fix.
     const rows = parseDelimitedTable(source).rows;
-    const identifierColumns = [0, 1];
+    const identifierColumns = [1]; // the name column; column 0 is a preserved key
     const bodyOnlyCandidates = new Set<string>();
     for (const row of rows.slice(1)) {
       for (const column of identifierColumns) {
@@ -217,7 +253,7 @@ describe("MUTATION GUARD: verification must not consult the body start", () => {
 
   it("known residue can never coexist with a clean verdict", () => {
     const source = join(ROWS);
-    const leaked = join([ROWS[0]!, ["SID-002", "Student 002", "C", "I", "92"]]);
+    const leaked = join([ROWS[0]!, ["SID_CANARY_002", "PERSON-002", "C", "I", "92"]]);
     const structured = tabularResidueCells(source, leaked).residueCells;
     const byteScan = tabularVerificationValues(source).filter((v) => leaked.includes(v)).length;
     // At least one layer must fire; a clean verdict requires BOTH to be zero.
@@ -260,16 +296,20 @@ describe("detector precision: temporal values are never phone numbers", () => {
     expect(out).not.toContain("090-1234-5678");
   });
 
-  it("keeps a six-digit student ID out of the phone namespace", () => {
+  it("never turns a six-digit student ID into a phone number — and preserves it", () => {
     const input = join([
       ["学籍番号", "成績"],
       ["123456", "85"],
       ["123457", "92"],
       ["123458", "78"],
     ]);
-    const out = pseudonymizeStudentRecords(input).output;
-    expect(out).toContain("SID-");
-    expect(out).not.toContain("PHONE-");
+    // A table of operational keys and measures carries no DIRECT personal data, so
+    // there is nothing to transform at all.
+    expect(() => pseudonymizeStudentRecords(input)).toThrow(/NO_DIRECT_PERSONAL_IDENTIFIERS/);
+    // The misclassification this guards: a bare six-digit key read as a phone number.
+    const c = classifyStudentRecordTable(parseDelimitedTable(input).rows);
+    expect(c.directIdentifierTypes).toContain("student-id");
+    expect(c.directIdentifierTypes).not.toContain("phone");
   });
 });
 

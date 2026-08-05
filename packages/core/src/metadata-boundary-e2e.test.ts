@@ -18,8 +18,18 @@ import { prepareWorkspace } from "./prepare-workspace.js";
 import { writePreparedRunSession } from "./prepared-run.js";
 
 const STUDENT_ID = "9999990001";
-/** Tokens that name only WITHHELD files in the fixture below. */
-const IDENTIFYING_TOKENS = [STUDENT_ID, "評定", "名簿", "roster", "秘密鍵"];
+/** A DIRECT personal identifier: must never reach an agent-visible byte. */
+const STUDENT_NAME = "山田太郎";
+/**
+ * Tokens that name only WITHHELD files in the fixture below.
+ *
+ * The student number is deliberately NOT in this list. Since 0.4.6 it is an OPERATIONAL
+ * identifier that is preserved inside delivered tables by policy, so its presence no
+ * longer distinguishes a withheld file from a delivered one — it would report a leak for
+ * data Yuhi is supposed to deliver. The personal NAME carries that duty instead, and is
+ * asserted separately below.
+ */
+const IDENTIFYING_TOKENS = ["評定", "名簿", "roster", "秘密鍵"];
 
 /** Synthetic, non-functional key material — enough for the detector, no real secret. */
 const FAKE_PRIVATE_KEY = [
@@ -187,12 +197,22 @@ describe("agent-visible metadata boundary (adversarial scan)", () => {
     }
   }
 
-  it("keeps the raw student number out of the workspace entirely, name and content", async () => {
+  it("keeps the raw student NAME out of the workspace, and the number out of every filename", async () => {
     const scan = await prepareAndScan("balanced", false);
+    let sawPreservedNumber = false;
     for (const rel of filesUnder(scan.outDir)) {
+      const text = readFileSync(path.join(scan.outDir, rel)).toString("utf8");
+      // A direct personal identifier must not survive anywhere, in a name or in bytes.
+      expect(rel, `${rel} names a person`).not.toContain(STUDENT_NAME);
+      expect(text, `${rel} leaked ${STUDENT_NAME}`).not.toContain(STUDENT_NAME);
+      // Filenames are metadata Yuhi controls, and it does not put an identifier in one.
       expect(rel).not.toContain(STUDENT_ID);
-      expect(readFileSync(path.join(scan.outDir, rel)).toString("utf8")).not.toContain(STUDENT_ID);
+      if (text.includes(STUDENT_ID)) sawPreservedNumber = true;
     }
+    // The student number IS delivered inside the table: it is the operational key the
+    // scores are joined on. Asserting it positively keeps this suite honest about what
+    // the boundary does and does not cover.
+    expect(sawPreservedNumber).toBe(true);
   }, 60_000);
 
   it("identifies a withheld file by documentId + kind-only displayName, never a path", async () => {

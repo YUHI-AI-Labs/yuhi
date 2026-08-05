@@ -1,8 +1,8 @@
 {
   "name": "yuhi-code",
-  "displayName": "Yuhi Code \u2014 See What Your AI Agent Sees",
+  "displayName": "Yuhi Code — See What Your AI Agent Sees",
   "description": "Dynamic Context for the official Claude Code VS Code experience. Compress eligible tool outputs, retrieve omitted context when needed, and keep the session isolated from your normal VS Code environment.",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -360,7 +360,7 @@
           "default": "developer",
           "enumDescriptions": [
             "Developer Mode: project configuration, including .env, may be read by Claude Code. Raw values are never written to Yuhi logs, evidence or UI.",
-            "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content \u2014 it is not a guarantee that every secret or identifier is removed."
+            "Strict Mode: masks detected secrets and supported identifiers before delivery (the 0.3.x behaviour). Detection coverage depends on file format and content — it is not a guarantee that every secret or identifier is removed."
           ],
           "description": "How detected secrets are handled during a dynamic context session."
         },

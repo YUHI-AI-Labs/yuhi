@@ -14,7 +14,7 @@ import {
   classifyStudentRecordTable,
   parseDelimitedTable,
   splitTablePreamble,
-  tabularDirectIdentifierValues,
+  requiresPseudonymization,
   tabularVerificationValues,
   tabularResidueCells,
   inspectXlsxRecords,
@@ -2321,12 +2321,18 @@ export async function prepareWorkspace(
             const outputTable = parseTabularRegion(prep.output);
             stages.push({ stage: "parse", pass: true, leak: false });
             const inputClassification = classifyStudentRecordTable(inputTable.rows);
-            const directIndexes = new Set(inputClassification.directIdentifierIndexes);
-            const rawIdentifiers = new Set(tabularDirectIdentifierValues(content));
+            // Scoped to DIRECT PERSONAL columns. A preserved student id, course code or
+            // employee number is policy-compliant output, not residue — comparing every
+            // classified column would fail this gate for doing exactly what was asked,
+            // and block the delivery of a correctly prepared file.
+            const personalIndexes = inputClassification.directIdentifierIndexes.filter(
+              (_, offset) =>
+                requiresPseudonymization(inputClassification.directIdentifierTypes[offset]!),
+            );
+            const directIndexes = new Set(personalIndexes);
+            const rawIdentifiers = new Set(tabularVerificationValues(content));
             const outputDirectValues = outputTable.rows.slice(1).flatMap((row) =>
-              inputClassification.directIdentifierIndexes
-                .map((index) => (row[index] ?? "").trim())
-                .filter(Boolean),
+              personalIndexes.map((index) => (row[index] ?? "").trim()).filter(Boolean),
             );
             const nonNumericIdentifiers = [...rawIdentifiers].filter(
               (value) => !/^[+-]?(?:\d+|\d*\.\d+)$/.test(value),

@@ -30,10 +30,17 @@ interface Row {
   grade: string;
 }
 
+/** Digit-free katakana so the value shape reads as a NAME, as a real name does. */
+const kana = (i: number): string =>
+  "ヤマダ" +
+  "アイウエオカキクケコ"[Math.floor(i / 100) % 10] +
+  "サシスセソタチツテト"[Math.floor(i / 10) % 10] +
+  "ナニヌネノハヒフヘホ"[i % 10];
+
 const rows: Row[] = Array.from({ length: ROWS }, (_, i) => ({
   // Leading-zero IDs: must survive as distinct values and never be numeric-coerced.
   sid: `0${String(i + 1).padStart(6, "0")}`,
-  name: `STUDENT_CANARY_${String(i + 1).padStart(4, "0")}`,
+  name: kana(i),
   course: "COURSE_CANARY",
   instructor: "INSTRUCTOR_CANARY",
   grade: String(60 + (i % 41)),
@@ -70,7 +77,17 @@ async function xlsxBuffer(rs: readonly Row[]): Promise<Buffer> {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-/** Map source sid -> delivered token, from a delimited output. */
+/**
+ * Map source sid -> the delivered NAME token, from a delimited output.
+ *
+ * Two different properties are checked in this file and they must not be confused:
+ *
+ *   1. The student id is an OPERATIONAL key and is PRESERVED, so a join on it works
+ *      because the values are literally unchanged. `preservesOperationalKeys` asserts
+ *      that directly.
+ *   2. The same person's NAME must carry the SAME token in CSV, TXT and XLSX. That is
+ *      the cross-format registry property, and it is what 0.4.7 will extend to PDF.
+ */
 function tokensFromCsv(output: string, sidColumn: number, order: readonly Row[]): Map<string, string> {
   const table = parseDelimitedTable(output);
   const body = table.rows.slice(table.rows.length === order.length ? 0 : 1);
@@ -172,12 +189,60 @@ describe("cross-format pseudonym join over 730 rows", () => {
     }
     const all = outputs.join("\n") + "\n" + xlsxText.join("\n");
 
-    let residue = 0;
+    // Residue is now defined over DIRECT PERSONAL values only. A student id surviving
+    // verbatim is the point of the taxonomy, not a leak: the person is protected by the
+    // masked name, and the key is what the analysis joins on.
+    let personalResidue = 0;
+    let operationalPreserved = 0;
     for (const r of rows) {
-      if (all.includes(r.sid)) residue += 1;
-      if (all.includes(r.name)) residue += 1;
+      if (all.includes(r.name)) personalResidue += 1;
+      if (all.includes(r.sid)) operationalPreserved += 1;
     }
-    expect(residue).toBe(0);
+    expect(personalResidue).toBe(0);
+    expect(operationalPreserved).toBe(rows.length);
+  });
+
+  it("joins across CSV and XLSX on the preserved operational key", async () => {
+    const context = createStudentAliasContext();
+    const csvOut = pseudonymizeStudentRecords(csv(rows), context).output;
+    const xlsx = await pseudonymizeXlsxRecords(await xlsxBuffer(shuffled(rows, 11)), context);
+
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(xlsx.output as never);
+    const sheet = wb.worksheets[0]!;
+
+    // CSV: sid -> name token.
+    const fromCsv = new Map<string, string>();
+    for (const row of parseDelimitedTable(csvOut).rows.slice(1)) {
+      if (row.length >= 2) fromCsv.set(row[0]!, row[1]!);
+    }
+
+    // XLSX: the same map, read from a DIFFERENT row order and a different format.
+    const fromXlsx = new Map<string, string>();
+    sheet.eachRow((row, index) => {
+      if (index === 1) return;
+      const sid = String(row.getCell(1).text);
+      const name = String(row.getCell(2).text);
+      if (sid) fromXlsx.set(sid, name);
+    });
+
+    expect(fromCsv.size).toBe(rows.length);
+    expect(fromXlsx.size).toBe(rows.length);
+
+    // 1. The join key is intact on both sides, so the join rate is total.
+    const joined = [...fromCsv.keys()].filter((sid) => fromXlsx.has(sid));
+    expect(joined.length).toBe(rows.length);
+
+    // 2. Every source id survived unchanged — the join is on the ORIGINAL key.
+    expect(joined.every((sid) => rows.some((r) => r.sid === sid))).toBe(true);
+
+    // 3. One person carries ONE name token in both formats. This is the property
+    //    0.4.7 extends to extracted document text.
+    const disagreements = joined.filter((sid) => fromCsv.get(sid) !== fromXlsx.get(sid));
+    expect(disagreements).toEqual([]);
+
+    // 4. The token is a masked name, not the original.
+    expect([...fromCsv.values()].every((token) => /^PERSON-\d{3,}$/.test(token))).toBe(true);
   });
 
   it("keeps leading-zero identifiers distinct rather than coercing them", () => {
