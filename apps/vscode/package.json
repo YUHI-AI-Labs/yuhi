@@ -1,7 +1,7 @@
 {
   "name": "yuhi-code",
   "displayName": "Yuhi Code — See What Your AI Agent Sees",
-  "description": "Dynamic Context for the official Claude Code VS Code experience. Compress eligible tool outputs, retrieve omitted context when needed, and keep the session isolated from your normal VS Code environment.",
+  "description": "Prepare your workspace before Claude Code sees it. One Privacy Mode across Static Prepare, Dynamic Terminal, and Native Claude GUI — transform direct personal identifiers, redact secrets, and keep the session isolated from your normal VS Code environment.",
   "version": "0.4.8",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",

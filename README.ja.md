@@ -35,7 +35,7 @@ Repository Ready
   Secrets blocked             18
   Identifiers transformed    103
 
-  Estimated accessible-content reduction: 94%
+  Estimated accessible-content reduction: (リポジトリ構成に依存)
 
 Ready for Claude Code.
 ```
@@ -91,7 +91,7 @@ Yuhi はシンプルな問いに答えます — *このリポジトリのうち
 ```bash
 yuhi report <run> --format markdown   # a table for your README or PR
 yuhi report <run> --format json       # machine-readable, for CI
-yuhi report <run> --format svg        # a "Prepared with Yuhi — 94% reduced" badge
+yuhi report <run> --format svg        # a "Prepared with Yuhi" badge with your run's own numbers
 ```
 
 バッジを README に貼りましょう:
@@ -223,7 +223,7 @@ Issue と PR を歓迎します — [`CONTRIBUTING.md`](./docs/CONTRIBUTING.md) 
 
 `yuhi launch claude --dynamic-context`、または VS Code の **Yuhi: Start Claude Code with Dynamic Context** で、Claude Code をローカルゲートウェイ経由で起動します。新しい tool result は毎回、非公開に保存 → スキャン → 圧縮 → 再スキャンを経てからプロバイダへ送られ、省略した部分は常に取得可能なまま残ります。
 
-実測（実 Claude Code・haiku・n=3・プロバイダ報告値）: パッチ正答 3/3、入力側トークン −22%、プロバイダ実費 −13%、配信 tool output −70%。*結果はタスク・モデル・キャッシュ挙動・retrieval 設定により変わります。*
+コンテキスト削減量はリポジトリ構成・タスク・モデル・キャッシュ挙動・retrieval 設定により変わります。測定方法の詳細はベンチマークレポートに記載しています。数値は v0.5 で再測定予定です。
 
 ### Developer Mode
 

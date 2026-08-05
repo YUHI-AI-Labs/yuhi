@@ -35,7 +35,7 @@ Repository Ready
   Secrets blocked             18
   Identifiers transformed    103
 
-  Estimated accessible-content reduction: 94%
+  Estimated accessible-content reduction: (取决于仓库结构)
 
 Ready for Claude Code.
 ```
@@ -88,7 +88,7 @@ Yuhi 回答一个简单的问题——*这个仓库里，AI 真正应该看到�
 ```bash
 yuhi report <run> --format markdown   # a table for your README or PR
 yuhi report <run> --format json       # machine-readable, for CI
-yuhi report <run> --format svg        # a "Prepared with Yuhi — 94% reduced" badge
+yuhi report <run> --format svg        # a "Prepared with Yuhi" badge with your run's own numbers
 ```
 
 把徽章放进你的 README:
@@ -221,7 +221,7 @@ apps/      cli · vscode
 
 `yuhi launch claude --dynamic-context`（或 VS Code 中的 **Yuhi: Start Claude Code with Dynamic Context**）让 Claude Code 通过本地网关运行：每个新的 tool result 都会先被私有存储、扫描、压缩并二次扫描，然后才发送给提供方；被省略的部分始终可以取回。
 
-实测（真实 Claude Code、haiku、n=3、提供方报告值）：补丁正确 3/3，输入侧 token −22%，提供方费用 −13%，投递的 tool output −70%。*结果因任务、模型、缓存行为与 retrieval 配置而异。*
+上下文削减幅度取决于仓库结构、任务、模型、缓存行为与 retrieval 配置。测量方法详见基准测试报告；具体数值将在 v0.5 重新测定。
 
 ### Developer Mode
 

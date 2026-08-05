@@ -561,7 +561,7 @@ Isolated VS Code Window
           <div class="sv-row"><span data-i18n="sv_before">準備前の推定コンテキスト</span><b class="mono">48,320</b></div>
           <div class="sv-row"><span data-i18n="sv_after">準備後の推定コンテキスト</span><b class="mono">9,840</b></div>
           <div class="sv-row avoided"><span data-i18n="sv_avoided">推定削減コンテキスト</span><b class="mono">38,480</b></div>
-          <div class="sv-row reduc"><span data-i18n="sv_reduction">削減率</span><b class="mono">79.6%</b></div>
+          <div class="sv-row reduc"><span data-i18n="sv_reduction">削減率</span><b class="mono">—</b></div>
         </div>
         <div class="sv-grid">
           <div><b class="mono">42</b><span data-i18n="sv_excluded">送信対象から除外したファイル</span></div>
@@ -589,7 +589,7 @@ Isolated VS Code Window
           <div class="rep-r"><span>✓ Secrets blocked</span><b class="stars">★★★★★</b></div>
           <div class="rep-r"><span>✓ Documents prepared</span><b class="stars">★★★★☆</b></div>
           <div class="rep-r"><span>✓ Repository structure</span><b class="stars">★★★★★</b></div>
-          <div class="rep-r"><span>✓ Context reduction</span><b>94%</b></div>
+          <div class="rep-r"><span>✓ Context reduction</span><b>—</b></div>
           <div class="rep-base">5,224 files → 317 AI-ready artifacts · 18 secrets blocked · 42 documents prepared</div>
           <div class="rep-stat">✓ Claude Code Ready</div>
         </div>
@@ -708,8 +708,8 @@ Isolated VS Code Window
       dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
       dyn_pass:"Small outputs, and Reads that compression could break, may pass through unchanged. Yuhi does not compress everything Claude Code sends.",
       dyn_exh:"Measured examples (real Claude Code GUI)",
-      dyn_ex1:"Developer Mode run — 37 tool results observed, 1 eligible block compressed, 52.7% estimated dynamic tool-output reduction, 121/121 tests passed, one file changed.",
-      dyn_ex2:"Retrieval run — 84 tool results observed, 3 eligible blocks compressed, 85.9% estimated dynamic tool-output reduction, 1 bounded retrieval that returned the correct record.",
+      dyn_ex1:"Developer Mode run — tool results observed and eligible blocks compressed; reduction depends on content. All tests passed; one file changed.",
+      dyn_ex2:"Retrieval run — tool results observed and eligible blocks compressed; a bounded retrieval returned the correct record.",
       dyn_note:"Dynamic reduction is the estimated reduction in delivered tool-result blocks that the Gateway transformed. It is not a reduction in session-wide provider input tokens, billing, or wall-clock time. Results vary by task, model, Claude Code behaviour, caching and retrieval configuration.",
       md_h:"Delivery Modes",
       md_dh:"Developer Mode — default",
@@ -747,7 +747,7 @@ Isolated VS Code Window
       hero_sub:"Yuhi dynamically optimizes the context used by Claude Code. It compresses eligible tool outputs, retrieves omitted regions only when needed, and runs in an isolated VS Code environment.", vsc_ey:"In your editor", vsc_h2:"Prepare and launch — inside VS Code.", vsc_sub:"Run Yuhi from the extension, review the prepared context, then start Claude Code.", vsc_cap:"The extension is Available — Beta on the VS Code Marketplace.",
       hero_tag:"Dynamic Context for the official Claude Code VS Code experience.",
       hero_start:"Get started", hero_github:"View on GitHub →", copy:"copy",
-      dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code runs through a local Yuhi gateway. Each new tool result is stored privately, scanned, compressed and re-scanned before it reaches the provider — and everything withheld stays retrievable.", dyn_m:"Measured on a real edit-and-verify loop (Claude Code, haiku, n=3, provider-reported): correct patches 3/3, input-side tokens −22%, provider cost −13%, delivered tool output −70%. Results vary by task, model, cache behaviour, and retrieval configuration.", dyn_dh:"Developer Mode", dyn_d1:"Claude Code may use project configuration, including .env.", dyn_d2:"Raw secret values are excluded from Yuhi logs, evidence, statistics, and UI.", dyn_d3:"Private keys, certificates, recovery keys and seed phrases are masked in every mode.", dyn_d4:"Direct re-exposure is detected and audited where possible.", dyn_d5:"Egress detection is a tripwire, not a complete prevention control.", dyn_d6:"Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is not a guarantee that every secret or identifier is removed.",
+      dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code runs through a local Yuhi gateway. Each new tool result is stored privately, scanned, compressed and re-scanned before it reaches the provider — and everything withheld stays retrievable.", dyn_m:"Context reduction depends on repository structure, task, model, cache behaviour, and retrieval configuration. Measurement details are documented in the benchmark reports; numeric results will be regenerated for v0.5.", dyn_dh:"Developer Mode", dyn_d1:"Claude Code may use project configuration, including .env.", dyn_d2:"Raw secret values are excluded from Yuhi logs, evidence, statistics, and UI.", dyn_d3:"Private keys, certificates, recovery keys and seed phrases are masked in every mode.", dyn_d4:"Direct re-exposure is detected and audited where possible.", dyn_d5:"Egress detection is a tripwire, not a complete prevention control.", dyn_d6:"Strict Mode masks detected secrets and supported identifiers before delivery. Detection coverage depends on file format and content. It is not a guarantee that every secret or identifier is removed.",
       flow_n1k:"Your repository", flow_n1v:"files, secrets, data", flow_midv:"prepared locally", flow_n3k:"Your agent", flow_n3v:"a clean context",
       demo_ey:"30-second demo",
       demo_h2:"See exactly what the agent will — and won't — receive.",
@@ -804,8 +804,8 @@ Isolated VS Code Window
       dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
       dyn_pass:"圧縮対象外の小さな出力や、圧縮するとタスクを壊す可能性のあるReadは、そのまま通過する場合があります。すべてを圧縮するわけではありません。",
       dyn_exh:"実Claude Code GUIでの測定例",
-      dyn_ex1:"Developer Mode run — ツール実行結果37件を観測、適格ブロック1件を圧縮、推定ツール実行結果削減 52.7%、テスト 121/121 合格、変更ファイル1件。",
-      dyn_ex2:"Retrieval run — ツール実行結果84件を観測、適格ブロック3件を圧縮、推定ツール実行結果削減 85.9%、bounded retrieval 1件で正しい対象レコードを取得。",
+      dyn_ex1:"Developer Mode run — ツール実行結果を観測し、対象ブロックを圧縮。削減量は内容により異なります。テストはすべて合格、変更ファイル1件。",
+      dyn_ex2:"Retrieval run — ツール実行結果を観測し、対象ブロックを圧縮。bounded retrieval により正しい対象レコードを取得。",
       dyn_note:"Dynamic reduction は、Gatewayが変換した tool-result block の推定配信量に対する削減率です。セッション全体の provider input token、請求額、処理時間の削減率ではありません。結果はタスク・モデル・Claude Codeの挙動・キャッシュ・Retrieval設定によって変わります。",
       md_h:"Delivery Modes",
       md_dh:"Developer Mode — 既定",
@@ -835,7 +835,7 @@ Isolated VS Code Window
       lim_7:"絶対token数は現在フォールバックのヒューリスティックを使っており、JSONなど密なデータでは大きくずれる場合があります。",
       lim_8:"巨大な単一行ファイルや Read の繰り返しにより、セッション単位の節約が減る、あるいは逆転する場合があります。",
       ng_h:"ネイティブ Claude GUI (v0.4.1)", ng_p:"公式 Claude Code の GUI を、そのまま Yuhi Dynamic Context 経由で使えます。コマンド1つで、公式 Anthropic 拡張が隔離ウィンドウで開き、その Claude プロセスが Yuhi ゲートウェイを通ります。", ng_1:"通常の VS Code 環境とは分離 — 専用の user-data と extensions ディレクトリで動きます。", ng_2:"Developer Mode と Strict Mode。CLI と同じポリシーです。", ng_3:"ツール実行結果を動的に圧縮し、省略した部分は取得可能なまま残ります。", ng_4:"必要な部分だけの retrieval。既定はオフで、必要なときに有効化できます。", ng_5:"ウィンドウを閉じるとセッションが終了し、ゲートウェイも停止します。", ng_m:"Yuhi はあなたの Claude 認証情報を読み取り・複製・保存しません。既存の Claude Code 認証は利用できます。隔離環境内での初回サインインは未検証です。", ng_disc:"macOS で実機確認済み。Linux・Windows は実装済みですが実 GUI 未検証、リモート環境（SSH・WSL・Dev Container・Codespaces）は非対応です — そこでは Dynamic Terminal Mode をお使いください。隔離ウィンドウは workspace trust を無効化して起動します。VS Code の Restricted Mode では Claude と Yuhi の双方が無効化されてしまうためです。",
-      dyn_h:"動的コンテキスト（v0.4.0）", dyn_p:"Claude CodeをローカルのYuhiゲートウェイ経由で実行します。新しいツール実行結果は、端末内に保存された後、スキャン、圧縮、再スキャンを経てプロバイダーへ送信されます。省略された内容は端末内に保持され、必要に応じて再取得できます。", dyn_m:"実測結果（Claude Code、Claude Haiku、3試行、プロバイダー報告値）：パッチ正答3/3、入力トークン22%削減、プロバイダー利用料金13%削減、送信したツール実行結果70%削減。結果は、タスク、モデル、キャッシュ、取得設定によって異なります。", dyn_dh:"Developer Mode", dyn_d1:"Developer Modeでは、Claude Codeが.envを含むプロジェクト設定を利用できます。", dyn_d2:"シークレットの元の値は、Yuhiのログ、監査記録、統計、UIには記録されません。", dyn_d3:"秘密鍵、証明書、リカバリーキー、シードフレーズは、どのモードでもマスク対象になります。", dyn_d4:"エージェントがシークレット値を出力し直した場合は、可能な範囲で検知し、監査記録に残します。", dyn_d5:"外部送信の検知機能は補助的な監視機構であり、情報流出を完全に防止するものではありません。", dyn_d6:"Strict Modeでは、検出されたシークレットと対応対象の識別子を、送信前にマスクします。検出できる範囲は、ファイル形式と内容によって異なります。すべてのシークレットや識別子を除去できるとは限りません。",
+      dyn_h:"動的コンテキスト（v0.4.0）", dyn_p:"Claude CodeをローカルのYuhiゲートウェイ経由で実行します。新しいツール実行結果は、端末内に保存された後、スキャン、圧縮、再スキャンを経てプロバイダーへ送信されます。省略された内容は端末内に保持され、必要に応じて再取得できます。", dyn_m:"コンテキスト削減量はリポジトリ構成・タスク・モデル・キャッシュ挙動・retrieval設定により変わります。測定方法の詳細はベンチマークレポートに記載しています。数値はv0.5で再測定予定です。", dyn_dh:"Developer Mode", dyn_d1:"Developer Modeでは、Claude Codeが.envを含むプロジェクト設定を利用できます。", dyn_d2:"シークレットの元の値は、Yuhiのログ、監査記録、統計、UIには記録されません。", dyn_d3:"秘密鍵、証明書、リカバリーキー、シードフレーズは、どのモードでもマスク対象になります。", dyn_d4:"エージェントがシークレット値を出力し直した場合は、可能な範囲で検知し、監査記録に残します。", dyn_d5:"外部送信の検知機能は補助的な監視機構であり、情報流出を完全に防止するものではありません。", dyn_d6:"Strict Modeでは、検出されたシークレットと対応対象の識別子を、送信前にマスクします。検出できる範囲は、ファイル形式と内容によって異なります。すべてのシークレットや識別子を除去できるとは限りません。",
       _title:"Yuhi — Claudeに、全部を渡さない。",
       _desc:"Yuhiは、文書やコードをAIに渡す前にローカルで整えます。必要な情報だけを残し、機密情報と入力トークンを同時に減らします。ローカルファースト、Apache-2.0。",
       nav_install:"インストール", nav_docs:"ドキュメント", nav_roadmap:"ロードマップ",
@@ -894,15 +894,15 @@ Isolated VS Code Window
       avail:"ベータ版を提供中", foot_neutral:"ベンダー非依存", foot_demo:"デモ", foot_routes:"4つの分類", foot_start:"使ってみる"
     },
     "zh-cn": {
-      dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code 通过本地 Yuhi 网关运行。每个新的 tool result 都会先被私密保存、扫描、压缩并再次扫描，然后才到达提供方；被省略的内容仍可检索。", dyn_m:"在真实的编辑-验证循环中测得（Claude Code、haiku、n=3、提供方报告值）：补丁正确 3/3，输入侧 token −22%，提供方费用 −13%，投递的 tool output −70%。结果随任务、模型、缓存行为与 retrieval 配置而变化。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code 可以使用包含 .env 在内的项目配置。", dyn_d2:"原始 secret 值不会写入 Yuhi 的日志、evidence、统计与 UI。", dyn_d3:"私钥、证书、恢复密钥与助记词在所有模式下都会被屏蔽。", dyn_d4:"可检测范围内的直接再暴露会被检测并审计。", dyn_d5:"Egress 检测是一道警戒线，而非完整的阻止机制。", dyn_d6:"Strict Mode 在投递前屏蔽已检出的 secret 与受支持的标识符。覆盖范围取决于文件格式与内容，并不保证移除全部 secret 或标识符。",
+      dyn_h:"Dynamic Context (v0.4.0)", dyn_p:"Claude Code 通过本地 Yuhi 网关运行。每个新的 tool result 都会先被私密保存、扫描、压缩并再次扫描，然后才到达提供方；被省略的内容仍可检索。", dyn_m:"上下文削减幅度取决于仓库结构、任务、模型、缓存行为与 retrieval 配置。测量方法详见基准测试报告；具体数值将在 v0.5 重新测定。", dyn_dh:"Developer Mode", dyn_d1:"Claude Code 可以使用包含 .env 在内的项目配置。", dyn_d2:"原始 secret 值不会写入 Yuhi 的日志、evidence、统计与 UI。", dyn_d3:"私钥、证书、恢复密钥与助记词在所有模式下都会被屏蔽。", dyn_d4:"可检测范围内的直接再暴露会被检测并审计。", dyn_d5:"Egress 检测是一道警戒线，而非完整的阻止机制。", dyn_d6:"Strict Mode 在投递前屏蔽已检出的 secret 与受支持的标识符。覆盖范围取决于文件格式与内容，并不保证移除全部 secret 或标识符。",
       nav_gui:"Native GUI",
       hero_vsix:"安装到 VS Code",
       hero_rel:"查看 v0.4.6 发布 →",
       dyn_flow:"Large tool output\\n  -> Yuhi Gateway\\n  -> compress only eligible output\\n  -> retrieve omitted ranges on demand\\n  -> Claude Code",
       dyn_pass:"较小的输出，以及压缩后可能破坏任务的 Read，可能会原样通过。Yuhi 并不会压缩 Claude Code 发送的所有内容。",
       dyn_exh:"真实 Claude Code GUI 的测量示例",
-      dyn_ex1:"Developer Mode — 观测到 37 个 tool result，压缩 1 个符合条件的块，估计 dynamic tool-output 降低 52.7%，测试 121/121 通过，仅改动 1 个文件。",
-      dyn_ex2:"Retrieval — 观测到 84 个 tool result，压缩 3 个符合条件的块，估计 dynamic tool-output 降低 85.9%，1 次 bounded retrieval 取回了正确的记录。",
+      dyn_ex1:"Developer Mode — 观测 tool result 并压缩符合条件的块，削减幅度取决于内容。全部测试通过，仅改动 1 个文件。",
+      dyn_ex2:"Retrieval — 观测 tool result 并压缩符合条件的块，通过 bounded retrieval 取回了正确的记录。",
       dyn_note:"Dynamic reduction 指网关所转换的 tool-result block 的估计投递量降幅，并不等于整个会话的 provider input token、账单或耗时的降幅。结果随任务、模型、Claude Code 行为、缓存与 retrieval 配置而变化。",
       md_h:"Delivery Modes",
       md_dh:"Developer Mode — 默认",

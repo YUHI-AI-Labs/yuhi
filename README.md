@@ -43,7 +43,7 @@ Repository Ready
   Secrets blocked             18
   Identifiers transformed    103
 
-  Estimated accessible-content reduction: 94%
+  Estimated accessible-content reduction: (repository-dependent)
 
 Ready for Claude Code.
 ```
@@ -176,9 +176,9 @@ through a local gateway. Each new tool result is stored
 privately, scanned, compressed and re-scanned before it reaches the provider, and everything
 withheld stays retrievable.
 
-Measured on a real edit-and-verify loop (Claude Code, haiku, n=3, provider-reported usage):
-correct patches 3/3, input-side tokens −22%, provider cost −13%, delivered tool output −70%.
-*Results vary by task, model, cache behaviour, and retrieval configuration.*
+Context reduction depends on repository structure, task, model, cache behaviour, and
+retrieval configuration. Measurement details are documented in the benchmark reports;
+numeric results will be regenerated for v0.5.
 
 ### Developer Mode
 
@@ -213,7 +213,7 @@ filename, path, secret type, or identity — so it's safe to paste into a README
 ```bash
 yuhi report <run> --format markdown   # a table for your README or PR
 yuhi report <run> --format json       # machine-readable, for CI
-yuhi report <run> --format svg        # a "Prepared with Yuhi — 94% reduced" badge
+yuhi report <run> --format svg        # a "Prepared with Yuhi" badge with your run's own numbers
 ```
 
 Drop the badge in your README:
