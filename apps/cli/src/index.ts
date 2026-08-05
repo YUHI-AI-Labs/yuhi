@@ -11,6 +11,12 @@ import {
   type WorkspaceManifest,
 } from "@yuhi/shared";
 import {
+  resolvePrivacyPolicy,
+  privacyModeCopyFor,
+  PrivacyModeResolutionError,
+  type PrivacyMode,
+} from "@yuhi/shared";
+import {
   runInit,
   computePlan,
   buildPreview,
@@ -599,6 +605,12 @@ async function main(): Promise<void> {
     .command("prepare [dir]")
     .description("Prepare a local, reduced copy of your context (never sent anywhere)")
     .option("--safety-mode <mode>", "balanced | strict | maximum-privacy (default: balanced)")
+    .option("--privacy-mode <mode>", "balanced | strict | trusted-local (default: balanced)")
+    .option(
+      "--acknowledge-unmasked-data",
+      "required (non-interactive) to select --privacy-mode trusted-local",
+      false,
+    )
     .option("--compress", "opt-in v0.3.3 structure compression of the delivered context", false)
     .option("--token-budget <n>", "best-effort token budget for the delivered context")
     .option("--wait-background", "opt-in: run deferred background preparation to completion before returning", false)
@@ -617,6 +629,7 @@ async function main(): Promise<void> {
           }
           safetyMode = rawSafetyMode;
         }
+        const rawPrivacyMode = (cmd.opts().privacyMode as string | undefined) ?? "";
 
         const compress = Boolean(cmd.opts().compress);
         const rawTokenBudget = cmd.opts().tokenBudget as string | undefined;
@@ -654,11 +667,57 @@ async function main(): Promise<void> {
           console.log(`Safety Mode: ${safetyModeLabel(effectiveSafetyMode)}`);
         }
 
+        // Effective Privacy Mode: CLI flag > yuhi.yaml `privacy.mode` > balanced
+        // (Section 5 precedence — a DIFFERENT axis from Safety Mode; see
+        // packages/shared/src/privacy-mode.ts's module doc comment).
+        let acknowledgedTrustedLocal = Boolean(cmd.opts().acknowledgeUnmaskedData);
+        // Interactive fallback: `confirm()` returns the default (false) when
+        // non-interactive, so this line alone satisfies BOTH "prompt when a human is
+        // there" and "fail closed when not" without a separate TTY check — but only
+        // ask when the flag wasn't already given and the selection is actually
+        // trusted-local, so a plain `yuhi prepare` never prompts.
+        const candidateMode = rawPrivacyMode || loaded.config.privacy?.mode || "";
+        if (!acknowledgedTrustedLocal && candidateMode === "trusted-local") {
+          acknowledgedTrustedLocal = await confirm(
+            "Trusted Local delivers personal identifiers unchanged. Continue?",
+            false,
+          );
+        }
+        let privacyMode: PrivacyMode;
+        try {
+          privacyMode = resolvePrivacyPolicy({
+            candidates: [
+              { mode: rawPrivacyMode, source: "cli" },
+              { mode: loaded.config.privacy?.mode ?? "", source: "workspace-config" },
+            ],
+            trustedLocalAcknowledged: acknowledgedTrustedLocal,
+          }).mode;
+        } catch (err) {
+          if (err instanceof PrivacyModeResolutionError) {
+            console.error(`${symbols.err()} ${err.message}`);
+            if (err.code === "trusted-local-not-acknowledged") {
+              console.error("Re-run with --acknowledge-unmasked-data to proceed non-interactively.");
+            } else {
+              console.error("Use: balanced, strict, trusted-local.");
+            }
+            return 3;
+          }
+          throw err;
+        }
+        if (!g.json) {
+          const copy = privacyModeCopyFor(privacyMode, "static-prepare");
+          console.log(`Privacy: ${copy.title}`);
+          if (privacyMode === "trusted-local") {
+            for (const line of copy.en.split("\n")) if (line) console.log(line);
+          }
+        }
+
         const mode = loaded.config.budget?.reduction_mode;
         const res = await prepareWorkspace(target, {
           providerFactory,
           ...(mode !== undefined ? { mode } : {}),
           safetyMode: effectiveSafetyMode,
+          privacyMode,
           compress,
           ...(tokenBudget !== null ? { tokenBudget } : {}),
         });
