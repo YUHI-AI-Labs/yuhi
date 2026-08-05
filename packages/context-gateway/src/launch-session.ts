@@ -18,6 +18,12 @@ import { join } from "node:path";
 import { startGateway, type GatewayHandle, type GatewayStats } from "./server.js";
 import type { RetrievalMode } from "./anthropic/transform.js";
 import { policyForMode, type DeliveryMode } from "@yuhi/context-runtime";
+import {
+  privacyModeFromLegacyDeliveryMode,
+  resolveDeliveryPolicy,
+  type PrivacyMode,
+  type StudentAliasContext,
+} from "@yuhi/shared";
 
 export const GATEWAY_STARTUP_TIMEOUT_MS = 15_000;
 export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "disabled";
@@ -33,11 +39,33 @@ export interface DynamicClaudeSessionOptions {
    */
   readonly retrievalMode?: RetrievalMode;
   /**
-   * What a detected secret means for delivery. `developer` (default) lets the agent read
-   * project configuration; `strict` masks detected secrets before they leave, which is the
-   * 0.3.x behaviour and the right choice when the folder holds documents rather than code.
+   * LEGACY. What a detected secret means for delivery. `developer` (default) lets the
+   * agent read project configuration; `strict` masks detected secrets before they
+   * leave. Superseded by `privacyMode` (v0.4.8) — when `privacyMode` is given, this
+   * field is ignored; when it is not, `deliveryMode` maps onto `privacyMode` via
+   * `privacyModeFromLegacyDeliveryMode` so existing callers keep their exact current
+   * behavior (`developer` -> Balanced, `strict` -> Strict) until they migrate.
    */
   readonly deliveryMode?: DeliveryMode;
+  /**
+   * What happens to DIRECT PERSONAL IDENTIFIERS, and (composed with this surface) what
+   * a detected SECRET means for delivery (v0.4.8 Phase 3B) — see `@yuhi/shared`'s
+   * `resolveDeliveryPolicy`. Takes precedence over the legacy `deliveryMode`. Defaults
+   * to Balanced.
+   */
+  readonly privacyMode?: PrivacyMode;
+  /**
+   * Required when `privacyMode` is `"trusted-local"` — the caller (CLI/VS Code) is
+   * responsible for having already run `resolvePrivacyPolicy`'s acknowledgement gate;
+   * this is not re-validated here, only carried through into the resolved policy.
+   */
+  readonly privacyModeAcknowledged?: boolean;
+  /**
+   * The session's de-identification registry. Fresh per session by default. A caller
+   * that persists one across a restart (mirroring Static Prepare's
+   * alias-registry-store) can restore it here so a name keeps its token.
+   */
+  readonly aliasContext?: StudentAliasContext;
   /** Upstream base URL. Defaults to the public API; an enterprise gateway chains here. */
   readonly upstreamBaseUrl?: string;
   readonly sessionId?: string;
@@ -68,6 +96,7 @@ export interface DynamicClaudeSession {
   readonly contextRoot: string;
   readonly retrievalMode: RetrievalMode;
   readonly deliveryMode: DeliveryMode;
+  readonly privacyMode: PrivacyMode;
   readonly readyMs: number;
   readonly command: DynamicSessionCommand;
   getStats(): Promise<DynamicContextStats>;
@@ -114,13 +143,28 @@ export async function startDynamicClaudeSession(
   const log = options.log ?? ((): void => {});
   const start = options.startGatewayImpl ?? startGateway;
 
+  // Privacy Mode wins when given; otherwise the legacy deliveryMode maps onto it, so
+  // an unmigrated caller's SECRET behavior is byte-identical to today (see the
+  // `deliveryMode` doc comment). Composed for THIS surface (dynamic-terminal and
+  // native-gui share this one function, both via `startDynamicClaudeSession`).
+  const privacyMode: PrivacyMode =
+    options.privacyMode ?? privacyModeFromLegacyDeliveryMode(options.deliveryMode ?? "developer");
+  const resolved = resolveDeliveryPolicy({
+    privacyMode,
+    surface: "dynamic-terminal",
+    warningAcknowledged: options.privacyModeAcknowledged ?? true,
+  });
+  const deliveryPolicy = policyForMode(resolved.secretDeliveryMode === "redact" ? "strict" : "developer");
+
   const began = now();
   let gateway: GatewayHandle;
   try {
     gateway = await start({
       storeRoot: contextRoot,
       retrievalMode,
-      deliveryPolicy: policyForMode(options.deliveryMode ?? "developer"),
+      deliveryPolicy,
+      privacyMode,
+      ...(options.aliasContext ? { aliasContext: options.aliasContext } : {}),
       sessionOverride: sessionId,
       ...(options.upstreamBaseUrl ? { upstreamBaseUrl: options.upstreamBaseUrl } : {}),
       log,
@@ -160,7 +204,8 @@ export async function startDynamicClaudeSession(
     sessionId,
     contextRoot,
     retrievalMode,
-    deliveryMode: options.deliveryMode ?? "developer",
+    deliveryMode: resolved.secretDeliveryMode === "redact" ? "strict" : "developer",
+    privacyMode,
     readyMs,
     command: {
       file: options.claudeCommand ?? "claude",

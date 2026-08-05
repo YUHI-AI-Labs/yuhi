@@ -12,12 +12,20 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
+import { readFile } from "node:fs/promises";
+
+import {
+  isPrivacyMode,
+  privacyModeCopyFor,
+  privacyModeFromLegacyDeliveryMode,
+  resolvePrivacyPolicy,
+  PrivacyModeResolutionError,
+  type PrivacyMode,
+  type StudentAliasContext,
+} from "@yuhi/shared";
 import type { AgentCommand } from "@yuhi/shared";
 import type { AgentRunOutcome } from "@yuhi/agents";
 import { runCommand } from "@yuhi/agents";
-import { DEVELOPER_MODE_NOTICE, STRICT_MODE_POLICY } from "@yuhi/context-runtime";
-
-const STRICT_MODE_NOTICE = STRICT_MODE_POLICY.notice;
 import {
   startDynamicClaudeSession,
   type DynamicClaudeSession,
@@ -30,6 +38,99 @@ import { performLaunch, resolveRunForLaunch, type PerformLaunchOptions } from ".
 import { detectUpstream, type UpstreamConfig } from "./environment.js";
 import { writeMcpConfig } from "./gateway-process.js";
 import { formatStatsReport } from "./stats.js";
+
+/**
+ * The Privacy Mode Static Prepare recorded for this run (v0.4.8 Phase 1's
+ * `manifest.json` `privacyPolicy.mode` field), when the run was prepared under 0.4.8
+ * or later. `undefined` for an older run or a manifest that never recorded it —
+ * callers treat that as "unknown", not as a mismatch.
+ */
+export async function readPreparedPrivacyMode(workspace: string): Promise<PrivacyMode | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(join(workspace, "manifest.json"), "utf8")) as {
+      privacyPolicy?: { mode?: unknown };
+    };
+    const mode = raw.privacyPolicy?.mode;
+    return isPrivacyMode(mode) ? mode : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ResolveLaunchPrivacyModeInput {
+  /** Raw `--privacy-mode` CLI value, `""` when the flag was not given. */
+  readonly rawPrivacyMode: string;
+  /** Raw `--delivery-mode` CLI value (has a static commander default of `"developer"`). */
+  readonly legacyDeliveryMode: "developer" | "strict";
+  /** `readPreparedPrivacyMode(workspace)`'s result — `undefined` when unknown/older run. */
+  readonly preparedPrivacyMode: PrivacyMode | undefined;
+  readonly trustedLocalAcknowledged: boolean;
+}
+
+export type ResolveLaunchPrivacyModeResult =
+  | { readonly ok: true; readonly privacyMode: PrivacyMode }
+  | { readonly ok: false; readonly exitCode: 3; readonly message: string };
+
+/**
+ * Privacy Mode precedence for `launch --dynamic-context` (Section 5/8), pulled out of
+ * the CLI action as a pure function so the mode-mismatch refusal — a safety-critical
+ * branch — has direct unit tests rather than only being reachable through a spawned
+ * subprocess.
+ *
+ * Precedence: `--privacy-mode` > the PREPARED RUN's own recorded mode (so a plain
+ * `yuhi launch claude --dynamic-context` inherits what `yuhi prepare` already used,
+ * rather than silently defaulting away from it) > legacy `--delivery-mode` mapping >
+ * balanced.
+ *
+ * Mode-mismatch guard: a prepared run's files on disk were protected under ITS OWN
+ * recorded mode. Trusted Local preparation leaves direct personal identifiers
+ * unmasked AT REST — launching under an EXPLICIT `--privacy-mode balanced|strict`
+ * would claim protection the files on disk do not have. Every other combination is
+ * safe: Balanced/Strict-prepared files are already masked at rest regardless of the
+ * Dynamic session's own mode, and Dynamic Context applies its own live transform to
+ * whatever it reads either way (v0.4.8 Phase 3A) — so a mismatch there is not a real
+ * confusion, only Trusted Local's "unmasked at rest" case is.
+ */
+export function resolveLaunchPrivacyMode(input: ResolveLaunchPrivacyModeInput): ResolveLaunchPrivacyModeResult {
+  const { rawPrivacyMode, legacyDeliveryMode, preparedPrivacyMode, trustedLocalAcknowledged } = input;
+  let privacyMode: PrivacyMode;
+  try {
+    privacyMode = resolvePrivacyPolicy({
+      candidates: [
+        { mode: rawPrivacyMode, source: "cli" },
+        { mode: preparedPrivacyMode ?? "", source: "workspace-config" },
+        { mode: rawPrivacyMode ? "" : privacyModeFromLegacyDeliveryMode(legacyDeliveryMode), source: "legacy-mapping" },
+      ],
+      trustedLocalAcknowledged,
+    }).mode;
+  } catch (err) {
+    if (err instanceof PrivacyModeResolutionError) {
+      const hint =
+        err.code === "trusted-local-not-acknowledged"
+          ? "Re-run with --acknowledge-unmasked-data to proceed non-interactively."
+          : "Use: balanced, strict, trusted-local.";
+      return { ok: false, exitCode: 3, message: `${err.message}\n${hint}` };
+    }
+    throw err;
+  }
+
+  if (rawPrivacyMode && preparedPrivacyMode === "trusted-local" && privacyMode !== "trusted-local") {
+    return {
+      ok: false,
+      exitCode: 3,
+      message:
+        `Privacy Mode mismatch: this run was prepared under Trusted Local — direct personal ` +
+        `identifiers are unmasked in the prepared files on disk. Launching Dynamic Context under ` +
+        `"${privacyMode}" does not retransform files already on disk; it only affects what THIS session ` +
+        `delivers live.\n\n` +
+        `Re-run \`yuhi prepare --privacy-mode ${privacyMode}\` to prepare a run whose files on disk match, ` +
+        `or launch with \`--privacy-mode trusted-local\` to acknowledge the existing files.\n\n` +
+        `Safe error category: privacy-mode-mismatch`,
+    };
+  }
+
+  return { ok: true, privacyMode };
+}
 
 export interface DynamicLaunchOptions {
   readonly runRef?: string;
@@ -46,8 +147,18 @@ export interface DynamicLaunchOptions {
    * benchmark scores 3/3 with them and records real retrievals in the ledger.
    */
   readonly retrieval?: RetrievalMode;
-  /** `strict` masks detected secrets before delivery (0.3.x behaviour). */
+  /** LEGACY. `strict` masks detected secrets before delivery (0.3.x behaviour).
+   *  Superseded by `privacyMode` (v0.4.8) — ignored when `privacyMode` is given. */
   readonly deliveryMode?: "developer" | "strict";
+  /** What happens to DIRECT PERSONAL IDENTIFIERS (v0.4.8). Takes precedence over the
+   *  legacy `deliveryMode`. The CLI resolves this via `resolvePrivacyPolicy` before
+   *  calling in, so it arrives here already-valid. */
+  readonly privacyMode?: PrivacyMode;
+  /** Carried through to the gateway; not re-validated (the caller already ran the
+   *  Trusted Local acknowledgement gate). */
+  readonly privacyModeAcknowledged?: boolean;
+  /** The session's de-identification registry, when the caller has one to restore. */
+  readonly aliasContext?: StudentAliasContext;
   readonly env?: NodeJS.ProcessEnv;
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
@@ -116,7 +227,10 @@ export async function launchClaudeWithDynamicContext(
     session = await startSession({
       preparedWorkspace: workspace,
       retrievalMode: retrieval,
-      deliveryMode: opts.deliveryMode ?? "developer",
+      ...(opts.privacyMode
+        ? { privacyMode: opts.privacyMode, privacyModeAcknowledged: opts.privacyModeAcknowledged ?? true }
+        : { deliveryMode: opts.deliveryMode ?? "developer" }),
+      ...(opts.aliasContext ? { aliasContext: opts.aliasContext } : {}),
       upstreamBaseUrl: upstream.baseUrl,
       sessionId,
       ...(opts.startGatewayImpl ? { startGatewayImpl: opts.startGatewayImpl } : {}),
@@ -146,7 +260,12 @@ export async function launchClaudeWithDynamicContext(
     out(`Yuhi dynamic context: ON — gateway ${session.gatewayUrl} → ${upstream.baseUrl} (${upstream.mode})`);
     out(`Session: ${sessionId}`);
     out("");
-    out(opts.deliveryMode === "strict" ? STRICT_MODE_NOTICE : DEVELOPER_MODE_NOTICE);
+    // The banner reflects the RUNTIME's actual resolved policy (`session.privacyMode`),
+    // not the raw CLI input — printed only after the gateway/pipeline started
+    // successfully (spec §12: no mode banner on a failed pipeline init).
+    const copy = privacyModeCopyFor(session.privacyMode, "dynamic-terminal");
+    out(`Privacy: ${copy.title}`);
+    for (const line of copy.en.split("\n")) if (line) out(line);
     out("");
     out(`Retrieval mode: ${retrieval}`);
     if (mcpConfigPath) out(`Retrieval tools registered (MCP): ${mcpConfigPath}`);

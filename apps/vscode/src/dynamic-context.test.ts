@@ -83,6 +83,7 @@ function harness(overrides: { session?: Partial<DynamicClaudeSession>; failStats
     contextRoot: "/prepared/.yuhi/context",
     retrievalMode: "disabled",
     deliveryMode: "developer",
+    privacyMode: "balanced",
     readyMs: 12,
     command: {
       file: "claude",

@@ -994,8 +994,17 @@ async function main(): Promise<void> {
       )
       .option(
         "--delivery-mode <mode>",
-        "how detected secrets are handled: developer (default, project configuration reaches the agent) | strict (mask before delivery, 0.3.x behaviour)",
+        "LEGACY, superseded by --privacy-mode: developer (default) | strict (0.3.x behaviour)",
         "developer",
+      )
+      .option(
+        "--privacy-mode <mode>",
+        "balanced | strict | trusted-local (default: inherit the prepared run's mode, else balanced). Supersedes --delivery-mode.",
+      )
+      .option(
+        "--acknowledge-unmasked-data",
+        "required (non-interactive) to select --privacy-mode trusted-local",
+        false,
       )
       .option(
         "--retrieval <mode>",
@@ -1011,14 +1020,53 @@ async function main(): Promise<void> {
               console.error("--dynamic-context currently supports claude only.\n\nSafe error category: unsupported-agent");
               return 3;
             }
-            const { launchClaudeWithDynamicContext } = await import("./dynamic-context/launch-dynamic.js");
+            const { launchClaudeWithDynamicContext, readPreparedPrivacyMode, resolveLaunchPrivacyMode } =
+              await import("./dynamic-context/launch-dynamic.js");
+            const { resolveRunForLaunch } = await import("./launch.js");
+
+            // Privacy Mode precedence + mode-mismatch guard (Section 5/8) — pure logic
+            // lives in `resolveLaunchPrivacyMode` (unit-tested directly); this action
+            // only gathers its inputs and reports the result.
+            const rawPrivacyMode = (opts.privacyMode as string | undefined) ?? "";
+            const legacyDeliveryMode = opts.deliveryMode === "strict" ? "strict" : "developer";
+            const resolution = await resolveRunForLaunch(opts.run ? String(opts.run) : undefined);
+            const preparedPrivacyMode = resolution.ok
+              ? await readPreparedPrivacyMode(resolution.run.workspace)
+              : undefined;
+
+            let acknowledgedTrustedLocal = Boolean(opts.acknowledgeUnmaskedData);
+            const candidateMode = rawPrivacyMode || preparedPrivacyMode || "";
+            if (!acknowledgedTrustedLocal && candidateMode === "trusted-local") {
+              acknowledgedTrustedLocal = await confirm(
+                "Trusted Local may deliver personal identifiers and development secrets to Claude, unchanged. Continue?",
+                false,
+              );
+            }
+            const resolvedPrivacy = resolveLaunchPrivacyMode({
+              rawPrivacyMode,
+              legacyDeliveryMode,
+              preparedPrivacyMode,
+              trustedLocalAcknowledged: acknowledgedTrustedLocal,
+            });
+            if (!resolvedPrivacy.ok) {
+              console.error(`${symbols.err()} ${resolvedPrivacy.message}`);
+              return resolvedPrivacy.exitCode;
+            }
+            const privacyMode = resolvedPrivacy.privacyMode;
+
+            if (!g.json) {
+              const copy = privacyModeCopyFor(privacyMode, "dynamic-terminal");
+              console.log(`Privacy: ${copy.title}`);
+            }
+
             const result = await launchClaudeWithDynamicContext({
               ...(opts.run ? { runRef: String(opts.run) } : {}),
               forwardedArgs: forwarded,
               spawn: !opts.dryRun,
               json: g.json,
               cliEntry: process.argv[1] ?? "",
-              deliveryMode: opts.deliveryMode === "strict" ? "strict" : "developer",
+              privacyMode,
+              privacyModeAcknowledged: acknowledgedTrustedLocal,
               retrieval: (["disabled", "conditional", "required"] as const).includes(opts.retrieval)
                 ? (opts.retrieval as "disabled" | "conditional" | "required")
                 : "disabled",
