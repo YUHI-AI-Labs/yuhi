@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.4.8 — Privacy Mode + Measurement Reliability
+
+**Privacy Mode** (Balanced / Strict / Trusted Local) is now the single, user-facing
+selector for direct-personal-identifier handling, shared by Static Prepare, Dynamic
+Terminal Mode, and Native GUI Mode — a DIFFERENT axis from Safety Mode, which governs
+how much unverified content is withheld. Balanced and Strict apply an identical
+identifier transform (they differ only in whether unverified artifacts stay
+local-only); Trusted Local disables the transform entirely and requires explicit
+acknowledgement (`--acknowledge-unmasked-data` on the CLI, a confirmation prompt in VS
+Code) before it can be selected — it is never a silent default or fallback.
+
+- **Static Prepare**: `yuhi prepare --privacy-mode <mode>`, precedence CLI flag >
+  `yuhi.yaml`'s new `privacy.mode` > Balanced. Secret redaction remains unconditional
+  in every mode, exactly as before — Privacy Mode never weakens it.
+- **Dynamic Terminal / Native GUI**: real, live direct-personal-identifier
+  transformation is now applied to tool results flowing through the gateway (this did
+  not exist before — only secret handling did). Routed by content shape (tabular/JSON/
+  prose/source/config) so source code and command output are not scanned for
+  CJK name-shaped substrings the way document prose is. A prepared workspace's own
+  recorded mode is inherited by a plain `yuhi launch claude --dynamic-context`, and an
+  explicit mode conflicting with a Trusted-Local-prepared run is refused rather than
+  silently reused.
+- **VS Code**: `yuhi.privacyMode` setting, plus a one-time first-run picker
+  ("Prepare → Privacy Mode → Start Claude Code") so a new user chooses explicitly
+  instead of silently defaulting.
+
+**Measurement Reliability**: token estimation now weights CJK text separately from
+Latin script (mainstream tokenizers split CJK far denser than the old flat
+chars/4 heuristic assumed — a real accuracy fix for this product's own primary use
+case, Japanese student records). Fixed `setTokenEstimator` silently doing nothing for
+Dynamic Context, and a `yuhi status` reduction figure that violated the project's own
+"never clamp a reduction" rule. `yuhi prepare`'s normal output is now a short, ~8-line
+summary; `--verbose` preserves the full previous report.
+
+See `docs/design/0.4.8_privacy_mode.md`, `docs/design/0.4.8_measurement_reliability.md`,
+and `docs/design/0.4.8_first_run_ux.md` for full design decisions, what was
+deliberately deferred, and a claims audit of existing token/cost figures in this
+README and the site.
+
 ## 0.4.7 — Document/PDF privacy pipeline
 
 **Document companions (PDF/DOCX/PPTX) now go through the SAME de-identification

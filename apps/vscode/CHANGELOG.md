@@ -5,6 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.4.8] — 2026-08-05
+
+**Privacy Mode** (Balanced / Strict / Trusted Local) is now the single selector for
+direct-personal-identifier handling across the Prepare, Dynamic Terminal, and Native
+GUI surfaces — see the root `CHANGELOG.md` for the full detail. New
+`yuhi.privacyMode` / `yuhi.dynamicContext.privacyMode` settings, plus a one-time
+first-run picker ("Prepare → Privacy Mode → Start Claude Code"). `yuhi prepare`'s
+normal CLI output is shorter; `--verbose` preserves the previous full report.
+
+CLI ships 0.4.8 to stay in lockstep with the extension.
+
 ## [0.4.7] — 2026-08-05
 
 **Document companions (PDF/DOCX/PPTX) are now de-identified with the same taxonomy,
