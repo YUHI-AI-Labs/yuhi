@@ -49,6 +49,21 @@ export interface EvidenceRecord {
   readonly deliveryPolicy?: string;
   /** Categories of key material masked before delivery, in any mode. Kinds only. */
   readonly keyMaterialMasked?: readonly string[];
+  /** Privacy Mode governing this delivery (v0.4.8) — `balanced` | `strict` | `trusted-local`. */
+  readonly privacyMode?: string;
+  /** What a detected secret meant for THIS delivery — `redact` | `developer-delivery`. */
+  readonly secretDeliveryMode?: string;
+  /** Direct personal identifiers found by the pre-delivery transform. Never a value. */
+  readonly directIdentifiersDetected?: number;
+  /** Direct personal identifiers actually replaced (mask-on-detect: normally equal to
+   *  `directIdentifiersDetected`; 0/0 in Trusted Local, where nothing is scanned). */
+  readonly directIdentifiersTransformed?: number;
+  /** Direct personal identifiers found by the POST-delivery residue rescan. */
+  readonly directIdentifierResidue?: number;
+  readonly privacyTransformationApplied?: boolean;
+  readonly privacyVerificationPassed?: boolean;
+  /** Set only when privacy verification failed and the delivery/retrieval was withheld. */
+  readonly privacyFallback?: string;
   readonly secretRedactions: number;
   readonly metadataRedactions: number;
   readonly metadataLabels: readonly string[];

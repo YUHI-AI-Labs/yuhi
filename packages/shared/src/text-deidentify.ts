@@ -121,54 +121,51 @@ function emptyCounts(): Record<DirectIdentifierKind, number> {
 }
 
 /**
- * Mask direct personal identifiers in free text.
- *
- * `context` is the RUN registry. Passing the same context that prepared the run's tables
- * is what makes one person carry one token across a CSV, a TXT, an XLSX and a PDF.
+ * Values LINKED to the run's tabular registry via a strong key present in the SAME
+ * text — reuse the SAME token the table used. `known` is precomputed by the caller
+ * from the WHOLE document (`entitiesReachableInText` + `directPersonalValueTokensForEntities`),
+ * so a JSON walker can compute linkage once from the full payload and apply it
+ * per-value, exactly as prose applies it once to the whole text (see `deidentifyText`
+ * step 1 and `deidentifyJsonFields`).
  */
-export function deidentifyText(
-  input: string,
-  context: StudentAliasContext = createStudentAliasContext(),
-  mode: PrivacyMode = DEFAULT_PRIVACY_MODE,
-): TextDeidentifyResult {
-  const replaced = emptyCounts();
-
-  // `trusted-local` transforms nothing, by definition.
-  if (!modeTransformsDirectIdentifiers(mode)) {
-    return { text: input, replaced, replacedTotal: 0, unlinkedNameCount: 0 };
-  }
-
-  let text = input;
-
-  // 1. Values LINKED to this run's tabular registry via a strong key present in the
-  //    SAME text — reuse the SAME token the table used. Computed once from the
-  //    ORIGINAL input (not the in-progress `text`), since linkage is a property of the
-  //    whole document, not of what has been replaced so far. Longest value first, so a
-  //    full name is replaced before a substring of it.
-  const reachableEntities = entitiesReachableInText(context, input);
-  const known = [...directPersonalValueTokensForEntities(context, reachableEntities).entries()]
-    .filter(([value]) => value.length >= 2)
-    .sort((a, b) => b[0].length - a[0].length);
+function applyKnownValueTokens(
+  text: string,
+  known: readonly (readonly [string, string])[],
+): { text: string; replaced: number } {
+  let out = text;
+  let replaced = 0;
   for (const [normalized, token] of known) {
     // The registry is keyed on the normalized form, so match case-insensitively and
     // compare normalized candidates rather than building a fragile regex per value.
-    let index = text.toLowerCase().indexOf(normalized);
+    let index = out.toLowerCase().indexOf(normalized);
     while (index !== -1) {
-      const candidate = text.slice(index, index + normalized.length);
+      const candidate = out.slice(index, index + normalized.length);
       if (normalizeIdentifierValue(candidate) === normalized) {
-        text = text.slice(0, index) + token + text.slice(index + normalized.length);
-        replaced["known-value"] += 1;
-        index = text.toLowerCase().indexOf(normalized, index + token.length);
+        out = out.slice(0, index) + token + out.slice(index + normalized.length);
+        replaced += 1;
+        index = out.toLowerCase().indexOf(normalized, index + token.length);
       } else {
-        index = text.toLowerCase().indexOf(normalized, index + 1);
+        index = out.toLowerCase().indexOf(normalized, index + 1);
       }
     }
   }
+  return { text: out, replaced };
+}
 
-  // 2. Shape-detectable identifiers, with stable per-value tokens.
-  const minted = new Map<string, string>();
+/**
+ * Shape-detectable identifiers (email, phone, MyNumber, passport, card number), with
+ * stable per-value tokens. `minted` is shared across every call for one document (or
+ * one JSON payload's worth of string values — see `deidentifyJsonFields`), so the same
+ * value gets the same token wherever it recurs, and the ordinal does not reset per call.
+ */
+function applyShapePatterns(
+  text: string,
+  minted: Map<string, string>,
+): { text: string; replaced: Record<DirectIdentifierKind, number> } {
+  const replaced = emptyCounts();
+  let out = text;
   for (const { kind, re, token } of PATTERNS) {
-    text = text.replace(re, (match) => {
+    out = out.replace(re, (match) => {
       const key = `${kind}:${normalizeIdentifierValue(match)}`;
       let assigned = minted.get(key);
       if (!assigned) {
@@ -179,6 +176,59 @@ export function deidentifyText(
       return assigned;
     });
   }
+  return { text: out, replaced };
+}
+
+export interface DeidentifyTextOptions {
+  /**
+   * Mask 2–4 character CJK runs that are not a known label (step 3). Default `true`.
+   *
+   * Only free prose (documents, markdown, PDF companions) should run this heuristic —
+   * source code, command output and configuration are dense with short CJK-adjacent
+   * tokens that are not names (identifiers, log fragments, path segments), and blindly
+   * scanning them produces exactly the kind of over-masking Yuhi's own "never claim
+   * more than is true" rule forbids. Callers on those surfaces pass `false` and rely on
+   * steps 1–2 (registry reuse + shape patterns), which stay precision-first regardless.
+   */
+  readonly includeNameHeuristic?: boolean;
+}
+
+/**
+ * Mask direct personal identifiers in free text.
+ *
+ * `context` is the RUN registry. Passing the same context that prepared the run's tables
+ * is what makes one person carry one token across a CSV, a TXT, an XLSX and a PDF.
+ */
+export function deidentifyText(
+  input: string,
+  context: StudentAliasContext = createStudentAliasContext(),
+  mode: PrivacyMode = DEFAULT_PRIVACY_MODE,
+  options: DeidentifyTextOptions = {},
+): TextDeidentifyResult {
+  const replaced = emptyCounts();
+
+  // `trusted-local` transforms nothing, by definition.
+  if (!modeTransformsDirectIdentifiers(mode)) {
+    return { text: input, replaced, replacedTotal: 0, unlinkedNameCount: 0 };
+  }
+
+  // 1. Registry-linked values — longest value first, so a full name is replaced
+  //    before a substring of it. Computed once from the ORIGINAL input, since linkage
+  //    is a property of the whole document, not of what has been replaced so far.
+  const reachableEntities = entitiesReachableInText(context, input);
+  const known = [...directPersonalValueTokensForEntities(context, reachableEntities).entries()]
+    .filter(([value]) => value.length >= 2)
+    .sort((a, b) => b[0].length - a[0].length);
+  const step1 = applyKnownValueTokens(input, known);
+  let text = step1.text;
+  replaced["known-value"] = step1.replaced;
+
+  // 2. Shape-detectable identifiers.
+  const step2 = applyShapePatterns(text, new Map());
+  text = step2.text;
+  for (const kind of Object.keys(step2.replaced) as DirectIdentifierKind[]) {
+    replaced[kind] += step2.replaced[kind];
+  }
 
   // 3. CJK name-shaped candidates with no linking key: mask with a FRESH, unlinked
   //    token — masked, never left raw, but deliberately NOT merged onto any existing
@@ -186,23 +236,81 @@ export function deidentifyText(
   //    module doc comment). Reused consistently within THIS call only: a second
   //    mention of the same string later in this same document gets the same token: a
   //    DIFFERENT document mints its own, independent token for the same string, since
-  //    nothing here confirms it is the same person.
+  //    nothing here confirms it is the same person. Skippable (see `DeidentifyTextOptions`).
   const unlinkedTokens = new Map<string, string>();
   let unlinkedNameCount = 0;
-  text = text.replace(CJK_NAMEISH, (word) => {
-    if (CJK_LABELS.has(word)) return word;
-    const normalized = normalizeIdentifierValue(word);
-    let token = unlinkedTokens.get(normalized);
-    if (!token) {
-      token = mintUnlinkedPersonalToken(context, "name");
-      unlinkedTokens.set(normalized, token);
-    }
-    unlinkedNameCount += 1;
-    return token;
-  });
+  if (options.includeNameHeuristic ?? true) {
+    text = text.replace(CJK_NAMEISH, (word) => {
+      if (CJK_LABELS.has(word)) return word;
+      const normalized = normalizeIdentifierValue(word);
+      let token = unlinkedTokens.get(normalized);
+      if (!token) {
+        token = mintUnlinkedPersonalToken(context, "name");
+        unlinkedTokens.set(normalized, token);
+      }
+      unlinkedNameCount += 1;
+      return token;
+    });
+  }
 
   const replacedTotal = Object.values(replaced).reduce((a, b) => a + b, 0) + unlinkedNameCount;
   return { text, replaced, replacedTotal, unlinkedNameCount };
+}
+
+/**
+ * De-identify every string value in a JSON payload — a live tool result's shape, not a
+ * document's. Deliberately NOT key-name based (a JSON `"name"` field in an arbitrary
+ * repository's API response or test fixture is far more likely to be a product/package
+ * name than a person's — see `docs/design/0.4.8_privacy_mode.md`, Phase 3 JSON
+ * precision decision): every string value gets the SAME shape-pattern and
+ * registry-reuse treatment `deidentifyText` gives prose (steps 1–2 only — no CJK name
+ * heuristic, for the same over-masking reason `DeidentifyTextOptions` documents), with
+ * one shared token registry across the whole payload so the same value gets the same
+ * token wherever it recurs in the document, not just within one field.
+ *
+ * Returns `null` when `input` is not valid JSON, so the caller can fall back to prose
+ * handling instead of silently delivering the text untransformed.
+ */
+export function deidentifyJsonFields(
+  input: string,
+  context: StudentAliasContext = createStudentAliasContext(),
+  mode: PrivacyMode = DEFAULT_PRIVACY_MODE,
+): { text: string; replacedFields: number } | null {
+  if (!modeTransformsDirectIdentifiers(mode)) {
+    return { text: input, replacedFields: 0 };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    return null;
+  }
+
+  const reachableEntities = entitiesReachableInText(context, input);
+  const known = [...directPersonalValueTokensForEntities(context, reachableEntities).entries()]
+    .filter(([value]) => value.length >= 2)
+    .sort((a, b) => b[0].length - a[0].length);
+  const minted = new Map<string, string>();
+  let replacedFields = 0;
+
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      const step1 = applyKnownValueTokens(value, known);
+      const step2 = applyShapePatterns(step1.text, minted);
+      if (step2.text !== value) replacedFields += 1;
+      return step2.text;
+    }
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [key, v] of Object.entries(value as Record<string, unknown>)) out[key] = walk(v);
+      return out;
+    }
+    return value;
+  };
+
+  const transformed = walk(parsed);
+  return { text: JSON.stringify(transformed), replacedFields };
 }
 
 /**
