@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.4.7] — 2026-08-05
+
+**Document companions (PDF/DOCX/PPTX) are now de-identified with the same taxonomy,
+registry, and independent verification as CSV/XLSX, in both Native GUI Mode and
+Dynamic Terminal Mode.** No extension-specific behaviour changed — this is a shared
+`@yuhi/core` fix (issue #21) that both routes use. See the root `CHANGELOG.md` and
+`docs/design/0.4.7_document_privacy.md` for the full detail and known limitations
+(CJK 2–4 character name detection only; no Latin-script name detection).
+
+CLI ships 0.4.7 to stay in lockstep with the extension. Extension id and display name
+are unchanged (`yuhi-ai-labs.yuhi-code`, "Yuhi Code — See What Your AI Agent Sees").
+
 ## [0.4.5] — 2026-08-04
 
 **New display name: `Yuhi Code — See What Your AI Agent Sees`.** No behaviour changes.

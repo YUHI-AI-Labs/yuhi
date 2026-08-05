@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.7 — Document/PDF privacy pipeline
+
+**Document companions (PDF/DOCX/PPTX) now go through the SAME de-identification
+taxonomy, registry and independent verification as tabular data.** Previously, a
+document companion's pseudonymizer only understood delimited tables; extracted prose
+threw, the catch silently returned an empty forbidden list, and the companion
+published completely unmasked while labelled "Verified" — issue #21, now fixed.
+
+- A personal name backed by a matching business key (student id, employee id, …)
+  present in the SAME document reuses the exact token a table in the same run already
+  minted for that person (`PERSON-001` everywhere). A name with no such key mints its
+  own token instead of merging onto an unrelated entity — two different people sharing
+  a name must never collapse onto one token.
+- Every direct identifier and CJK name-shaped candidate the detector recognizes is
+  masked; nothing is left raw because it could not be linked. Operational identifiers
+  (student id, course code, …) are preserved, exactly as in CSV/XLSX.
+- Independent, structurally-separate verification runs before publish — a bug in the
+  masking pass is not trusted to have caught itself.
+- Known limitation: name detection covers 2–4 character CJK sequences only. A
+  single-character, 5+ character, or non-CJK (Latin-script) personal name is not
+  detected. See `docs/design/0.4.7_document_privacy.md` for the full policy and the
+  permitted/prohibited claims about this feature.
+
 ## 0.4.6 — Privacy taxonomy: protect people, preserve keys
 
 **Yuhi no longer tries to remove every identifier.** It protects what identifies a

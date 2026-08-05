@@ -11,7 +11,7 @@
  * release that forgets to bump it fails the suite instead of quietly writing a wrong
  * version into artifacts.
  */
-export const YUHI_VERSION = "0.4.6";
+export const YUHI_VERSION = "0.4.7";
 
 /** Config file + schema constants. `yuhi.yaml` is canonical; alternates are
  * accepted so the AI-context policy can live under a standard-looking name. */
