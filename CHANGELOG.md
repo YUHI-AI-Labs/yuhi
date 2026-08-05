@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.5.0 — Task-Aware Dynamic Context Generation (Release Candidate, Observe-first)
+
+Yuhi can generate task-aware context representations at runtime. A new Planner
+sits between Dynamic Context's existing safety pipeline and its existing
+compressors, and decides — per tool result — whether to deliver it in full,
+as a structured representation, as a window with a retrievable gap, as a
+reference the agent fetches on demand, or reused unchanged from an identical
+prior delivery. The Planner never rewrites content itself; every one of those
+outcomes runs through the exact compressor, store, and retrieval code that
+shipped in v0.4.x. See `docs/design/0.5.0_dynamic_generation.md` and
+`docs/design/0.5.0_planner_contract.md` for the full contract.
+
+- **Generation modes**: `off` (pre-0.5.0 behavior, byte-for-byte — no Planner
+  object is even constructed), `observe` (the Planner computes and records a
+  plan for every delivery, but never changes what is actually delivered — this
+  is the default), `active` (the plan drives delivery for reuse, structured,
+  reference, and window representations). `yuhi launch claude
+  --dynamic-context` and the VS Code Dynamic Terminal command both default to
+  `observe`; `active` is opt-in via `--generation-mode active` /
+  `yuhi.dynamicContext.generationMode`.
+- **Generation Cache**: reuse is isolated by privacy mode, secret delivery
+  mode, and object revision — a value delivered under one Privacy Mode is
+  never reused under another, even if the underlying bytes would happen to
+  match.
+- **Dynamic Budget** (`context.runtimeBudget.target` / `.maximum` in
+  `yuhi.yaml`, `--context-budget` / `--context-max`, or the VS Code Advanced
+  settings): both optional, both unset by default — omitting them reproduces
+  pre-0.5.0 behavior exactly. Budget pressure changes the Planner's search
+  order (reuse repeated content, point at reference content instead of
+  inlining it, window supporting content); it is never a reason to silently
+  drop load-bearing content.
+- **Repeated Work Observation**: exact-read/exact-search/exact-command
+  (delivery-side) and contained-read/overlapping-read (retrieval-side) are
+  recorded in evidence and session stats. Advisory only — never a forced
+  block. A short hint is available via `yuhi_explain_context`/evidence at most
+  once per (object, event-type) pair; it is not yet injected into delivered
+  tool-result text in this release.
+- **CLI**: `yuhi dynamic stats` now reports generation-plan counts by kind
+  (reuse/structured/window/reference/full/withhold) and repeated-work
+  observation counts, read directly from the same evidence ledger every other
+  measurement in this project already comes from.
+- **What this release does not claim**: no token reduction, cost reduction, or
+  speed claim is made for Active mode, because none was measured — this
+  environment has no `claude` CLI or Anthropic API credentials, so Phase 7's
+  benchmark work extended the harness and added real, unit-tested fixtures
+  (`packages/context-benchmark`) but did not run them against a live model.
+  `active` therefore stays opt-in, not the default, until a maintainer with
+  API access runs the matrix and fills in real numbers. See
+  `docs/design/0.5.0_benchmark.md`.
+
 ## 0.4.8 — Privacy Mode + Measurement Reliability
 
 **Privacy Mode** (Balanced / Strict / Trusted Local) is now the single, user-facing

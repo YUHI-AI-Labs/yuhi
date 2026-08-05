@@ -180,6 +180,19 @@ Context reduction depends on repository structure, task, model, cache behaviour,
 retrieval configuration. Measurement details are documented in the benchmark reports;
 numeric results will be regenerated for v0.5.
 
+### Task-aware generation (v0.5.0, Observe by default)
+
+Yuhi can generate task-aware context representations at runtime. A Planner decides,
+per tool result, whether to deliver it in full, as a structured representation, as a
+window with a retrievable gap, as a reference the agent fetches on demand, or reused
+unchanged from an identical prior delivery — never by rewriting content itself; every
+outcome runs through the same compressors and retrieval path as before. Generation
+plans are measured before being enabled by default: `--generation-mode` (CLI) /
+`yuhi.dynamicContext.generationMode` (VS Code, Advanced) defaults to `observe`, which
+records what the Planner would do without changing what is delivered. `active` is
+opt-in and not yet the default — no cost, token, or speed claim is made for it. See
+[docs/design/0.5.0_dynamic_generation.md](docs/design/0.5.0_dynamic_generation.md).
+
 ### Developer Mode
 
 The dynamic runtime defaults to **Developer Mode**, which changes what a detected secret

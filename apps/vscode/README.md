@@ -83,6 +83,16 @@ in the benchmark reports; numeric results will be regenerated for v0.5. Dynamic
 reduction, when shown, is an estimate of withheld tool-result content — **not** a
 reduction in session-wide provider input tokens, billing, or wall-clock time.
 
+**Task-aware generation (v0.5.0, Observe by default).** A Planner decides, per tool
+result, whether to deliver it in full, as a structured representation, as a window
+with a retrievable gap, as a reference fetched on demand, or reused unchanged from an
+identical prior delivery — it never rewrites content itself; every outcome runs
+through the same compressors and retrieval path described above.
+`yuhi.dynamicContext.generationMode` (Advanced, not shown during first run) defaults
+to `observe`: the Planner records what it would do without changing what is
+delivered. `active` is opt-in and not yet benchmarked against a live model — no cost,
+token, or speed claim is made for it.
+
 ## 4. Repository Optimization
 
 Before Claude Code opens, Static Prepare inspects your repository, transforms direct
@@ -158,6 +168,16 @@ official extension's own UI.
 - Developer Mode may retain raw secret values in the private object store when
   required for delivery.
 - Dynamic reduction is not the same as total provider-token or cost reduction.
+- **`active` generation mode is not yet benchmarked against a live model in this
+  environment.** No cost, token, or speed claim is made for it; `observe` is the
+  default until it is.
+- Native Claude GUI Mode inherits the `observe` default through the same shared
+  launch path Dynamic Terminal uses, but does not yet expose its own
+  `generationMode`/budget setting — only Dynamic Terminal's setting is currently
+  wired end to end.
+- A repeated-work hint (e.g. "this exact range was already delivered unchanged") is
+  recorded in evidence and session stats, but is not yet injected into the tool
+  result text Claude Code sees.
 - Token counts are estimates (a calibrated heuristic, weighted differently for CJK and
   Latin-script text) unless an exact tokenizer is configured; they can still be off on
   unusual content.
