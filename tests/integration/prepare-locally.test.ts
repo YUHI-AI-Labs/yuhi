@@ -45,10 +45,14 @@ describe("prepare-locally route (RouteExecutor)", () => {
     const { treeDir } = await createWorkspaceForDir(dir, { interactive: false });
     const aiCopy = readFileSync(path.join(treeDir, "data/students.csv"), "utf8");
 
-    // Identifiers are gone; pseudonyms present; non-identifiers kept.
+    // Direct personal identifiers are gone and pseudonyms are present; the student id
+    // is an operational key and is preserved so the scores stay joinable; analytical
+    // columns are untouched.
     expect(aiCopy).not.toContain("Tanaka Aoi");
-    expect(aiCopy).not.toContain("S-10241");
+    expect(aiCopy).not.toContain("Sato Ren");
     expect(aiCopy).toMatch(/Subject-[0-9A-F]{6}/);
+    expect(aiCopy).toContain("S-10241");
+    expect(aiCopy).toContain("S-10242");
     expect(aiCopy).toContain("3-B");
     expect(aiCopy).toContain("42");
 

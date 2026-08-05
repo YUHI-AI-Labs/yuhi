@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.4.6 — Privacy taxonomy: protect people, preserve keys
+
+**Yuhi no longer tries to remove every identifier.** It protects what identifies a
+*person* and preserves the keys an analysis needs. Masking a student number or a course
+code destroyed the joins and group-bys the data existed for while buying no privacy —
+the person is already protected once their name is gone.
+
+Every identifier now falls into one of three categories:
+
+```text
+DIRECT PERSONAL   name, name-reading, email, phone, address, MyNumber,
+                  passport, bank account, credit card, biometric, government id
+                  → pseudonymized
+
+OPERATIONAL       student id, student card, employee id, account id, institutional id,
+                  course code, staff id, application number, record id
+                  → preserved
+
+ANALYTICAL        grade, score, evaluation, department, year, term, attendance, …
+                  → preserved
+```
+
+### Token vocabulary
+
+Tokens name the *kind* of identifier, not a role, because a role is unstable in prose
+(担当者 / 申請者 / 受験者 all appear for the same column):
+
+```text
+PERSON-001  READING-001  EMAIL-001  PHONE-001  ADDRESS-001  BANK-001  GOVID-001
+```
+
+An address keeps its locality and loses everything below it, so regional analysis still
+works while the household does not:
+
+```text
+京都府京都市左京区吉田本町123-4  →  京都府京都市 ADDRESS-001
+```
+
+### One person, one token, every format
+
+The run registry resolves identity from the *preserved* operational keys, so the same
+person carries the same token across CSV, TSV, TXT and XLSX in a run. A key is only used
+for identity resolution when it actually discriminates: a course code, a staff id and a
+constant term/cohort column are excluded, because using them merges every row of a class
+onto one entity.
+
+### Verification
+
+Verification is scoped to direct-personal columns. A preserved operational identifier is
+compliant output, not residue — four separate gates were counting it as a leak and
+delivering correctly prepared files as `included-unverified`.
+
+### Fixed
+
+- Cross-format tokens diverged: the same person received `PERSON-001` in a CSV and
+  `PERSON-003` in an XLSX, because filtering to direct-personal identifiers ran *before*
+  identity resolution and removed the linkage keys.
+- A constant operational column (a term or cohort code) collapsed every person in a
+  730-row export onto a single token.
+- Headerless files stopped protecting names: with no header, inference could only return
+  an operational type. Classification now falls back to value *shape*, which also fixes
+  single-row files where every column is trivially unique.
+- The safety-check, the final artifact gate, the XLSX forbidden-value set and the
+  structured rescan all treated preserved keys as residue.
+
+### Not in this release
+
+The document/PDF path still uses its own pipeline; `text-deidentify.ts` is written but
+not yet wired. That is 0.4.7, and it will reuse this taxonomy, this registry and this
+verification rather than introducing PDF-specific rules.
+
 ## 0.4.5 — new Marketplace display name
 
 **The VS Code extension display name is now `Yuhi Code — See What Your AI Agent Sees`.**

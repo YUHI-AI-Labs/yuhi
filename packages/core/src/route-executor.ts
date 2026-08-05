@@ -2,6 +2,7 @@ import {
   processorId,
   aggregateStudentRecords,
   classifyStudentRecordHeaders,
+  requiresPseudonymization,
   parseDelimitedTable,
   pseudonymizeStudentRecords,
   type StudentAliasContext,
@@ -34,13 +35,26 @@ export interface RouteResult {
 }
 
 /** Heuristic: pull identifier-like values from a CSV (name/id/email columns). */
+/**
+ * Values the safety-check must not find in the output.
+ *
+ * DIRECT PERSONAL columns only. An operational identifier — student id, course code,
+ * employee number — is preserved by policy, so feeding it to the safety-check makes the
+ * check fail for output that is exactly correct: the file is then delivered as
+ * `included-unverified` with a "transformation unavailable" warning even though the
+ * transform did precisely what it should. See `identifier-taxonomy.ts`.
+ */
 function extractCsvIdentifiers(content: string): string[] {
   try {
     const table = parseDelimitedTable(content);
     const classification = classifyStudentRecordHeaders(table.rows[0]!);
     const ids = new Set<string>();
+    const personalIndexes = classification.directIdentifierIndexes.filter(
+      (_, offset) =>
+        requiresPseudonymization(classification.directIdentifierTypes[offset]!),
+    );
     for (const row of table.rows.slice(1)) {
-      for (const index of classification.directIdentifierIndexes) {
+      for (const index of personalIndexes) {
         const value = (row[index] ?? "").trim();
         if (value) ids.add(value);
       }

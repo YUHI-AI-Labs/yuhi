@@ -41,8 +41,8 @@ describe("per-format inspection limits", () => {
     expect(entry?.outcome).toBe("included-transformed");
     const out = await readFile(path.join(report.outDir, "big.csv"), "utf8");
     expect(out).not.toContain("山田太郎");
-    expect(out).not.toContain("A000000");
-    expect(out).toContain("Student 001"); // de-identified
+    expect(out).toContain("PERSON-001"); // name de-identified
+    expect(out).toContain("A000000"); // operational card number preserved
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     await rm(report.outDir, { recursive: true, force: true }).catch(() => {});
   }, 60_000);

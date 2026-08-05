@@ -1,3 +1,10 @@
+import {
+  DEFAULT_PRIVACY_MODE,
+  modeTransformsDirectIdentifiers,
+  requiresPseudonymization,
+  type PrivacyMode,
+  identifiesRowSubject,} from "./identifier-taxonomy.js";
+
 export type StudentRecordSensitivity = "none" | "confidential" | "restricted";
 export type DirectIdentifierType =
   | "name"
@@ -12,7 +19,22 @@ export type DirectIdentifierType =
   | "email"
   | "phone"
   | "address"
-  | "institutional-id";
+  | "institutional-id"
+  // ── Additional DIRECT personal identifiers (see identifier-taxonomy.ts) ──
+  | "my-number"
+  | "passport-number"
+  | "bank-account"
+  | "credit-card"
+  | "biometric-id"
+  /** A state-issued personal number. Split from `institutional-id`, which is a
+   *  business key: conflating them meant a government number was preserved and an
+   *  internal record id was masked — exactly backwards. */
+  | "government-id"
+  // ── Additional OPERATIONAL identifiers, named so they classify explicitly ──
+  | "course-code"
+  | "staff-id"
+  | "application-number"
+  | "record-id";
 
 export interface StudentRecordClassification {
   sensitivity: StudentRecordSensitivity;
@@ -51,7 +73,21 @@ function directIdentifierType(value: string): DirectIdentifierType | undefined {
     ["email", ["email", "emailaddress", "メール", "メールアドレス"]],
     ["phone", ["phone", "phonenumber", "電話", "電話番号"]],
     ["address", ["address", "住所"]],
-    ["institutional-id", ["governmentid", "institutionalid"]],
+    // A state-issued personal number is DIRECT personal data.
+    ["my-number", ["マイナンバー", "個人番号", "mynumber", "individualnumber"]],
+    ["passport-number", ["パスポート番号", "旅券番号", "passportnumber", "passport"]],
+    // Financial instruments: matched before the generic `番号` morpheme, which would
+    // otherwise classify 口座番号 / カード番号 as an operational account-id.
+    ["bank-account", ["口座番号", "銀行口座", "預金口座", "bankaccount", "accountnumber", "iban"]],
+    ["credit-card", ["クレジットカード番号", "クレジットカード", "カード番号", "creditcard", "cardnumber"]],
+    ["biometric-id", ["生体認証", "指紋", "顔認証", "biometric", "fingerprint"]],
+    ["government-id", ["governmentid", "住民票コード", "residentregistercode"]],
+    // Business keys, named explicitly so they are never inferred as personal data.
+    ["course-code", ["授業コード", "科目コード", "コースコード", "coursecode", "classcode", "courseid", "classid"]],
+    ["staff-id", ["教員番号", "職員番号", "担当教員", "教員id", "staffid", "teacherid", "instructorid"]],
+    ["application-number", ["申込番号", "受付番号", "整理番号", "applicationnumber", "applicantid"]],
+    ["record-id", ["レコードid", "管理番号", "伝票番号", "recordid", "orderid", "contractid"]],
+    ["institutional-id", ["institutionalid"]],
   ];
   const aliasMatch = groups.find(([, aliases]) =>
     aliases.some((candidate) => {
@@ -344,6 +380,28 @@ export function classifyStudentRecordTable(rows: readonly (readonly string[])[])
       if (hasLetter) return digits >= 1; // alphanumeric code — unambiguous
       return digits >= 6 && numericFixedWidth; // long, fixed-width numeric ID only
     }).length;
+    // A short, high-cardinality column of pure TEXT (no digits, no code shape) in a
+    // headerless table is a personal NAME.
+    //
+    // This closes a hole the taxonomy would otherwise open: a headerless file has no
+    // header, so inference used to label every identifier-looking column `account-id`.
+    // Once `account-id` became an OPERATIONAL identifier that is preserved, a headerless
+    // roster of names would have been delivered completely unmasked — the previous
+    // over-masking was at least safe, this would not be. Per the classifier hierarchy
+    // (column semantic -> header name -> value pattern), the value pattern has to carry
+    // the decision when there is no header.
+    //
+    // Deliberately narrow so an analytical free-text column is not swallowed: names are
+    // SHORT and near-unique, notes and comments are long.
+    const nameCount = values.filter((value) => {
+      if (/\d/.test(value)) return false;                      // a name has no digits
+      if (value.length < 2 || value.length > 24) return false;  // notes and prose are longer
+      // SHAPE is the discriminator, not cardinality: `COURSE_CANARY` and `T-77` are
+      // ASCII `code`, a personal name is `text`. Relying on uniqueness instead would
+      // classify every digit-free column of a one-row file as a name, destroying the
+      // course and instructor keys in the same row.
+      return cellShape(value) === "text";
+    }).length;
     const inferred: DirectIdentifierType | undefined =
       emailCount / values.length >= 0.8
         ? "email"
@@ -351,7 +409,9 @@ export function classifyStudentRecordTable(rows: readonly (readonly string[])[])
           ? "phone"
           : cardinality >= 0.9 && codeCount / values.length >= 0.8
             ? "account-id"
-            : undefined;
+            : cardinality >= 0.9 && nameCount / values.length >= 0.8
+              ? "name"
+              : undefined;
     if (inferred) {
       indexes.push(index);
       types.push(inferred);
@@ -601,18 +661,6 @@ function phoneToken(context: StudentAliasContext, value: string): string {
   return token;
 }
 
-/**
- * Generalize a Japanese address: keep the coarse locality (都道府県 / 市区町村 /
- * 町名) and drop the identifying 丁目・番地・号 + building. We cut at the first
- * digit (half- or full-width), which removes the street number while preserving
- * prefecture/city/district. If nothing textual precedes the digits (e.g. a
- * number-first Western address), fall back to a fully-removed marker.
- */
-function generalizeAddress(value: string): string {
-  const normalized = value.normalize("NFKC").trim();
-  const coarse = (normalized.match(/^[^0-9]*/)?.[0] ?? "").trim().replace(/[-\s、,]+$/u, "").trim();
-  return coarse.length > 0 ? coarse : "[address removed]";
-}
 
 /** One entity may hold one value per identifier COLUMN, not per type. */
 /**
@@ -643,7 +691,16 @@ function entitySlot(item: { type: DirectIdentifierType; index: number }): string
  * headed one at all, and equal strings being treated as equal is the weaker
  * assumption than silently failing to join.
  */
-export type IdentifierBucket = "id" | "name" | "name-reading" | "email" | "phone" | "address";
+export type IdentifierBucket =
+  | "id"
+  | "name"
+  | "name-reading"
+  | "email"
+  | "phone"
+  | "address"
+  | "government"
+  | "financial"
+  | "biometric";
 
 export function identifierBucket(type: DirectIdentifierType): IdentifierBucket {
   switch (type) {
@@ -652,7 +709,20 @@ export function identifierBucket(type: DirectIdentifierType): IdentifierBucket {
     case "employee-id":
     case "account-id":
     case "institutional-id":
+    case "course-code":
+    case "staff-id":
+    case "application-number":
+    case "record-id":
       return "id";
+    case "my-number":
+    case "passport-number":
+    case "government-id":
+      return "government";
+    case "bank-account":
+    case "credit-card":
+      return "financial";
+    case "biometric-id":
+      return "biometric";
     case "name":
       return "name";
     case "name-reading":
@@ -681,6 +751,16 @@ const COLUMN_TOKEN_PREFIX: Record<DirectIdentifierType, string> = {
   "student-card": "CARD",
   "employee-id": "EID",
   "account-id": "ACCOUNT",
+  "course-code": "COURSE",
+  "staff-id": "STAFF",
+  "application-number": "APPNO",
+  "record-id": "RECORD",
+  "my-number": "GOVID",
+  "passport-number": "PASSPORT",
+  "government-id": "GOVID",
+  "bank-account": "BANK",
+  "credit-card": "CARDNO",
+  "biometric-id": "BIO",
   "institutional-id": "INST",
   email: "ADDR",
   phone: "PHONE",
@@ -772,25 +852,125 @@ function entityAlias(
   return token;
 }
 
-function aliasFor(
+/**
+ * Address token plus the coarse locality it belongs to, e.g.
+ * `ADDRESS-001（京都府京都市）`.
+ *
+ * A bare token would mask the household AND destroy every geographic aggregate, which
+ * is the same over-masking mistake the taxonomy exists to avoid. `generalizeAddress`
+ * cuts at the first digit, so 丁目・番地・号 and the building are gone while
+ * 都道府県/市区町村 survive. When nothing textual precedes the digits (a number-first
+ * Western address) there is no safe locality to keep and the token stands alone.
+ */
+/**
+ * Prefecture + municipality only, e.g. `京都府京都市左京区吉田本町123-4` -> `京都府京都市`.
+ *
+ * Regional analysis (student distribution, service area, administrative reporting) needs
+ * geography; nothing below the municipality is needed for it, and ward + block + house
+ * number is what narrows an address to a household. Returns "" when no prefecture and
+ * municipality can be read, so the token stands alone rather than leaking a fragment.
+ */
+function coarseLocality(value: string): string {
+  const normalized = value.normalize("NFKC").trim();
+  const match = /^(.{2,4}?[都道府県])\s*(.{1,8}?[市区郡])/.exec(normalized);
+  if (match) return `${match[1]}${match[2]}`;
+  const prefecture = /^(.{2,4}?[都道府県])/.exec(normalized);
+  return prefecture ? prefecture[1]! : "";
+}
+
+function addressAlias(
+  context: StudentAliasContext,
   type: DirectIdentifierType,
   entity: number,
   role: "student" | "employee" | "person",
+  value: string,
+): string {
+  const token = entityAlias(context, type, entity, role);
+  const locality = coarseLocality(value);
+  // `京都府京都市 ADDRESS-001` — coarse geography first so regional aggregates read
+  // naturally, then the token. Ward, block and house number are never kept.
+  return locality ? `${locality} ${token}` : token;
+}
+
+function aliasFor(
+  type: DirectIdentifierType,
+  entity: number,
+  _role: "student" | "employee" | "person",
 ): string {
   const number = String(entity).padStart(3, "0");
   switch (type) {
-    case "name": return `${role === "student" ? "Student" : role === "employee" ? "Employee" : "Person"} ${number}`;
-    case "name-reading": return `Reading ${number}`;
+    // One token vocabulary, no role names. A role is a display concern and it is
+    // unstable in prose — the same person appears as 担当者/申請者/受験者 — so encoding
+    // it in a privacy token mixes classifier guesswork into the guarantee. All Yuhi
+    // promises is "this value was replaced".
+    case "name": return `PERSON-${number}`;
+    case "name-reading": return `READING-${number}`;
     case "student-id": return `SID-${number}`;
     case "student-card": return `CARD-${number}`;
     case "employee-id": return `EID-${number}`;
     case "account-id": return `ACCOUNT-${number}`;
     case "institutional-id": return `INST-${number}`;
-    case "email": return `${role}${number}@example.invalid`;
+    case "email": return `EMAIL-${number}`;
+    case "address": return `ADDRESS-${number}`;
     case "phone":
-    case "address":
+      // Phone keeps its own value-keyed token (`PHONE-001`) minted by `phoneToken`,
+      // which is already in the unified vocabulary.
       return "";
+    // DIRECT personal numbers: masked with a stable per-entity token.
+    case "my-number": return `GOVID-${number}`;
+    case "passport-number": return `PASSPORT-${number}`;
+    case "government-id": return `GOVID-${number}`;
+    case "bank-account": return `BANK-${number}`;
+    case "credit-card": return `CARDNO-${number}`;
+    case "biometric-id": return `BIO-${number}`;
+    // OPERATIONAL keys are PRESERVED, so this is never reached for them. Returning
+    // the empty string would blank a business key if it ever were, so throw instead
+    // of silently destroying data the analysis depends on.
+    case "course-code":
+    case "staff-id":
+    case "application-number":
+    case "record-id":
+      throw new Error(
+        `Refusing to pseudonymize the operational identifier "${type}": it must be preserved.`,
+      );
   }
+}
+
+/**
+ * Every DIRECT personal value registered in this run, mapped to the token that
+ * replaced it.
+ *
+ * This is what makes one person carry the same token in a CSV, a TXT, an XLSX and a
+ * PDF: the prose de-identifier looks values up here instead of inventing its own
+ * mapping. Operational identifiers are deliberately absent — they are preserved, so
+ * there is nothing to look up.
+ */
+export function directPersonalValueTokens(
+  context: StudentAliasContext,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  // Value-keyed tokens (the ID family and any column-scoped type).
+  for (const [key, token] of context.columnTokens) {
+    const value = key.slice(key.indexOf(":") + 1);
+    if (value) out.set(value, token);
+  }
+  // Attribute tokens (phone), already value-keyed.
+  for (const [key, token] of context.attributeTokens) {
+    const value = key.slice(key.indexOf(":") + 1);
+    if (value) out.set(value, token);
+  }
+  // Entity-keyed tokens (name, name-reading, email, …): resolve value -> entity ->
+  // token, so a name that a table masked as `Student 001` masks identically in prose.
+  for (const [key, entity] of context.identifierToEntity) {
+    if (typeof entity !== "number") continue;
+    const separator = key.indexOf(":");
+    const bucket = key.slice(0, separator);
+    const value = key.slice(separator + 1);
+    if (!value) continue;
+    const token = context.entityBucketTokens.get(`${entity}\u0000${bucket}`);
+    if (token) out.set(value, token);
+  }
+  return out;
 }
 
 export function tabularDirectIdentifierValues(input: string): string[] {
@@ -825,8 +1005,14 @@ export function tabularVerificationValues(input: string): string[] {
   const { table } = parseTableWithPreamble(input);
   const classification = classifyStudentRecordTable(table.rows);
   const values = new Set<string>();
+  // Only DIRECT personal columns. A surviving student id or course code is ALLOWED by
+  // policy — it is a business key that was deliberately preserved — so counting it as
+  // residue would block every delivery for doing exactly what it was asked to do.
+  const personalIndexes = classification.directIdentifierIndexes.filter(
+    (_, offset) => requiresPseudonymization(classification.directIdentifierTypes[offset]!),
+  );
   for (const row of table.rows) {
-    for (const index of classification.directIdentifierIndexes) {
+    for (const index of personalIndexes) {
       const value = (row[index] ?? "").trim();
       if (!value || isRecognizedHeaderLabel(value)) continue;
       values.add(value);
@@ -853,7 +1039,11 @@ export function tabularResidueCells(
     return { residueCells: 0, residueValues: [] };
   }
   const classification = classifyStudentRecordTable(source.rows);
-  const columns = classification.directIdentifierIndexes;
+  // Same rule as `tabularVerificationValues`: operational identifiers are preserved on
+  // purpose, so an unchanged one is not a residue.
+  const columns = classification.directIdentifierIndexes.filter(
+    (_, offset) => requiresPseudonymization(classification.directIdentifierTypes[offset]!),
+  );
   const residueValues = new Set<string>();
   let residueCells = 0;
   const rowCount = Math.min(source.rows.length, delivered.rows.length);
@@ -873,12 +1063,25 @@ export function tabularResidueCells(
 export function pseudonymizeStudentRecords(
   input: string,
   context: StudentAliasContext = createStudentAliasContext(),
+  mode: PrivacyMode = DEFAULT_PRIVACY_MODE,
 ): StudentRecordTransform {
   const { table, preamble } = parseTableWithPreamble(input);
   const originalRows = table.rows.map((row) => [...row]);
   const classification = classifyStudentRecordTable(table.rows);
-  if (classification.directIdentifierColumns === 0) {
-    throw new Error("Safe tabular pseudonymization requires direct-identifier columns.");
+  // Columns holding DIRECT personal data. A table of operational keys and measures
+  // (student_id, course_code, score) has none and needs no transformation at all —
+  // it is already free of direct personal identifiers.
+  const personalColumns = classification.directIdentifierTypes.filter(
+    requiresPseudonymization,
+  ).length;
+  // `trusted-local`: Yuhi transforms nothing. This is not a security posture — the
+  // caller is responsible for the environment, and every surface carries
+  // TRUSTED_LOCAL_WARNING.
+  if (!modeTransformsDirectIdentifiers(mode)) {
+    throw new Error("TRUSTED_LOCAL_NO_TRANSFORM");
+  }
+  if (personalColumns === 0) {
+    throw new Error("NO_DIRECT_PERSONAL_IDENTIFIERS");
   }
   const role: "student" | "employee" | "person" =
     classification.directIdentifierTypes.some((type) => type === "student-id" || type === "student-card")
@@ -914,28 +1117,90 @@ export function pseudonymizeStudentRecords(
     "institutional-id": 5,
     "account-id": 6,
     phone: 7,
+    // Personal high-sensitivity numbers resolve an entity before weaker keys.
+    "my-number": 1,
+    "passport-number": 1,
+    "government-id": 1,
+    "bank-account": 8,
+    "credit-card": 8,
+    "biometric-id": 8,
+    // OPERATIONAL keys. Never pseudonymized, so the value only matters for ordering.
+    "course-code": 50,
+    "staff-id": 50,
+    "application-number": 50,
+    "record-id": 50,
     name: 99,
     "name-reading": 99,
     address: 99,
   };
+  // Which identifier columns may be used as LINKAGE keys.
+  //
+  // Being an operational identifier of the right kind is necessary but not sufficient: a
+  // key only means "same person" if it actually discriminates between people. A term
+  // code, a campus code or a cohort year is an operational identifier that is constant or
+  // near-constant down the column, and using it for identity resolution merges everyone
+  // in the file into ONE entity — every student then receives the same PERSON token,
+  // which is silent data corruption rather than privacy.
+  //
+  // So a column also has to be discriminating RELATIVE TO THE TABLE. The comparison is
+  // against how distinct the rows themselves are, not against the row count: 300
+  // byte-identical rows really can be one person repeated, while a column holding one
+  // value across 730 rows that are otherwise all different cannot be.
+  //
+  // A column qualifies when its distinct values are within a factor of `MAX_ROWS_PER_KEY`
+  // of the distinct identifier tuples. That admits a roster (one row per student), a
+  // long table with a few rows per student, and a degenerate all-identical export — and
+  // rejects a constant term/campus/cohort column in a table of distinct people.
+  const MAX_ROWS_PER_KEY = 20;
+  const identifierTuples = new Set(
+    table.rows.slice(bodyStart).map((row) =>
+      classification.directIdentifierIndexes
+        .map((index) => (row[index] ?? "").trim())
+        .join("\u0000"),
+    ),
+  );
+  const tupleDistinct = identifierTuples.size;
+  const linkableIndexes = new Set<number>();
+  for (const [offset, index] of classification.directIdentifierIndexes.entries()) {
+    const type = classification.directIdentifierTypes[offset]!;
+    if (!identifiesRowSubject(type) || columnScoped.has(type)) continue;
+    const distinct = new Set<string>();
+    for (const row of table.rows.slice(bodyStart)) {
+      const value = (row[index] ?? "").trim();
+      if (value) distinct.add(value);
+    }
+    if (distinct.size === 0) continue;
+    if (distinct.size * MAX_ROWS_PER_KEY < tupleDistinct) continue;
+    linkableIndexes.add(index);
+  }
+
   for (const row of table.rows.slice(bodyStart)) {
-    const identifiers = classification.directIdentifierIndexes.map((index, offset) => ({
+    // EVERY classified identifier column, operational ones included. This list is for
+    // IDENTITY RESOLUTION, not for replacement: an operational key such as a student id
+    // is the best evidence that two rows — in two files, in two formats — describe the
+    // same person, which is what makes one person carry one token everywhere.
+    const classified = classification.directIdentifierIndexes.map((index, offset) => ({
       index,
       type: classification.directIdentifierTypes[offset]!,
       value: (row[index] ?? "").trim(),
     })).filter((item) => item.value);
+    // POLICY: only DIRECT personal identifiers are REPLACED. A student id, course code,
+    // employee number or record id is an OPERATIONAL key — masking it breaks the joins
+    // and group-bys the data exists for while buying no privacy, because the person is
+    // already protected by masking their name. See `identifier-taxonomy.ts`.
+    //
+    // Note the ordering: filtering happens AFTER `classified` is built, never before.
+    // Filtering first also removes the linkage keys, and then every row mints a fresh
+    // entity — so the same person gets PERSON-001 in a CSV and PERSON-003 in an XLSX.
+    const identifiers = classified.filter((item) => requiresPseudonymization(item.type));
     // A row with no direct identifier (a blank, total/summary, or partially filled
     // row — ubiquitous in real CSV/XLSX) has nothing to pseudonymize. Preserve it
     // verbatim instead of failing the whole file (which would drop it from the
     // Prepared Workspace). The post-transform safety-check remains the backstop
     // against any residual identifier elsewhere in the output.
     if (identifiers.length === 0) continue;
-    const strong = identifiers
-      .filter((item) =>
-        item.type !== "name" &&
-        item.type !== "name-reading" &&
-        item.type !== "address" &&
-        !columnScoped.has(item.type))
+    const strong = classified
+      .filter((item) => linkableIndexes.has(item.index))
       .sort((a, b) => priority[a.type] - priority[b.type]);
     const linked = strong
       .map((item) => context.identifierToEntity.get(identifierKey(item.type, item.value)))
@@ -996,7 +1261,7 @@ export function pseudonymizeStudentRecords(
         bucket === "phone"
           ? phoneToken(context, item.value)
           : bucket === "address"
-            ? generalizeAddress(item.value)
+            ? addressAlias(context, item.type, entity, role, item.value)
             : // The ID family is value-keyed so it joins across formats; a type that
               // spans several columns is value-keyed too, so three unrelated code
               // columns never collapse onto one token.

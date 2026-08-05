@@ -29,17 +29,22 @@ describe("XLSX student-record preparation", () => {
     });
 
     const transformed = await pseudonymizeXlsxRecords(source);
-    expect(transformed.valuesReplaced).toBe(4);
+    // Two names replaced. The two 学生証番号 values are OPERATIONAL and preserved, so
+    // they must NOT be counted: `valuesReplaced` reports what Yuhi actually changed.
+    expect(transformed.valuesReplaced).toBe(2);
     expect(await xlsxContainsAnyValue(
       transformed.output,
-      new Set(["Synthetic Student One", "Synthetic Student Two", "100001", "100002"]),
+      new Set(["Synthetic Student One", "Synthetic Student Two"]),
     )).toBe(false);
+    // ...and the preserved keys are still there to join on.
+    expect(await xlsxContainsAnyValue(transformed.output, new Set(["100001", "100002"])))
+      .toBe(true);
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(transformed.output as never);
     const sheet = workbook.getWorksheet("Grades")!;
-    expect(sheet.getCell("A2").text).toBe("Student 001");
-    expect(sheet.getCell("B2").text).toBe("CARD-001");
+    expect(sheet.getCell("A2").text).toBe("PERSON-001");
+    expect(sheet.getCell("B2").text).toBe("100001");
     expect(sheet.getCell("C2").value).toBe(90);
     expect(sheet.getCell("D2").value).toBe("A");
     expect(sheet.getCell("E2").value).toMatchObject({ formula: "C2+10", result: 100 });

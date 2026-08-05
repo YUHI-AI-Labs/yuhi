@@ -7,7 +7,7 @@ import {
   parseDelimitedTable,
   pseudonymizeStudentRecords,
   splitTablePreamble,
-  tabularDirectIdentifierValues,
+  tabularVerificationValues,
 } from "./student-records.js";
 
 const JA =
@@ -116,7 +116,11 @@ describe("student record tables", () => {
     expect(result.output).toContain("出力日,2026-07-22");
     expect(result.output).toContain("受診者番号,受診者氏名,BMI");
     expect(result.output).toContain("22.1");
-    for (const raw of ["A000000-0723", "A005007-0724", "サンプル 太郎", "サンプル 花子"]) {
+    // 受診者番号 is an OPERATIONAL key and is preserved — it is what a health record
+    // is joined on, and it does not name the person. The names are masked.
+    expect(result.output).toContain("A000000-0723,PERSON-001,22.1");
+    expect(result.output).toContain("A005007-0724,PERSON-002,20.4");
+    for (const raw of ["サンプル 太郎", "サンプル 花子"]) {
       expect(result.output).not.toContain(raw);
     }
   });
@@ -132,9 +136,12 @@ describe("student record tables", () => {
 
   it("uses stable sequential aliases within a run and preserves grades", () => {
     const result = pseudonymizeStudentRecords(JA);
-    expect(result.output).toContain("Student 001,SID-001,CARD-001,8,88,A");
-    expect(result.output).toContain("Student 002,SID-002,CARD-002,7,77,B");
-    for (const value of tabularDirectIdentifierValues(JA)) {
+    expect(result.output).toContain("PERSON-001,100001,200001,8,88,A");
+    expect(result.output).toContain("PERSON-002,100002,200002,7,77,B");
+    // Verification is scoped to DIRECT PERSONAL values. The operational ids above are
+    // asserted present, so this is not a weaker check — it is the same check over the
+    // set that policy actually forbids.
+    for (const value of tabularVerificationValues(JA)) {
       expect(result.output).not.toContain(value);
     }
   });
@@ -151,9 +158,8 @@ describe("student record tables", () => {
       "full name,student id,student card number,email,phone number,grade\n" +
       "Synthetic A,S-1,C-1,a@example.test,+1-555-0000,A\n",
     );
-    expect(result.output).toContain(
-      "Student 001,SID-001,CARD-001,student001@example.invalid,PHONE-001,A",
-    );
+    // Name/email/phone masked; student id and card number preserved for joins.
+    expect(result.output).toContain("PERSON-001,S-1,C-1,EMAIL-001,PHONE-001,A");
   });
 
   it("gives the same phone a stable token and generalizes addresses to locality", () => {
@@ -168,8 +174,10 @@ describe("student record tables", () => {
     expect(lines[1]).toContain("PHONE-001");
     expect(lines[2]).toContain("PHONE-002");
     expect(lines[3]).toContain("PHONE-001");
-    // Address generalized: street number removed, locality kept; raw number gone.
-    expect(result.output).toContain("東京都新宿区西新宿");
+    // Address generalized to prefecture + municipality; street/block/house number gone.
+    expect(result.output).toContain("東京都新宿区 ADDRESS-001");
+    expect(result.output).toContain("大阪府大阪市 ADDRESS-002");
+    expect(result.output).not.toContain("西新宿");
     expect(result.output).not.toContain("2-8-1");
     expect(result.output).not.toContain("090-1111-2222");
   });
@@ -184,10 +192,12 @@ describe("student record tables", () => {
       "full name,student id,grade\n  SYNTHETIC   NAME  ,S-1,A\nSame Name,S-3,B\n",
       context,
     );
-    expect(first.output).toContain("Student 001,SID-001,80");
-    expect(first.output).toContain("Student 002,SID-002,70");
-    expect(second.output).toContain("Student 001,SID-001,A");
-    expect(second.output).toContain("Student 003,SID-003,B");
+    // The student id is preserved, so it is BOTH the join key and the linkage key:
+    // S-1 in the second file resolves to the same person as S-1 in the first.
+    expect(first.output).toContain("PERSON-001,S-1,80");
+    expect(first.output).toContain("PERSON-002,S-2,70");
+    expect(second.output).toContain("PERSON-001,S-1,A");
+    expect(second.output).toContain("PERSON-003,S-3,B");
   });
 
   it("aggregates performance fields without retaining individual rows", () => {
@@ -206,7 +216,7 @@ describe("student record tables", () => {
     const input = `full name,student id,score\n${rows.join("\n")}\n`;
     const result = pseudonymizeStudentRecords(input);
     expect(result.aliasesCreated).toBe(5_000);
-    expect(result.output).toContain("Student 5000");
+    expect(result.output).toContain("PERSON-5000,S-4999,50");
     expect(result.output).not.toContain("Synthetic 4999");
   });
 
@@ -247,9 +257,11 @@ describe("student record tables", () => {
     const result = parseDelimitedTable(pseudonymizeStudentRecords(
       "full name,student id,grade\nSame Name,,A\nSame Name,,B\nSame Name,S-3,C\n",
     ).output);
-    expect(result.rows[1]?.[0]).toBe("Student 001");
-    expect(result.rows[2]?.[0]).toBe("Student 002");
-    expect(result.rows[3]?.[0]).toBe("Student 003");
+    // Identical names with NO id must not merge: without a key there is no evidence
+    // that these are one person.
+    expect(result.rows[1]?.[0]).toBe("PERSON-001");
+    expect(result.rows[2]?.[0]).toBe("PERSON-002");
+    expect(result.rows[3]?.[0]).toBe("PERSON-003");
   });
 
   it("links a repeated stable ID and handles conflicting identifiers best-effort (never throws)", () => {
@@ -266,12 +278,18 @@ describe("student record tables", () => {
       "full name,student id,student card number,score\nOne,S-1,C-1,80\nTwo,S-2,C-1,90\n",
     );
     expect(result.conflicts).toBeGreaterThan(0);
-    for (const raw of ["One", "Two", "S-1", "S-2", "C-1"]) {
-      expect(result.output).not.toContain(raw); // no raw identifier leaks
+    // Names masked; the operational keys stay so the conflicting rows remain joinable
+    // and the data-quality problem stays visible to whoever has to fix it.
+    for (const raw of ["One", "Two"]) {
+      expect(result.output).not.toContain(raw); // no DIRECT personal value leaks
     }
+    expect(result.output).toContain("S-1,C-1,80");
+    expect(result.output).toContain("S-2,C-1,90");
     const parsed = parseDelimitedTable(result.output);
     // Distinct pseudonyms for the two different people (never collapsed to one mask).
-    expect(parsed.rows[1]?.[2]).not.toEqual(parsed.rows[2]?.[2]);
+    // Compared on the NAME column: the card number is an operational key and is
+    // preserved, so it is identical by design in this conflicting fixture.
+    expect(parsed.rows[1]?.[0]).not.toEqual(parsed.rows[2]?.[0]);
   });
 });
 
@@ -321,7 +339,7 @@ describe("semantics-preserving pseudonymization (v0.3.6 real-data regression)", 
     const classification = classifyStudentRecordTable(parseDelimitedTable(input).rows);
     expect(classification.directIdentifierTypes).not.toContain("name");
     expect(() => pseudonymizeStudentRecords(input)).toThrow(
-      /requires direct-identifier columns/,
+      /NO_DIRECT_PERSONAL_IDENTIFIERS/,
     );
   });
 });

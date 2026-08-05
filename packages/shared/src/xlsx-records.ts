@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { requiresPseudonymization } from "./identifier-taxonomy.js";
 import {
   classifyStudentRecordTable,
   detectTableLayout,
@@ -115,8 +116,15 @@ export async function pseudonymizeXlsxRecords(
       table.rows[0]!.length - classification.directIdentifierColumns;
     associatedDataPresent ||= classification.performanceColumns > 0;
     const layout = detectTableLayout(table.rows, ",");
+    // DIRECT PERSONAL columns only. `rawIdentifiers` is the forbidden-value set the
+    // delivery gate scans the output for; a preserved operational key is compliant
+    // output, so including it here would fail verification for a correct transform.
+    const personalIndexes = classification.directIdentifierIndexes.filter(
+      (_, offset) =>
+        requiresPseudonymization(classification.directIdentifierTypes[offset]!),
+    );
     for (const row of table.rows.slice(layout.dataStartRow)) {
-      for (const index of classification.directIdentifierIndexes) {
+      for (const index of personalIndexes) {
         const value = (row[index] ?? "").trim();
         if (value) rawIdentifiers.add(value);
       }

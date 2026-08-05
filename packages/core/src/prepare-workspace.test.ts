@@ -485,8 +485,8 @@ describe("prepareWorkspace", () => {
     const output = new ExcelJS.Workbook();
     await output.xlsx.load(prepared as never);
     const outputSheet = output.getWorksheet("評価")!;
-    expect(outputSheet.getCell("A2").text).toBe("Student 001");
-    expect(outputSheet.getCell("B2").text).toBe("CARD-001");
+    expect(outputSheet.getCell("A2").text).toBe("PERSON-001");
+    expect(outputSheet.getCell("B2").text).toBe("100001"); // operational key preserved
     expect(outputSheet.getCell("C2").value).toBe(90);
     expect(outputSheet.getCell("D2").value).toBe("A");
     expect(outputSheet.getCell("E2").value).toMatchObject({ formula: "C2+10", result: 100 });
@@ -527,10 +527,8 @@ describe("prepareWorkspace", () => {
       claudeCodeStarted: false,
     });
     const prepared = readFileSync(path.join(report.outDir, relpath), "utf8");
-    expect(prepared).toContain("Student 001,SID-001,CARD-001,A");
+    expect(prepared).toContain("PERSON-001,100001,200001,A");
     expect(prepared).not.toContain("Synthetic Person");
-    expect(prepared).not.toContain("100001");
-    expect(prepared).not.toContain("200001");
     expect(readFileSync(path.join(dir, relpath), "utf8")).toBe(raw);
     const reviewDecision = buildPreparedFileDecisions(report)
       .find((item) => item.relativePath === relpath);
@@ -727,11 +725,13 @@ describe("prepareWorkspace", () => {
     expect(entry?.status).toBe("ok");
     expect(entry?.transformed).toBe(true);
     const rows = readFileSync(path.join(report.outDir, "numeric-overlap.csv"), "utf8");
-    expect(rows).toContain("Student 001,SID-001,CARD-001,100,A");
-    expect(rows).toContain("Student 002,SID-002,CARD-002,100,B");
+    // The quiz score 100 equals student id 100; neither is corrupted, and the ids are
+    // preserved because they are operational.
+    expect(rows).toContain("PERSON-001,100,9001,100,A");
+    expect(rows).toContain("PERSON-002,200,9002,100,B");
   });
 
-  it("pseudonymizes suffixed Japanese ID headers and delivers headerless companion data with a warning", async () => {
+  it("delivers a table of operational ids and scores unchanged, with its companion", async () => {
     const csv =
       "\uFEFF学生証番号6桁,評点\n" +
       Array.from({ length: 20 }, (_, index) => `${String(300000 + index)},${index % 101}`).join("\n") +
@@ -747,10 +747,15 @@ describe("prepareWorkspace", () => {
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
     const csvEntry = report.files.find((item) => item.relpath === "synthetic-check.csv");
     const txtEntry = report.files.find((item) => item.relpath === "synthetic-companion.txt");
-    expect(csvEntry).toMatchObject({ status: "ok", transformed: true });
+    // 学生証番号6桁 is an OPERATIONAL identifier and 評点 is analytical, so this table
+    // holds no direct personal data: there is nothing to pseudonymize and the correct
+    // outcome is to deliver it unchanged. Masking it would destroy the only key the
+    // scores can be joined on, for no privacy gain.
+    expect(csvEntry).toMatchObject({ status: "ok" });
     expect(csvEntry?.omitted).not.toBe(true);
-    expect(readFileSync(path.join(report.outDir, "synthetic-check.csv"), "utf8"))
-      .toContain("CARD-001");
+    const deliveredCsv = readFileSync(path.join(report.outDir, "synthetic-check.csv"), "utf8");
+    expect(deliveredCsv).toContain("300000,0");
+    expect(deliveredCsv).not.toContain("CARD-");
     // Companion data cannot be safely pseudonymized, but with no secret it is still
     // delivered (never silently dropped) — as the original, marked unverified.
     expect(txtEntry?.omitted).not.toBe(true);
@@ -809,7 +814,9 @@ describe("prepareWorkspace", () => {
     expect(risky?.omitted).toBeFalsy();
     expect(existsSync(path.join(report.outDir, "conflict.csv"))).toBe(true);
     const out = readFileSync(path.join(report.outDir, "conflict.csv"), "utf8");
-    for (const rawId of ["Synthetic One", "Synthetic Two", "S-1", "S-2", "C-1"]) {
+    // Names must not survive. The ids are operational and are preserved even on a
+    // conflicting row, so the data-quality problem stays visible and joinable.
+    for (const rawId of ["Synthetic One", "Synthetic Two"]) {
       expect(out).not.toContain(rawId);
     }
     // Workspace-level: launch allowed; all files (10 safe + the table) available.
@@ -886,9 +893,11 @@ describe("prepareWorkspace", () => {
     // Preamble preserved; identifiers gone; analytical values kept.
     expect(out).toContain("健康診断結果一覧");
     expect(out).toContain("22.1");
-    for (const rawId of ["A000000-0723", "A005007-0724", "サンプル 太郎", "サンプル 花子"]) {
+    for (const rawId of ["サンプル 太郎", "サンプル 花子"]) {
       expect(out).not.toContain(rawId);
     }
+    // 受診者番号 is the operational key a health record is joined on: preserved.
+    expect(out).toContain("A000000-0723,PERSON-001,22.1");
   });
 
   it("keeps a malformed table LOCAL when it carries an unresolved credential", async () => {
@@ -928,10 +937,10 @@ describe("prepareWorkspace", () => {
     });
     const aConflict = readFileSync(path.join(report.outDir, "a-conflict.csv"), "utf8");
     const bValid = readFileSync(path.join(report.outDir, "b-valid.csv"), "utf8");
-    for (const raw of ["Synthetic One", "Synthetic Two", "S-1", "S-2", "C-1"]) {
+    for (const raw of ["Synthetic One", "Synthetic Two"]) {
       expect(aConflict).not.toContain(raw);
     }
-    for (const raw of ["Synthetic Three", "Synthetic Four", "S-3", "S-4", "C-3", "C-4"]) {
+    for (const raw of ["Synthetic Three", "Synthetic Four"]) {
       expect(bValid).not.toContain(raw);
     }
     // b-valid's two distinct students get two distinct pseudonyms (not collapsed).
@@ -1023,7 +1032,7 @@ describe("prepareWorkspace", () => {
     expect(existsSync(path.join(report.outDir, ".DS_Store"))).toBe(false);
   });
 
-  it("FINAL ARTIFACT: no delivered CSV/nested/TXT/XLSX contains raw names or IDs; grades remain", async () => {
+  it("FINAL ARTIFACT: no delivered CSV/nested/TXT/XLSX contains a raw NAME; operational ids and grades remain", async () => {
     // The security-critical guarantee, asserted against the ACTUAL bytes on disk
     // (reopened after every write/rename/fallback) — not an in-memory transform.
     const HEADER = ["氏名", "学籍番号", "学生証番号", "評定"];
@@ -1031,7 +1040,11 @@ describe("prepareWorkspace", () => {
       ["山田太郎", "123456", "A000000", "A"],
       ["佐藤花子", "990192", "A005007", "B"],
     ];
-    const RAW = ["山田太郎", "佐藤花子", "123456", "990192", "A000000", "A005007"];
+    // DIRECT PERSONAL values only. 学籍番号 and 学生証番号 are operational keys that are
+    // preserved by policy, and they are asserted PRESENT further down — so this list is
+    // the set that must never appear, not merely the set we happen to check.
+    const RAW = ["山田太郎", "佐藤花子"];
+    const PRESERVED = ["123456", "990192", "A000000", "A005007"];
     const csvText = [HEADER.join(","), ...ROWS.map((r) => r.join(","))].join("\n") + "\n";
     const tsvText = [HEADER.join("\t"), ...ROWS.map((r) => r.join("\t"))].join("\n") + "\n";
 
@@ -1082,6 +1095,12 @@ describe("prepareWorkspace", () => {
       }
       // Grades (analytical values) must survive the de-identification.
       expect(/[|,\t]A(\||$|\n)/.test(text) || text.includes("A") ).toBe(true);
+      // ...and so must the operational keys. This is the other half of the guarantee:
+      // asserting only "no name survives" would still pass if Yuhi masked everything,
+      // which is the behaviour 0.4.6 deliberately replaced.
+      for (const key of PRESERVED) {
+        expect(text, `${entry.relpath} dropped operational key ${key}`).toContain(key);
+      }
       // The final gate must have verified this delivered artifact.
       expect(entry.finalRescanVerified).toBe(true);
       canonicalsChecked += 1;
@@ -1148,15 +1167,16 @@ describe("prepareWorkspace", () => {
     const report = await prepareWorkspace(dir, { provider: fakeProvider() });
     const first = readFileSync(path.join(report.outDir, "first.csv"), "utf8");
     const second = readFileSync(path.join(report.outDir, "second.csv"), "utf8");
-    expect(first).toContain("Student 001,SID-001,80");
-    expect(second).toContain("Student 001,SID-001,A");
+    // S-1 is preserved, and it is also what links the two files: the same student
+    // carries PERSON-001 in both.
+    expect(first).toContain("PERSON-001,S-1,80");
+    expect(second).toContain("PERSON-001,S-1,A");
     const persisted = readFileNames(report.outDir)
       .map((file) => readFileSync(file))
       .map((buffer) => buffer.toString("utf8"))
       .join("\n");
     expect(persisted).not.toContain("Synthetic Name");
     expect(persisted).not.toContain("SYNTHETIC NAME");
-    expect(persisted).not.toContain("S-1");
     expect(readFileNames(report.outDir).some((file) => /mapping/i.test(file))).toBe(false);
   });
 
@@ -1325,8 +1345,10 @@ describe("prepareWorkspace", () => {
     const large = readFileSync(path.join(report.outDir, "docs/large.md"), "utf8");
     const preparedText = employee + large + readFileSync(path.join(report.outDir, "manifest.json"), "utf8");
     expect(preparedText).not.toContain("YUHI_SYNTHETIC_SECRET_NOT_REAL");
-    expect(employee).not.toContain("E-1001");
-    expect(employee).toMatch(/Subject-[0-9A-F]{6}/);
+    // employee_id is an OPERATIONAL identifier and is preserved so HR data stays
+    // joinable; the personal name must not survive into the delivered summary.
+    expect(employee).toContain("E-1001");
+    expect(employee).not.toContain("Example Person");
     expect(large.length).toBeLessThan((files["docs/large.md"] as string).length);
 
     const salaryDecision = report.decisions?.find((d) => d.relpath === "data/salaries.csv");
