@@ -80,6 +80,41 @@ export interface EvidenceRecord {
   readonly prefixStable: boolean;
   /** True when recomputation diverged and the earlier bytes were kept (see §2). */
   readonly recomputeDiverged?: boolean;
+  /**
+   * v0.5.0 Planner evidence (docs/design/0.5.0_planner_contract.md §7): a safe,
+   * closed-enum summary of what the Planner decided and why. NEVER a reason to
+   * distrust `strategy`/`deliveryPath` above — in `"observe"` mode `executed` is
+   * always `false`, meaning this plan was computed for evidence only and did not
+   * influence the bytes actually delivered.
+   */
+  readonly plan?: PlanEvidence;
+  /**
+   * v0.5.0 Repeated Work Observation (docs/design/0.5.0_planner_contract.md §6).
+   * Recorded unconditionally when detected (advisory only — never a forced
+   * block). `hint` is populated only when this specific (object, type) pair
+   * crossed the one-hint-per-pair threshold for the first time.
+   */
+  readonly repeatedWork?: RepeatedWorkEvidence;
+}
+
+export interface RepeatedWorkEvidence {
+  readonly type: string;
+  readonly count: number;
+  readonly estimatedAvoidableTokens?: number;
+  readonly hint?: string;
+}
+
+export interface PlanEvidence {
+  readonly generationMode: "observe" | "active";
+  readonly intent: string;
+  readonly role: string;
+  readonly kind: string;
+  readonly reason: string;
+  readonly rule: string;
+  readonly strategyId?: string;
+  readonly confidence: "high" | "medium" | "low";
+  /** True only when `generationMode` is `"active"` AND this plan drove delivery. */
+  readonly executed: boolean;
 }
 
 export interface LedgerOmission {
@@ -98,6 +133,8 @@ export interface RetrievalRecord {
   readonly outcome: "delivered" | "withheld";
   readonly reason?: string;
   readonly tokensDelivered: number;
+  /** v0.5.0 Repeated Work Observation for this retrieval (contained/overlapping-read). */
+  readonly repeatedWork?: RepeatedWorkEvidence;
 }
 
 /**
@@ -224,4 +261,40 @@ export async function tallyRetrievals(store: ContextStore, session: SessionId): 
     }
   }
   return { delivered, withheld, tokensDelivered, locators };
+}
+
+export interface GenerationPlanTally {
+  readonly total: number;
+  readonly byKind: Readonly<Record<string, number>>;
+  readonly executed: number;
+  readonly repeatedWorkEvents: number;
+  readonly repeatedWorkHints: number;
+}
+
+/**
+ * v0.5.0 CLI stats (directive §19's "Generation plans: 18 / Reused: 7 /
+ * Structured: 4 / ..." example). Reads plan/repeatedWork evidence directly from
+ * the ledger — no separate live counter needed, matching `tallyRetrievals`'s own
+ * pattern (evidence is already the durable source of truth; a gateway restart
+ * must not lose these counts).
+ */
+export async function tallyGenerationPlans(store: ContextStore, session: SessionId): Promise<GenerationPlanTally> {
+  const rows = (await store.readEvidence(session)) as LedgerRow[];
+  let total = 0;
+  let executed = 0;
+  let repeatedWorkEvents = 0;
+  let repeatedWorkHints = 0;
+  const byKind: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.type === "delivery" && row.plan) {
+      total += 1;
+      byKind[row.plan.kind] = (byKind[row.plan.kind] ?? 0) + 1;
+      if (row.plan.executed) executed += 1;
+    }
+    if ((row.type === "delivery" || row.type === "retrieval") && row.repeatedWork) {
+      repeatedWorkEvents += 1;
+      if (row.repeatedWork.hint) repeatedWorkHints += 1;
+    }
+  }
+  return { total, byKind, executed, repeatedWorkEvents, repeatedWorkHints };
 }

@@ -84,6 +84,7 @@ function harness(overrides: { session?: Partial<DynamicClaudeSession>; failStats
     retrievalMode: "disabled",
     deliveryMode: "developer",
     privacyMode: "balanced",
+    generationMode: "observe",
     readyMs: 12,
     command: {
       file: "claude",

@@ -17,7 +17,14 @@ export type TaskId =
   | "retrieval-required"
   | "multi-file-bug"
   | "mixed-dev"
-  | "large-log-read";
+  | "large-log-read"
+  // v0.5.0 additions (docs/design/0.5.0_benchmark.md §3), mapped to fixtures the
+  // v0.4.0 set did not already cover:
+  | "existing-helper-reuse"
+  | "small-bug"
+  | "repeated-command"
+  | "broad-refactor"
+  | "document-analysis";
 
 export const TASK_PROMPTS: Record<TaskId, string> = {
   "large-json":
@@ -42,6 +49,16 @@ export const TASK_PROMPTS: Record<TaskId, string> = {
     "Run `bash run-tests.sh`, then report which source file and line must change to fix the failing test, and what the fix is. Do not edit any file.",
   "mixed-dev":
     "Run `bash run-tests.sh`. Diagnose the failing test, read the relevant source, apply the minimal fix, then run `bash run-tests.sh` again and report whether it passes.",
+  "existing-helper-reuse":
+    "We need to format a refund amount as currency in src/refunds/issue.ts. Look at src/lib/format.ts first, then say exactly which existing function you would call to do this and why you would not write a new one.",
+  "small-bug":
+    "src/lib/clamp.ts has exactly one bug. Read it and report the one-line fix, quoting the exact current line and the exact corrected line. Do not fix anything else.",
+  "repeated-command":
+    "Run `bash check.sh`. Its output can be flaky under load, so run it a second time to confirm the result is stable before reporting it. Report the final status only.",
+  "broad-refactor":
+    "The function `computeTotal` (src/checkout/total.ts) is imported under that name in every file under src/. Find every file that imports or calls it, and report the exact list of files. Do not rename anything yet — report list only.",
+  "document-analysis":
+    "Read INCIDENT_REPORT.md and report the root cause, the remediation owner, and the target remediation date. Nothing else.",
 };
 
 /** Records shaped like a batch-processing report; exactly one record fails. */
@@ -189,6 +206,116 @@ async function writeGrepFixture(dir: string): Promise<void> {
   }
 }
 
+/** An existing helper the agent should find and reuse rather than reimplement. */
+async function writeHelperReuseFixture(dir: string): Promise<void> {
+  await mkdir(join(dir, "src", "lib"), { recursive: true });
+  await mkdir(join(dir, "src", "refunds"), { recursive: true });
+  await writeFile(
+    join(dir, "src", "lib", "format.ts"),
+    [
+      "/** Formats a minor-unit integer amount as a localized currency string. */",
+      "export function formatCurrencyMinorUnits(amountMinorUnits: number, currency: string): string {",
+      "  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amountMinorUnits / 100);",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(dir, "src", "refunds", "issue.ts"),
+    [
+      "export interface RefundRequest { amountMinorUnits: number; currency: string; orderId: string }",
+      "",
+      "export function issueRefund(request: RefundRequest): { orderId: string; amountMinorUnits: number } {",
+      "  // TODO: format request.amountMinorUnits as currency for the confirmation email.",
+      "  return { orderId: request.orderId, amountMinorUnits: request.amountMinorUnits };",
+      "}",
+    ].join("\n"),
+  );
+}
+
+/** Exactly one bug, in a small, obviously-scoped file (Rule 3: small + load-bearing). */
+async function writeSmallBugFixture(dir: string): Promise<void> {
+  await mkdir(join(dir, "src", "lib"), { recursive: true });
+  await writeFile(
+    join(dir, "src", "lib", "clamp.ts"),
+    [
+      "export function clamp(value: number, min: number, max: number): number {",
+      "  // BUG: comparison operators are swapped, so this returns the wrong bound.",
+      "  if (value < min) return max;",
+      "  if (value > max) return min;",
+      "  return value;",
+      "}",
+    ].join("\n"),
+  );
+}
+
+/** A script whose result is stable, but the prompt asks for a confirming re-run
+ *  (Phase 5's exact-command detection needs the SAME command to actually repeat). */
+async function writeRepeatedCommandFixture(dir: string): Promise<void> {
+  const path = join(dir, "check.sh");
+  await writeFile(
+    path,
+    ["#!/usr/bin/env bash", 'echo "status: ok (checked 42 invariants)"', "exit 0"].join("\n"),
+  );
+  await chmod(path, 0o755);
+}
+
+/** `computeTotal` imported/called from many files — forces a wide read surface
+ *  (Rule 6/8 budget pressure) without any single file being large. */
+async function writeBroadRefactorFixture(dir: string): Promise<void> {
+  await mkdir(join(dir, "src", "checkout"), { recursive: true });
+  await writeFile(
+    join(dir, "src", "checkout", "total.ts"),
+    "export function computeTotal(o: unknown) { return o; }\n",
+  );
+  const importingFiles = ["cart", "invoice", "receipt", "email", "admin-panel", "export-csv", "webhook", "audit-log"];
+  for (const name of importingFiles) {
+    await mkdir(join(dir, "src", name), { recursive: true });
+    await writeFile(
+      join(dir, "src", name, "index.ts"),
+      [
+        'import { computeTotal } from "../checkout/total.js";',
+        `export function run${name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}(o: unknown) {`,
+        "  return computeTotal(o);",
+        "}",
+      ].join("\n"),
+    );
+  }
+}
+
+/** A markdown "document" with a specific fact buried in prose (document-analysis intent). */
+async function writeDocumentAnalysisFixture(dir: string): Promise<void> {
+  const paragraphs = [
+    "# Incident Report — Settlement Batch Delay",
+    "",
+    "## Summary",
+    "",
+    "On 2026-08-03 the nightly settlement batch completed 41 minutes late. Customer-facing",
+    "impact was limited to a delayed balance update; no payments were lost or duplicated.",
+    "",
+    ...Array.from(
+      { length: 60 },
+      (_, i) => `Timeline note ${i}: monitoring showed nominal queue depth and no alerts fired during this window.`,
+    ),
+    "",
+    "## Root Cause",
+    "",
+    "The batch worker's retry backoff was miscalculated after a dependency upgrade changed the",
+    "default HTTP client timeout from 30s to 5s, causing the settlement-service client to retry",
+    "far more aggressively than intended and exhaust its connection pool under normal load.",
+    "",
+    ...Array.from(
+      { length: 40 },
+      (_, i) => `Supporting detail ${i}: connection pool metrics from the affected window, included for completeness.`,
+    ),
+    "",
+    "## Remediation",
+    "",
+    "Owner: Priya Nandakumar (Payments Platform). Target date: 2026-08-14. The fix pins the",
+    "HTTP client timeout explicitly rather than inheriting the library default.",
+  ];
+  await writeFile(join(dir, "INCIDENT_REPORT.md"), paragraphs.join("\n"));
+}
+
 export async function createFixture(dir: string, task: TaskId): Promise<void> {
   await mkdir(dir, { recursive: true });
   if (task === "large-json" || task === "repeated-json" || task === "retrieval-required") {
@@ -205,6 +332,26 @@ export async function createFixture(dir: string, task: TaskId): Promise<void> {
   }
   if (task === "mixed-dev") {
     await writeMixedDevFixture(dir);
+    return;
+  }
+  if (task === "existing-helper-reuse") {
+    await writeHelperReuseFixture(dir);
+    return;
+  }
+  if (task === "small-bug") {
+    await writeSmallBugFixture(dir);
+    return;
+  }
+  if (task === "repeated-command") {
+    await writeRepeatedCommandFixture(dir);
+    return;
+  }
+  if (task === "broad-refactor") {
+    await writeBroadRefactorFixture(dir);
+    return;
+  }
+  if (task === "document-analysis") {
+    await writeDocumentAnalysisFixture(dir);
     return;
   }
   await writeGrepFixture(dir);
@@ -230,6 +377,17 @@ export const TASK_ORACLE: Record<TaskId, (answer: string) => boolean> = {
   "multi-file-bug": (a) => /total\.ts/.test(a) && /(42|subtotal)/.test(a),
   // Scored by re-running the suite, not by the prose; the answer only has to claim it.
   "mixed-dev": (a) => /pass/i.test(a),
+  "existing-helper-reuse": (a) => /formatCurrencyMinorUnits/.test(a),
+  "small-bug": (a) => /return max/.test(a) && /return min/.test(a),
+  // The correct final status is "ok" both times; the harness's OWN repeated-command
+  // detection (not this oracle) is what the fixture is actually for — see
+  // packages/context-runtime/src/planner/repeated-work.test.ts for the unit-level proof.
+  "repeated-command": (a) => /ok/i.test(a),
+  "broad-refactor": (a) =>
+    ["cart", "invoice", "receipt", "email", "admin-panel", "export-csv", "webhook", "audit-log"].every((f) =>
+      new RegExp(f).test(a),
+    ),
+  "document-analysis": (a) => /priya nandakumar/i.test(a) && /2026-08-14/.test(a) && /timeout/i.test(a),
 };
 
 /**
@@ -248,6 +406,11 @@ export const FIXTURE_MARKER: Record<TaskId, string> = {
   "large-log": "server.log",
   "large-log-read": "server.log",
   "grep-exploration": "src/checkout/total.ts",
+  "existing-helper-reuse": "src/lib/format.ts",
+  "small-bug": "src/lib/clamp.ts",
+  "repeated-command": "check.sh",
+  "broad-refactor": "src/checkout/total.ts",
+  "document-analysis": "INCIDENT_REPORT.md",
 };
 
 /** Tasks whose success is decided by re-running the fixture's tests after the agent. */

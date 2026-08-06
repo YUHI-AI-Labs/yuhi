@@ -8,8 +8,11 @@
  */
 
 import { ContextStore, asSessionId } from "@yuhi/context-store";
-import { tallyRetrievals } from "@yuhi/context-runtime";
+import { tallyRetrievals, tallyGenerationPlans, type GenerationPlanTally } from "@yuhi/context-runtime";
 import type { GatewayStats, MetricsSnapshot } from "@yuhi/context-gateway";
+
+/** v0.5.0: `MetricsSnapshot` plus the ledger-derived Planner tally for the same session. */
+export type MetricsSnapshotWithGeneration = MetricsSnapshot & { generation?: GenerationPlanTally };
 
 export function formatStatsReport(stats: GatewayStats): string {
   const lines: string[] = ["Yuhi dynamic context — session report", `Upstream: ${stats.upstream}`, `Requests: ${stats.requests}`];
@@ -31,9 +34,10 @@ export function formatStatsReport(stats: GatewayStats): string {
   return lines.join("\n");
 }
 
-export function formatSnapshot(s: MetricsSnapshot): string[] {
+export function formatSnapshot(s: MetricsSnapshotWithGeneration): string[] {
   const usage = s.usage;
   const usageKnown = usage.inputTokens > 0 || usage.outputTokens > 0;
+  const generation = s.generation;
   return [
     `Session ${s.sessionId}`,
     // The three measurements are printed apart, always, and an unknown is printed as
@@ -59,6 +63,13 @@ export function formatSnapshot(s: MetricsSnapshot): string[] {
     usage.costUsd === undefined
       ? "  Actual cost: Not measured (provider did not report a billed cost)"
       : `  Actual cost: ${usage.costUsd} USD (provider-reported)`,
+    ...(generation && generation.total > 0
+      ? [
+          `  Generation plans: ${generation.total} (executed: ${generation.executed}, observed only: ${generation.total - generation.executed})`,
+          `    reuse: ${generation.byKind["reuse"] ?? 0} · structured: ${generation.byKind["structured"] ?? 0} · window: ${generation.byKind["window"] ?? 0} · reference: ${generation.byKind["reference"] ?? 0} · full: ${generation.byKind["full"] ?? 0} · withhold: ${generation.byKind["withhold"] ?? 0}`,
+          `  Repeated-work observations: ${generation.repeatedWorkEvents} (hints shown: ${generation.repeatedWorkHints})`,
+        ]
+      : ["  Generation plans: 0 (generation-mode was off, or no Planner activity yet this session)"]),
   ];
 }
 
@@ -67,15 +78,18 @@ export function formatSnapshot(s: MetricsSnapshot): string[] {
  * count taken from the LEDGER — the gateway cannot observe retrievals, which happen in
  * the MCP server's own process.
  */
-export async function readPersistedStats(storeRoot: string): Promise<MetricsSnapshot[]> {
+export async function readPersistedStats(storeRoot: string): Promise<MetricsSnapshotWithGeneration[]> {
   const store = await ContextStore.open({ root: storeRoot });
-  const out: MetricsSnapshot[] = [];
+  const out: MetricsSnapshotWithGeneration[] = [];
   for (const session of await store.listSessions()) {
     const sessionId = asSessionId(session);
     const snapshot = await store.readState<MetricsSnapshot>(sessionId, "gateway-stats");
     if (!snapshot) continue;
     const tally = await tallyRetrievals(store, sessionId);
-    out.push({ ...snapshot, retrievals: tally.delivered });
+    // v0.5.0: 0 total (not merely absent) means generationMode was "off" for this
+    // session, or no delivery reached the Planner yet -- surfaced distinctly below.
+    const generation = await tallyGenerationPlans(store, sessionId);
+    out.push({ ...snapshot, retrievals: tally.delivered, generation });
   }
   return out;
 }

@@ -2,7 +2,7 @@
   "name": "yuhi-code",
   "displayName": "Yuhi Code — See What Your AI Agent Sees",
   "description": "Prepare your workspace before Claude Code sees it. One Privacy Mode across Static Prepare, Dynamic Terminal, and Native Claude GUI — transform direct personal identifiers, redact secrets, and keep the session isolated from your normal VS Code environment.",
-  "version": "0.4.8",
+  "version": "0.5.0",
   "publisher": "yuhi-ai-labs",
   "license": "Apache-2.0",
   "icon": "media/yuhi-ai-labs-icon.png",
@@ -398,6 +398,37 @@
             "Personal identifiers and development secrets may be delivered unchanged. Requires confirmation; use only with a trusted local model or private infrastructure."
           ],
           "description": "What happens to direct personal identifiers (and, composed with this, detected secrets) during a dynamic context session. Supersedes yuhi.dynamicContext.deliveryMode. Empty inherits the prepared run's own recorded mode."
+        },
+        "yuhi.dynamicContext.generationMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "active"
+          ],
+          "default": "observe",
+          "enumDescriptions": [
+            "v0.4 behaviour: no task-aware planning at all.",
+            "The Planner computes and records a task-aware delivery plan for every tool result, but never changes what is actually delivered. Recommended until a benchmark justifies Active as the default.",
+            "The Planner's plan drives delivery for reuse, structured, reference and window representations. Not yet the default pending measured evidence -- see docs/design/0.5.0_benchmark.md."
+          ],
+          "description": "v0.5.0 Task-Aware Dynamic Context Generation mode for a dynamic context session. Advanced setting -- not shown during first run."
+        },
+        "yuhi.dynamicContext.contextBudget": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "description": "v0.5.0 best-effort per-session token target for the Planner. null (default): no target, identical to pre-0.5.0 behaviour. Advanced setting -- not shown during first run."
+        },
+        "yuhi.dynamicContext.contextMaximum": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "description": "v0.5.0 hard per-session token ceiling for the Planner. null (default): no ceiling, identical to pre-0.5.0 behaviour. Advanced setting -- not shown during first run."
         },
         "yuhi.nativeSession": {
           "type": "object",

@@ -225,6 +225,10 @@ Issue と PR を歓迎します — [`CONTRIBUTING.md`](./docs/CONTRIBUTING.md) 
 
 コンテキスト削減量はリポジトリ構成・タスク・モデル・キャッシュ挙動・retrieval 設定により変わります。測定方法の詳細はベンチマークレポートに記載しています。数値は v0.5 で再測定予定です。
 
+### タスク認識型生成 (v0.5.0、既定は Observe)
+
+Yuhi は実行時にタスクを意識したコンテキスト表現を生成できます。Planner が tool result ごとに、フル配信・構造化表現・取得可能な省略区間を持つウィンドウ・エージェントが後から取得する参照・直前と同一内容の再利用のいずれにするかを決定します。Planner 自体はコンテンツを書き換えず、どの結果も既存の compressor と retrieval 経路を通ります。既定を上げる前に効果を測定する方針のため、`--generation-mode`（CLI）/ `yuhi.dynamicContext.generationMode`（VS Code、Advanced）の既定は `observe` です。これは Planner の判断を記録するだけで、実際の配信内容は変更しません。`active` はオプトインであり、まだ既定ではありません — コスト・トークン数・速度についての主張は行っていません。詳細は [docs/design/0.5.0_dynamic_generation.md](docs/design/0.5.0_dynamic_generation.md)。
+
 ### Developer Mode
 
 動的ランタイムの既定は **Developer Mode** です。準備時の既定とは意図的に逆になります。

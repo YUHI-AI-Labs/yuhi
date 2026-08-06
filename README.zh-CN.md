@@ -223,6 +223,10 @@ apps/      cli · vscode
 
 上下文削减幅度取决于仓库结构、任务、模型、缓存行为与 retrieval 配置。测量方法详见基准测试报告；具体数值将在 v0.5 重新测定。
 
+### 任务感知生成 (v0.5.0，默认 Observe)
+
+Yuhi 可以在运行时生成任务感知的上下文表示。Planner 会针对每个 tool result 决定：完整交付、结构化表示、带可取回省略区间的窗口、供 agent 按需取回的引用，或复用与此前完全相同的交付结果。Planner 本身不会改写内容——无论选择哪种结果，都会经过与此前相同的 compressor 与 retrieval 路径。默认值只有在效果被测量之后才会提升：`--generation-mode`（CLI）/ `yuhi.dynamicContext.generationMode`（VS Code，Advanced 设置）默认值为 `observe`，只记录 Planner 会做出的决定，不改变实际交付内容。`active` 为可选启用项，尚未成为默认——目前未对其做出任何成本、token 数或速度方面的声明。详见 [docs/design/0.5.0_dynamic_generation.md](docs/design/0.5.0_dynamic_generation.md)。
+
 ### Developer Mode
 
 动态运行时默认启用 **Developer Mode**，这与准备阶段的默认行为相反：

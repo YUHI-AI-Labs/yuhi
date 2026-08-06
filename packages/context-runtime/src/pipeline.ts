@@ -19,6 +19,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  BUILTIN_COMPRESSORS,
   compressWithFallback,
   defaultCompressContext,
   type CompressContext,
@@ -36,7 +37,10 @@ import {
 } from "@yuhi/context-store";
 import type { DetectorOptions } from "@yuhi/scanner";
 import {
+  byteCount,
+  codePointCount,
   createStudentAliasContext,
+  currentMeasurementMethod,
   DEFAULT_PRIVACY_MODE,
   directPersonalValueTokens,
   modeTransformsDirectIdentifiers,
@@ -72,6 +76,26 @@ import {
   scanMetadata,
 } from "./safety.js";
 import { DEVELOPER_MODE_POLICY, type DeliveryPolicy } from "./delivery-policy.js";
+import {
+  classifyIntent,
+  classifyRole,
+  capabilitiesOf,
+  defaultPlanner,
+  hasTestFailureMarkers,
+  GenerationCache,
+  RepeatedWorkTracker,
+  repeatedWorkHint,
+  type RepeatedWorkStats,
+} from "./planner/index.js";
+import type {
+  ContextIntent,
+  ContextPlan,
+  ContextRole,
+  DynamicContextPlanner,
+  GenerationMode,
+  PriorDelivery,
+  RuntimeBudgetState,
+} from "./planner/index.js";
 
 export interface FallbackPolicy {
   /** Behaviour when compression is UNAVAILABLE. Security failures ignore this. */
@@ -215,6 +239,34 @@ export interface ContextRuntimeOptions {
    * Defaults to a fresh, empty registry (a new Dynamic session with no prior linkage).
    */
   readonly aliasContext?: StudentAliasContext;
+  /**
+   * v0.5.0 Task-Aware Dynamic Context Generation. Defaults to `"off"` — a
+   * zero-overhead escape hatch, no `PlannerInput` is even constructed (see
+   * docs/design/0.5.0_dynamic_generation.md §2). `"observe"` computes a
+   * counterfactual `ContextPlan` and records it in evidence WITHOUT changing what
+   * is actually delivered — this is the mechanism, not a promise: the executed
+   * path in observe mode is byte-identical to `"off"`. `"active"` is not yet
+   * wired to change delivery (see Phase 2+); it currently behaves like
+   * `"observe"` and is reserved for incremental rollout.
+   */
+  readonly generationMode?: GenerationMode;
+  /** Planner override, primarily for tests. Defaults to the v1 deterministic planner. */
+  readonly planner?: DynamicContextPlanner;
+  /**
+   * Whether retrieval tools are registered for this session (Rule 5/8). Defaults
+   * to false, matching v0.4.0's measured-cheapest default (retrieval is opt-in).
+   */
+  readonly retrievalAvailable?: boolean;
+  /**
+   * v0.5.0 Dynamic Context runtime budget (docs/design/0.5.0_dynamic_generation.md
+   * §4). Both `target`/`maximum` optional; omitted entirely (the default) means
+   * the Planner never sees a budget object at all -- Rule 7/9's behavior is then
+   * identical to pre-0.5.0 `deliver()`. When present, the measurement METHOD is
+   * captured once at construction and never re-read mid-session (switching
+   * estimators mid-session would make "delivered so far" incomparable to
+   * "target").
+   */
+  readonly runtimeBudget?: { readonly target?: number; readonly maximum?: number };
 }
 
 interface DeliveredBytes {
@@ -244,6 +296,28 @@ export class ContextRuntime {
   private readonly delivered = new Map<string, DeliveredBytes>();
   /** Same guarantee for retrievals: the same range always returns the same bytes. */
   private readonly retrieved = new Map<string, string>();
+  private readonly generationMode: GenerationMode;
+  private readonly planner: DynamicContextPlanner;
+  private readonly retrievalAvailable: boolean;
+  /**
+   * v0.5.0 Prior Delivery Ledger (planner_contract.md §4) — a superset of `delivered`
+   * used for the PLANNER's own Rule 2 decision. Instance-scoped like `delivered`,
+   * for the same reason: content is addressed by (objectId, revision), which is
+   * already effectively content-identity, not session identity.
+   */
+  private readonly priorDeliveries = new Map<string, PriorDelivery>();
+  /** v0.5.0 Generation Cache (planner_contract.md §5) — see the field's own doc
+   *  comment in cache.ts for why `planKind`/`strategyVersion` live on the entry. */
+  private readonly generationCache = new GenerationCache();
+  /** v0.5.0 Dynamic Budget (Phase 4). `undefined` target/maximum -> pre-0.5.0
+   *  compatible (see `runtimeBudget` on `ContextRuntimeOptions`). */
+  private readonly runtimeBudgetConfig: { target?: number; maximum?: number } | undefined;
+  /** Fixed once at construction — never re-read mid-session (design doc §4). */
+  private readonly budgetMeasurementMethod: string;
+  private cumulativeEstimatedTokens = 0;
+  private cumulativeExactCharacters = 0;
+  /** v0.5.0 Repeated Work Observation (Phase 5) — advisory only. */
+  private readonly repeatedWork = new RepeatedWorkTracker();
 
   constructor(opts: ContextRuntimeOptions) {
     this.store = opts.store;
@@ -257,6 +331,11 @@ export class ContextRuntime {
     this.privacyMode = opts.privacyMode ?? DEFAULT_PRIVACY_MODE;
     this.aliasContext = opts.aliasContext ?? createStudentAliasContext();
     this.limits = opts.retrievalLimits ?? DEFAULT_RETRIEVAL_LIMITS;
+    this.generationMode = opts.generationMode ?? "off";
+    this.planner = opts.planner ?? defaultPlanner;
+    this.retrievalAvailable = opts.retrievalAvailable ?? false;
+    this.runtimeBudgetConfig = opts.runtimeBudget;
+    this.budgetMeasurementMethod = currentMeasurementMethod();
     this.ctx = defaultCompressContext({
       now: this.now,
       ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
@@ -281,8 +360,39 @@ export class ContextRuntime {
     return this.aliasContext;
   }
 
+  /** v0.5.0 Generation Cache hit/miss counts (planner_contract.md §5). */
+  get generationCacheStats(): { hits: number; misses: number } {
+    return this.generationCache.stats();
+  }
+
+  /** v0.5.0 Repeated Work Observation stats (planner_contract.md §6). */
+  get repeatedWorkSessionStats(): RepeatedWorkStats {
+    return this.repeatedWork.stats();
+  }
+
   estimateTokens(text: string): number {
     return this.ctx.estimateTokens(text);
+  }
+
+  /** v0.5.0 Dynamic Budget state, built fresh per call from the session's
+   *  cumulative counters (docs/design/0.5.0_dynamic_generation.md §4). Only
+   *  called when `runtimeBudgetConfig` is set, so `target`/`maximum` are never
+   *  both undefined here even though the type allows it (they came from
+   *  `ContextRuntimeOptions.runtimeBudget`, which itself may set only one). */
+  private currentBudgetState(): RuntimeBudgetState {
+    const remaining =
+      this.runtimeBudgetConfig?.maximum === undefined
+        ? undefined
+        : Math.max(0, this.runtimeBudgetConfig.maximum - this.cumulativeEstimatedTokens);
+    return {
+      ...(this.runtimeBudgetConfig?.target === undefined ? {} : { target: this.runtimeBudgetConfig.target }),
+      ...(this.runtimeBudgetConfig?.maximum === undefined ? {} : { maximum: this.runtimeBudgetConfig.maximum }),
+      unit: "tokens",
+      method: this.budgetMeasurementMethod,
+      estimatedDelivered: this.cumulativeEstimatedTokens,
+      ...(remaining === undefined ? {} : { estimatedRemaining: remaining }),
+      exactDeliveredCharacters: this.cumulativeExactCharacters,
+    };
   }
 
   /** True when these bytes were already delivered and are pinned for reuse. */
@@ -345,15 +455,113 @@ export class ContextRuntime {
     const metadata = scanMetadata(scannedContent, req.privateMetadata);
     const safeContent = metadata.text;
 
+    // v0.5.0 Planner — computed BEFORE compression so "active" mode can steer
+    // WHICH existing path executes (docs/design/0.5.0_dynamic_generation.md §2).
+    // `"off"` never builds a PlannerInput (zero overhead). `"observe"` computes the
+    // SAME plan but never branches on it below — the compression call a few lines
+    // down is taken UNCONDITIONALLY for observe, exactly as before Phase 3, which
+    // is what keeps observe byte-identical to off (see observe-mode.test.ts).
+    let plan: ContextPlan | undefined;
+    let planIntent: ContextIntent | undefined;
+    let planRole: ContextRole | undefined;
+    const key = `${stored.objectId}#${stored.revision}`;
+    // Captured BEFORE this delivery's own write to `priorDeliveries` below, so
+    // Phase 5's repeated-work observation asks "was this already delivered
+    // EARLIER this session," not "does an entry exist now."
+    const wasAlreadyDelivered = this.priorDeliveries.has(key);
+    if (this.generationMode !== "off") {
+      const failureMarkers = hasTestFailureMarkers(req.kind, req.content);
+      planIntent = classifyIntent({
+        tool: req.tool,
+        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
+        kind: req.kind,
+        hasFailureMarkers: failureMarkers,
+      });
+      planRole = classifyRole({
+        tool: req.tool,
+        toolInput: req.privateMetadata.absolutePath ?? req.privateMetadata.command,
+        kind: req.kind,
+        hasFailureMarkers: failureMarkers,
+        activeEditTargets: [],
+        isRepeatedContent: wasAlreadyDelivered,
+        confidenceHint: req.privateMetadata.absolutePath ? "high" : "low",
+      });
+      plan = this.planner.plan({
+        intent: planIntent,
+        role: planRole,
+        contentType: req.kind,
+        objectId: stored.objectId,
+        revision: stored.revision,
+        measurement: { estimatedTokens: this.ctx.estimateTokens(req.content), exactCharacters: codePointCount(req.content) },
+        priorDeliveries: [...this.priorDeliveries.values()],
+        retrievalAvailable: this.retrievalAvailable,
+        compressors: capabilitiesOf(this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]),
+        privacyMode: this.privacyMode,
+        secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+        ...(this.runtimeBudgetConfig ? { budget: this.currentBudgetState() } : {}),
+        privacyOrSecurityFailure: false,
+        tool: req.tool,
+      });
+    }
+    const active = this.generationMode === "active" ? plan : undefined;
+
     // 4. Compression, over the already-safe text so the view carries placeholders.
+    // Phase 3: an "active" plan of rule-4/5/6 steers this step (structured/
+    // reference/window); every other rule (and observe/off) takes the pre-0.5.0
+    // path unchanged. Whichever path runs, `candidate` still passes the SAME
+    // exact-output rescan and residue rescan below — this block only chooses
+    // which bytes are proposed, never what counts as safe to deliver.
     const budget = req.tokenBudget ?? this.tokenBudget;
     let outcome: CompressionOutcome;
+    let plannerCandidate: { candidate: string; strategy: string; omissions: readonly Omission[]; removed: EvidenceRecord["removed"] } | undefined;
     if (req.compress === false) {
       // Skipping compression is not skipping safety: the exact-output scan below still runs
       // on these bytes, and the delivery is recorded as `delivered-original`.
       outcome = { status: "failed", reason: "compression-not-requested", attempts: [{ compressorId: "none", ok: false, reason: "no-reduction" }] };
+    } else if (active?.rule === "rule-6-window") {
+      const win = safeWindow(safeContent, this.fallbackPolicy.safeWindowLines);
+      plannerCandidate = {
+        candidate: win.text,
+        strategy: "planner:window",
+        omissions: win.omitted
+          ? [
+              {
+                objectId: stored.objectId,
+                locator: win.omitted.locator,
+                kind: win.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines",
+                tokensOmitted: this.ctx.estimateTokens(win.omitted.text),
+                items: win.omitted.lines,
+              },
+            ]
+          : [],
+        removed: win.omitted
+          ? [{ kind: win.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines", count: win.omitted.lines }]
+          : [],
+      };
+      outcome = { status: "failed", reason: "planner-window", attempts: [] };
+    } else if (active?.rule === "rule-5-reference") {
+      const ref = referenceOnly(safeContent);
+      plannerCandidate = {
+        candidate: ref.text,
+        strategy: "planner:reference",
+        omissions: [
+          {
+            objectId: stored.objectId,
+            locator: ref.omitted.locator,
+            kind: ref.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines",
+            tokensOmitted: this.ctx.estimateTokens(ref.omitted.text),
+            items: ref.omitted.lines,
+          },
+        ],
+        removed: [{ kind: ref.omitted.locator.startsWith("B") ? "text-bytes" : "text-lines", count: ref.omitted.lines }],
+      };
+      outcome = { status: "failed", reason: "planner-reference", attempts: [] };
     } else {
     try {
+      const registryOverride =
+        active?.rule === "rule-4-structured"
+          ? (this.compressors ? [...this.compressors] : [...BUILTIN_COMPRESSORS]).filter((c) => c.id !== "text-window")
+          : this.compressors;
       outcome = await compressWithFallback(
         {
           objectId: stored.objectId,
@@ -363,7 +571,7 @@ export class ContextRuntime {
           ...(budget === undefined ? {} : { tokenBudget: budget }),
         },
         this.ctx,
-        this.compressors,
+        registryOverride,
       );
     } catch {
       outcome = { status: "failed", reason: "compression-error", attempts: [] };
@@ -380,7 +588,14 @@ export class ContextRuntime {
     let fallback: "safe-window" | "scanned-original" | undefined;
     let hintPolicy: HintPolicy = "offer-retrieval";
 
-    if (outcome.status === "compressed") {
+    if (plannerCandidate) {
+      candidate = plannerCandidate.candidate;
+      strategy = plannerCandidate.strategy;
+      omissions = plannerCandidate.omissions;
+      removed = plannerCandidate.removed;
+      tokensAfter = this.ctx.estimateTokens(candidate);
+      hintPolicy = "offer-retrieval";
+    } else if (outcome.status === "compressed") {
       candidate = outcome.result.text;
       strategy = `${outcome.result.compressorId}@${outcome.result.compressorVersion}`;
       anchors = outcome.result.anchors;
@@ -428,7 +643,8 @@ export class ContextRuntime {
     }
 
     // Prefix stability: identical (object, revision) always yields identical bytes.
-    const key = `${stored.objectId}#${stored.revision}`;
+    // `key` was already computed above, before compression, so the Planner could
+    // consult `priorDeliveries` for this exact identity.
     const pinned = this.delivered.get(key);
     let prefixStable = false;
     let recomputeDiverged = false;
@@ -476,6 +692,77 @@ export class ContextRuntime {
         ? "delivered-original"
         : "delivered";
 
+    // v0.5.0 Planner ledger/cache write-through. `plan`/`planIntent`/`planRole`
+    // were already computed BEFORE compression (see above) so "active" mode could
+    // steer execution; this only records the OUTCOME now that real delivered
+    // bytes exist. Phase 3: rules 4/5/6 (structured/reference/window) execute for
+    // real in "active" mode via `plannerCandidate` above; every other rule stays
+    // observe-only (evidence-only) until a later phase.
+    // v0.5.0 Repeated Work Observation (Phase 5) — advisory only, matching the
+    // directive: recorded in evidence/stats unconditionally when `plan` exists
+    // (i.e. generationMode !== "off"), but never a forced block, and a hint
+    // string is only ever computed, never injected into `candidate` itself (see
+    // planner_contract.md §6's scope note in repeated-work.ts for why: the
+    // existing prefix-stability pin would either discard a hint added after
+    // pinning or double-apply one added before, so hints stay evidence-only in
+    // this Release Candidate — still fully explainable via `yuhi_explain`).
+    let repeatedWorkEvidence: { type: string; count: number; estimatedAvoidableTokens?: number; hint?: string } | undefined;
+    if (plan && wasAlreadyDelivered) {
+      const repEvent = this.repeatedWork.observeDelivery(req.tool, stored.objectId, tokensAfter);
+      if (repEvent) {
+        const hint = this.repeatedWork.shouldHint(stored.objectId, repEvent.type, repEvent.count)
+          ? repeatedWorkHint(repEvent.type)
+          : undefined;
+        repeatedWorkEvidence = {
+          type: repEvent.type,
+          count: repEvent.count,
+          ...(repEvent.estimatedAvoidableTokens === undefined ? {} : { estimatedAvoidableTokens: repEvent.estimatedAvoidableTokens }),
+          ...(hint ? { hint } : {}),
+        };
+      }
+    }
+
+    if (plan) {
+      // v0.5.0 Dynamic Budget: cumulative counters feed the NEXT call's
+      // `currentBudgetState()`. Tracked regardless of whether a budget is
+      // configured (cheap; keeps the counters correct if budget is added
+      // mid-session via a fresh runtime) but only ever READ when it is.
+      this.cumulativeEstimatedTokens += tokensAfter;
+      this.cumulativeExactCharacters += byteCount(candidate);
+      this.priorDeliveries.set(key, {
+        objectId: stored.objectId,
+        revision: stored.revision,
+        representationId: strategy,
+        deliveredHash: sha256(candidate),
+        planKind: plan.kind,
+        ...(plan.strategyId ? { strategyId: plan.strategyId } : {}),
+        estimatedTokens: tokensAfter,
+        exactCharacters: byteCount(candidate),
+        deliveredAtTurn: seq,
+      });
+      // Generation Cache (planner_contract.md §5) — a richer-keyed, WRITE-THROUGH
+      // record alongside `priorDeliveries`. Not yet consulted for lookups in
+      // Phase 2 (Rule 2 reads `priorDeliveries` only); this populates the cache so
+      // its hit/miss invariants are real and testable ahead of Phase 3+ wiring it
+      // into the lookup path itself.
+      this.generationCache.set(
+        {
+          objectId: stored.objectId,
+          revision: stored.revision,
+          privacyMode: this.privacyMode,
+          secretDeliveryMode: this.policy.redactSecretsBeforeDelivery ? "redact" : "developer-delivery",
+          intent: planIntent ?? "unknown",
+        },
+        {
+          planKind: plan.kind,
+          strategyVersion: strategy,
+          deliveredHash: sha256(candidate),
+          estimatedTokens: tokensAfter,
+          exactCharacters: byteCount(candidate),
+        },
+      );
+    }
+
     // 6. Evidence, then delivery.
     const record: EvidenceRecord = {
       type: "delivery",
@@ -515,6 +802,36 @@ export class ContextRuntime {
       ...(fallback ? { fallback, failureClass: "availability" as const } : {}),
       ...(recomputeDiverged ? { recomputeDiverged: true } : {}),
       ...(req.toolUseId ? { toolUseId: req.toolUseId } : {}),
+      ...(plan
+        ? {
+            plan: {
+              // Phase 3 scope: rule-2 (reuse, Phase 2 — safe because it is already
+              // the same decision `this.delivered` makes unconditionally), and
+              // rule-4/5/6 (structured/reference/window, Phase 3 — executed via
+              // `plannerCandidate` above) are "executed" in active mode. Rules 1
+              // (withhold — already enforced upstream regardless of the planner),
+              // 3/7 (full — the existing incompressible/original path already
+              // delivers full content), 8/9 (fallback) stay observe-only: their
+              // "execution" is already indistinguishable from existing behavior,
+              // or deliberately deferred.
+              generationMode: this.generationMode === "active" ? "active" : "observe",
+              intent: planIntent ?? "unknown",
+              role: planRole ?? "unknown",
+              kind: plan.kind,
+              reason: plan.reason,
+              rule: plan.rule,
+              ...(plan.strategyId ? { strategyId: plan.strategyId } : {}),
+              confidence: plan.confidence,
+              executed:
+                this.generationMode === "active" &&
+                (plan.rule === "rule-2-reuse" ||
+                  plan.rule === "rule-4-structured" ||
+                  plan.rule === "rule-5-reference" ||
+                  plan.rule === "rule-6-window"),
+            },
+          }
+        : {}),
+      ...(repeatedWorkEvidence ? { repeatedWork: repeatedWorkEvidence } : {}),
     };
     await this.ledger.record(record);
 
@@ -591,7 +908,20 @@ export class ContextRuntime {
     const cacheKey = `${req.objectId}#${req.locator}`;
     const cached = this.retrieved.get(cacheKey);
     if (cached !== undefined) {
-      await this.recordRetrieval(req.sessionId, eventId, req.locator, "delivered", req.reason, this.ctx.estimateTokens(cached));
+      // This exact locator was already retrieved this session — the clearest
+      // "contained-read" signal (Phase 5), computed BEFORE the generic
+      // recordRetrieval call below so it lands in the same ledger row.
+      const repeated = this.observeRetrievalRepeat(req.objectId, req.locator);
+      await this.recordRetrieval(
+        req.sessionId,
+        eventId,
+        req.locator,
+        "delivered",
+        req.reason,
+        this.ctx.estimateTokens(cached),
+        undefined,
+        repeated,
+      );
       return { status: "delivered", text: cached, locator: req.locator, tokens: this.ctx.estimateTokens(cached) };
     }
 
@@ -635,10 +965,14 @@ export class ContextRuntime {
       }
     }
 
+    // Computed BEFORE `this.retrieved.set()` below, so this locator is not
+    // counted as its own "prior" retrieval (Phase 5 — contained/overlapping-read
+    // against locators retrieved EARLIER this session, for the same object).
+    const repeated = this.observeRetrievalRepeat(req.objectId, req.locator);
     const text = metadata.text;
     this.retrieved.set(cacheKey, text);
     const tokens = this.ctx.estimateTokens(text);
-    await this.recordRetrieval(req.sessionId, eventId, req.locator, "delivered", req.reason, tokens);
+    await this.recordRetrieval(req.sessionId, eventId, req.locator, "delivered", req.reason, tokens, undefined, repeated);
     return { status: "delivered", text, locator: req.locator, tokens };
   }
 
@@ -698,6 +1032,7 @@ export class ContextRuntime {
     requestReason: string | undefined,
     tokens: number,
     refusalReason?: string,
+    repeatedWork?: { type: string; count: number; estimatedAvoidableTokens?: number; hint?: string },
   ): Promise<void> {
     const row: RetrievalRecord = {
       type: "retrieval",
@@ -708,8 +1043,30 @@ export class ContextRuntime {
       outcome,
       tokensDelivered: tokens,
       ...(refusalReason ? { reason: refusalReason } : requestReason ? { reason: requestReason } : {}),
+      ...(repeatedWork ? { repeatedWork } : {}),
     };
     await this.ledger.record(row);
+  }
+
+  /** v0.5.0 Repeated Work Observation for a successful retrieval (Phase 5). */
+  private observeRetrievalRepeat(
+    objectId: string,
+    locator: string,
+  ): { type: string; count: number; estimatedAvoidableTokens?: number; hint?: string } | undefined {
+    if (this.generationMode === "off") return undefined;
+    const prefix = `${objectId}#`;
+    const priorLocators = [...this.retrieved.keys()]
+      .filter((k) => k.startsWith(prefix))
+      .map((k) => k.slice(prefix.length));
+    const event = this.repeatedWork.observeRetrieval(objectId, locator, priorLocators);
+    if (!event) return undefined;
+    const hint = this.repeatedWork.shouldHint(objectId, event.type, event.count) ? repeatedWorkHint(event.type) : undefined;
+    return {
+      type: event.type,
+      count: event.count,
+      ...(event.estimatedAvoidableTokens === undefined ? {} : { estimatedAvoidableTokens: event.estimatedAvoidableTokens }),
+      ...(hint ? { hint } : {}),
+    };
   }
 
   private async withhold(
@@ -810,6 +1167,33 @@ export function safeWindow(
       ...lines.slice(lines.length - keep),
     ].join("\n"),
     omitted: { locator: `L${from}-L${to}`, text: omittedText, lines: to - from + 1 },
+  };
+}
+
+/**
+ * v0.5.0 Rule 5 (reference) executor: unlike `safeWindow`, keeps NO head/tail —
+ * the whole content is one omission, retrievable via the existing bounded
+ * retrieval path. Used only for content the Planner judged `reference`-role and
+ * large (Rule 5 requires the content NOT be small); a genuinely small object
+ * never reaches this function because Rule 3/7 would already have delivered it
+ * in full. The short notice text still passes the exact-output rescan like any
+ * other candidate; the omitted content is only ever revealed through
+ * `retrieveByObject`, which re-applies the CURRENT privacy/secret policy.
+ */
+export function referenceOnly(text: string): { text: string; omitted: { locator: string; text: string; lines: number } } {
+  const lines = text.split("\n");
+  if (lines.length <= 1) {
+    const bytes = Buffer.byteLength(text, "utf8");
+    const locator = `B0-B${bytes}`;
+    return {
+      text: `… ${bytes} bytes available via retrieval → retrieve ${locator} …`,
+      omitted: { locator, text, lines: 1 },
+    };
+  }
+  const locator = `L1-L${lines.length}`;
+  return {
+    text: `… ${lines.length} lines available via retrieval → retrieve ${locator} …`,
+    omitted: { locator, text, lines: lines.length },
   };
 }
 

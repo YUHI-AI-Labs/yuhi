@@ -382,6 +382,8 @@ async function commandLaunchClaudeDynamic(): Promise<void> {
       retrievalMode: mode,
       privacyMode: resolvedPrivacy.privacyMode,
       privacyModeAcknowledged: trustedLocalAcknowledged,
+      generationMode: dynamicGenerationModeSetting(),
+      ...dynamicContextBudgetSettings(),
     });
   } catch (err) {
     // NEVER downgrade silently: the user asked for dynamic context.
@@ -447,6 +449,25 @@ async function confirmTrustedLocalForWorkspace(key: string): Promise<boolean> {
 function dynamicRetrievalModeSetting(): RetrievalMode {
   const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.retrievalMode");
   return configured === "conditional" || configured === "required" ? configured : "disabled";
+}
+
+/** v0.5.0 Task-Aware Dynamic Context Generation mode. Advanced setting, not
+ *  shown during first run (docs/design/0.5.0_dynamic_generation.md §8). */
+function dynamicGenerationModeSetting(): "off" | "observe" | "active" {
+  const configured = vscode.workspace.getConfiguration("yuhi").get<string>("dynamicContext.generationMode");
+  return configured === "off" || configured === "active" ? configured : "observe";
+}
+
+/** v0.5.0 Dynamic Budget settings. `null`/unset -> undefined (no budget passed
+ *  to the Planner at all — pre-0.5.0 compatible). */
+function dynamicContextBudgetSettings(): { contextBudget?: number; contextMaximum?: number } {
+  const config = vscode.workspace.getConfiguration("yuhi");
+  const target = config.get<number | null>("dynamicContext.contextBudget");
+  const maximum = config.get<number | null>("dynamicContext.contextMaximum");
+  return {
+    ...(typeof target === "number" ? { contextBudget: target } : {}),
+    ...(typeof maximum === "number" ? { contextMaximum: maximum } : {}),
+  };
 }
 
 async function claudeCliAvailable(): Promise<boolean> {

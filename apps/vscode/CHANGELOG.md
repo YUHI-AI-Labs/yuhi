@@ -5,6 +5,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While in `0.x`, minor
 releases may include breaking changes.
 
+## [0.5.0] — 2026-08-06 (Release Candidate, Observe-first)
+
+**Task-Aware Dynamic Context Generation.** A new Planner decides, per tool
+result, whether to deliver it in full, structured, windowed, referenced (fetch
+on demand), or reused unchanged from an identical prior delivery — see the
+root `CHANGELOG.md` for the full detail. New settings, all under Advanced
+(not shown during first run): `yuhi.dynamicContext.generationMode` (`off` /
+`observe` / `active`, default `observe`), `yuhi.dynamicContext.contextBudget`,
+`yuhi.dynamicContext.contextMaximum`.
+
+`observe` is the shipped default: the Planner computes and records a plan for
+every delivery, but the Dynamic Terminal command's actual behavior is
+unchanged from 0.4.8. `active` is opt-in and not yet benchmarked against a
+live model in this environment — no performance or cost claim is made for it.
+Native GUI Mode inherits the `observe` default through the same shared launch
+path Dynamic Terminal uses, but does not yet expose its own generation-mode
+setting (deferred; disclosed in `docs/design/0.5.0_dynamic_generation.md`).
+
+CLI ships 0.5.0 to stay in lockstep with the extension.
+
 ## [0.4.8] — 2026-08-05
 
 **Privacy Mode** (Balanced / Strict / Trusted Local) is now the single selector for

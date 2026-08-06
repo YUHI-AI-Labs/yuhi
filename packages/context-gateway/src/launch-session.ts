@@ -77,6 +77,22 @@ export interface DynamicClaudeSessionOptions {
   readonly claudeCommand?: string;
   readonly forwardedArgs?: readonly string[];
   readonly startupTimeoutMs?: number;
+  /**
+   * v0.5.0 Task-Aware Dynamic Context Generation (docs/design/
+   * 0.5.0_dynamic_generation.md). Defaults to `"observe"` — the directive's own
+   * initial default: the Planner computes and records a plan for every delivery,
+   * but only Rules 2/4/5/6 (reuse/structured/reference/window) actually change
+   * what is delivered, and only when this is `"active"`. `"off"` restores
+   * pre-0.5.0 behavior exactly (zero-overhead: no PlannerInput is built at all).
+   */
+  readonly generationMode?: "off" | "observe" | "active";
+  /**
+   * v0.5.0 Dynamic Budget; omitted -> pre-0.5.0 compatible (no budget passed to
+   * the Planner at all). See docs/design/0.5.0_dynamic_generation.md §4 for why
+   * 8,000/16,000 are deliberately NOT defaults here.
+   */
+  readonly contextBudget?: number;
+  readonly contextMaximum?: number;
   // Injectables (tests) ------------------------------------------------------
   readonly startGatewayImpl?: typeof startGateway;
   readonly readyProbe?: (url: string) => Promise<{ ok: boolean }>;
@@ -101,6 +117,8 @@ export interface DynamicClaudeSession {
   readonly retrievalMode: RetrievalMode;
   readonly deliveryMode: DeliveryMode;
   readonly privacyMode: PrivacyMode;
+  /** v0.5.0 Task-Aware Dynamic Context Generation mode actually resolved (default "observe"). */
+  readonly generationMode: "off" | "observe" | "active";
   readonly readyMs: number;
   readonly command: DynamicSessionCommand;
   getStats(): Promise<DynamicContextStats>;
@@ -256,6 +274,17 @@ export async function startDynamicClaudeSession(
     warningAcknowledged: options.privacyModeAcknowledged ?? true,
   });
   const deliveryPolicy = policyForMode(resolved.secretDeliveryMode === "redact" ? "strict" : "developer");
+  // v0.5.0: this LAUNCH surface's own default is "observe" (directive §18),
+  // distinct from ContextRuntime/startGateway's own conservative "off" default
+  // for callers that construct the runtime directly without opting in.
+  const generationMode = options.generationMode ?? "observe";
+  const runtimeBudget =
+    options.contextBudget === undefined && options.contextMaximum === undefined
+      ? undefined
+      : {
+          ...(options.contextBudget === undefined ? {} : { target: options.contextBudget }),
+          ...(options.contextMaximum === undefined ? {} : { maximum: options.contextMaximum }),
+        };
 
   const began = now();
   let gateway: GatewayHandle;
@@ -268,6 +297,8 @@ export async function startDynamicClaudeSession(
       ...(options.aliasContext ? { aliasContext: options.aliasContext } : {}),
       sessionOverride: sessionId,
       ...(options.upstreamBaseUrl ? { upstreamBaseUrl: options.upstreamBaseUrl } : {}),
+      generationMode,
+      ...(runtimeBudget ? { runtimeBudget } : {}),
       log,
     });
   } catch {
@@ -307,6 +338,7 @@ export async function startDynamicClaudeSession(
     retrievalMode,
     deliveryMode: resolved.secretDeliveryMode === "redact" ? "strict" : "developer",
     privacyMode,
+    generationMode,
     readyMs,
     command: {
       file: options.claudeCommand ?? "claude",

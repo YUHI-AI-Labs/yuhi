@@ -114,3 +114,62 @@ describe("startDynamicClaudeSession — Privacy Mode composition", () => {
     expect(seen?.["aliasContext"]).toBe(aliasContext);
   });
 });
+
+describe("startDynamicClaudeSession — v0.5.0 Task-Aware Dynamic Context Generation", () => {
+  it("defaults generationMode to \"observe\" (directive §18's own default) when omitted", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const session = await startDynamicClaudeSession({
+      preparedWorkspace: "/prepared",
+      startGatewayImpl: async (o) => {
+        seen = o as unknown as Record<string, unknown>;
+        return fakeGateway();
+      },
+      readyProbe: async () => ({ ok: true }),
+    });
+    expect(session.generationMode).toBe("observe");
+    expect(seen?.["generationMode"]).toBe("observe");
+  });
+
+  it("an explicit generationMode is passed through unchanged", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const session = await startDynamicClaudeSession({
+      preparedWorkspace: "/prepared",
+      generationMode: "active",
+      startGatewayImpl: async (o) => {
+        seen = o as unknown as Record<string, unknown>;
+        return fakeGateway();
+      },
+      readyProbe: async () => ({ ok: true }),
+    });
+    expect(session.generationMode).toBe("active");
+    expect(seen?.["generationMode"]).toBe("active");
+  });
+
+  it("contextBudget/contextMaximum compose into a single runtimeBudget object", async () => {
+    let seen: Record<string, unknown> | undefined;
+    await startDynamicClaudeSession({
+      preparedWorkspace: "/prepared",
+      contextBudget: 8000,
+      contextMaximum: 16000,
+      startGatewayImpl: async (o) => {
+        seen = o as unknown as Record<string, unknown>;
+        return fakeGateway();
+      },
+      readyProbe: async () => ({ ok: true }),
+    });
+    expect(seen?.["runtimeBudget"]).toEqual({ target: 8000, maximum: 16000 });
+  });
+
+  it("omitting both contextBudget and contextMaximum never sends a runtimeBudget object at all", async () => {
+    let seen: Record<string, unknown> | undefined;
+    await startDynamicClaudeSession({
+      preparedWorkspace: "/prepared",
+      startGatewayImpl: async (o) => {
+        seen = o as unknown as Record<string, unknown>;
+        return fakeGateway();
+      },
+      readyProbe: async () => ({ ok: true }),
+    });
+    expect(seen?.["runtimeBudget"]).toBeUndefined();
+  });
+});
