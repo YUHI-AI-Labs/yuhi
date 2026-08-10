@@ -22,6 +22,12 @@ jobs:
   build:
     name: Build & test
     runs-on: ubuntu-latest
+    # contents: write is required by the SBOM step below, which attaches the
+    # generated SBOM to the tag's GitHub Release (created separately, outside
+    # this workflow) -- the top-level default stays read-only; every other
+    # job keeps its own narrower permissions block untouched.
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,9 +63,10 @@ jobs:
       - name: Build VSIX
         run: |
           npm install -g @vscode/vsce
-          pnpm --filter @yuhi/vscode... build
-          vsce package --no-dependencies --out ./dist-artifacts/ \
-            --cwd apps/vscode || echo "VSIX packaging step is best-effort; adjust for your setup."
+          pnpm --filter yuhi-code... build
+          mkdir -p dist-artifacts
+          (cd apps/vscode && vsce package --no-dependencies --out ../../dist-artifacts/) \
+            || echo "VSIX packaging step is best-effort; adjust for your setup."
 
       # SBOM covers the whole workspace (pnpm-lock.yaml), not just the packaged
       # artifacts — that's what a consumer needs to assess dependency risk.
